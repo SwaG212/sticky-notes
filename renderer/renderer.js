@@ -35,6 +35,7 @@ async function init() {
   if (window.electronAPI) {
     window.electronAPI.onOpenConfig(() => showConfig());
     window.electronAPI.onWindowShown(() => {
+      app.style.opacity = '0';
       app.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 350, easing: 'ease', fill: 'forwards' });
       textInput.focus();
     });
@@ -53,12 +54,16 @@ async function loadTasks() {
   if (window.electronAPI) {
     state.tasks = await window.electronAPI.loadTasks();
   } else {
-    // 浏览器回退
     const today = getToday();
     try {
       const raw = localStorage.getItem(`tasks_${today}`);
       state.tasks = raw ? JSON.parse(raw) : [];
     } catch (e) { state.tasks = []; }
+    // 跨天清空 alarmTime（仅今天首次加载时）
+    let changed = false;
+    if (!raw) {
+      state.tasks.forEach(t => { if (t.alarmTime) { t.alarmTime = null; changed = true; } });
+    }
     // 加载昨天未完成的
     const yesterday = getYesterday();
     try {
@@ -66,12 +71,13 @@ async function loadTasks() {
       if (raw) {
         const unfinished = JSON.parse(raw).filter(t => !t.completed);
         if (unfinished.length > 0) {
-          unfinished.forEach(t => { t.createdAt = new Date().toISOString(); t.id = genId(); });
+          unfinished.forEach(t => { t.createdAt = new Date().toISOString(); t.id = genId(); t.alarmTime = null; });
           state.tasks = [...unfinished, ...state.tasks];
-          saveTasks();
+          changed = true;
         }
       }
     } catch (e) {}
+    if (changed) saveTasks();
   }
 }
 
@@ -117,14 +123,30 @@ function renderTasks(shouldAnimate = false) {
     text.textContent = task.task;
     text.title = task.task.length > 50 ? task.task : '';
 
+    const alarm = document.createElement('span');
+    alarm.className = 'task-alarm';
+    alarm.textContent = task.alarmTime || '--:--';
+    alarm.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openTimePicker(alarm, idx);
+    });
+
     const del = document.createElement('button');
     del.className = 'task-delete';
     del.textContent = '✕';
     del.addEventListener('click', (e) => { e.stopPropagation(); deleteTask(idx); });
 
+    const hoverBar = document.createElement('div');
+    hoverBar.className = 'hover-bar';
+    hoverBar.style.display = 'none';
+    hoverBar.append(alarm, del);
+
+    row.addEventListener('mouseenter', () => { hoverBar.style.display = 'flex'; row.style.background = '#f3f3f8'; });
+    row.addEventListener('mouseleave', () => { hoverBar.style.display = 'none'; row.style.background = ''; });
+
     let clickTimer = null;
     row.addEventListener('click', (e) => {
-      if (e.target === del || e.target === cb) return;
+      if (e.target === del || e.target === alarm) return;
       if (clickTimer) {
         clearTimeout(clickTimer);
         clickTimer = null;
@@ -134,7 +156,7 @@ function renderTasks(shouldAnimate = false) {
       }
     });
 
-    row.append(cb, text, del);
+    row.append(cb, text, hoverBar);
     taskItems.appendChild(row);
   });
 
@@ -202,11 +224,95 @@ function enterEditMode(row, idx) {
 function addTasks(newTasks) {
   const now = new Date().toISOString();
   const items = newTasks.map(t => ({
-    id: genId(), task: t.task, completed: false, createdAt: now, completedAt: null,
+    id: genId(), task: t.task, completed: false, createdAt: now, completedAt: null, alarmTime: null,
   }));
   state.tasks = [...items, ...state.tasks];
   saveTasks();
   renderTasks();
+}
+
+// ========== 定时提醒 ==========
+let activePicker = null;
+
+function closeActivePicker() {
+  if (activePicker) { activePicker.remove(); activePicker = null; }
+}
+
+function openTimePicker(anchorEl, taskIdx) {
+  closeActivePicker();
+
+  const current = state.tasks[taskIdx].alarmTime || '';
+  const curH = current.slice(0, 2) || '';
+  const curM = current.slice(3, 5) || '';
+
+  const picker = document.createElement('div');
+  picker.className = 'time-picker';
+  picker.innerHTML = `<button class="tp-clear">清除</button><div class="tp-cols"><div class="tp-col" id="tp-hour"></div><div class="tp-col" id="tp-min"></div></div>`;
+  app.appendChild(picker);
+
+  // 填充小时 00-23
+  const colH = picker.querySelector('#tp-hour');
+  for (let h = 0; h < 24; h++) {
+    const opt = document.createElement('div');
+    opt.className = 'tp-opt' + (String(h).padStart(2,'0') === curH ? ' active' : '');
+    opt.textContent = String(h).padStart(2, '0');
+    opt.addEventListener('click', () => {
+      const m = state.tasks[taskIdx].alarmTime ? state.tasks[taskIdx].alarmTime.slice(3, 5) : '00';
+      state.tasks[taskIdx].alarmTime = `${opt.textContent}:${m}`;
+      saveTasks();
+      closeActivePicker();
+      renderTasks();
+    });
+    colH.appendChild(opt);
+  }
+
+  // 填充分钟 00-59
+  const colM = picker.querySelector('#tp-min');
+  for (let m = 0; m < 60; m++) {
+    const opt = document.createElement('div');
+    opt.className = 'tp-opt' + (String(m).padStart(2,'0') === curM ? ' active' : '');
+    opt.textContent = String(m).padStart(2, '0');
+    opt.addEventListener('click', () => {
+      const h = state.tasks[taskIdx].alarmTime ? state.tasks[taskIdx].alarmTime.slice(0, 2) : '00';
+      state.tasks[taskIdx].alarmTime = `${h}:${opt.textContent}`;
+      saveTasks();
+      closeActivePicker();
+      renderTasks();
+    });
+    colM.appendChild(opt);
+  }
+
+  // 清除按钮
+  picker.querySelector('.tp-clear').addEventListener('click', () => {
+    state.tasks[taskIdx].alarmTime = null;
+    saveTasks();
+    closeActivePicker();
+    renderTasks();
+  });
+
+  // 滚动到选中的位置
+  if (curH) colH.querySelector('.tp-opt.active')?.scrollIntoView({ block: 'center' });
+  if (curM) colM.querySelector('.tp-opt.active')?.scrollIntoView({ block: 'center' });
+
+  // 定位：相对于 #app 容器
+  const appRect = app.getBoundingClientRect();
+  const anchorRect = anchorEl.getBoundingClientRect();
+  picker.style.left = Math.max(8, anchorRect.left - appRect.left - 40) + 'px';
+  picker.style.top = Math.max(4, anchorRect.top - appRect.top - 185) + 'px';
+
+  // 点击外部关闭（不保存）
+  setTimeout(() => {
+    const closePk = (e) => {
+      if (!picker.contains(e.target) && e.target !== anchorEl) {
+        picker.remove();
+        if (activePicker === picker) activePicker = null;
+        app.removeEventListener('click', closePk);
+      }
+    };
+    app.addEventListener('click', closePk, true);
+  }, 0);
+
+  activePicker = picker;
 }
 
 // ========== 输入处理 ==========

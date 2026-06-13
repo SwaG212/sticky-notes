@@ -4,12 +4,13 @@ const fs = require('fs');
 
 // ========== 透明窗口必需参数 ==========
 app.commandLine.appendSwitch('enable-transparent-visuals');
-app.commandLine.appendSwitch('disable-gpu-compositing');
 
 // ========== 全局状态 ==========
 let win = null;
 let tray = null;
+let alarmWin = null;
 let animating = false;
+let alarmTimer = null;
 const userDataPath = app.getPath('userData');
 const configPath = path.join(userDataPath, 'config.enc');
 
@@ -173,7 +174,22 @@ function getYesterday() {
 
 function loadTasksFromFile() {
   const today = getToday();
-  let tasks = readJSON(path.join(userDataPath, 'tasks', `${today}.json`)) || [];
+  const filePath = path.join(userDataPath, 'tasks', `${today}.json`);
+  let tasks = readJSON(filePath) || [];
+
+  // 仅在该文件不是今天创建时，才清空 alarmTime（说明是跨天首次加载）
+  let isNewDay = true;
+  try {
+    if (fs.existsSync(filePath)) {
+      const mtime = fs.statSync(filePath).mtime;
+      isNewDay = mtime.toDateString() !== new Date().toDateString();
+    }
+  } catch (e) {}
+
+  let changed = false;
+  if (isNewDay) {
+    tasks.forEach(t => { if (t.alarmTime) { t.alarmTime = null; changed = true; } });
+  }
 
   // 加载昨天未完成任务
   const yesterday = getYesterday();
@@ -181,16 +197,87 @@ function loadTasksFromFile() {
   if (yesterdayTasks) {
     const unfinished = yesterdayTasks.filter(t => !t.completed);
     if (unfinished.length > 0) {
-      unfinished.forEach(t => { t.createdAt = new Date().toISOString(); t.id = 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); });
+      unfinished.forEach(t => {
+        t.createdAt = new Date().toISOString();
+        t.id = 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+        t.alarmTime = null; // 跨天迁移清空
+      });
       tasks = [...unfinished, ...tasks];
-      writeJSON(path.join(userDataPath, 'tasks', `${today}.json`), tasks);
+      changed = true;
     }
+  }
+
+  if (changed) {
+    writeJSON(filePath, tasks);
   }
   return tasks;
 }
 
 function saveTasksToFile(tasks) {
   writeJSON(path.join(userDataPath, 'tasks', `${getToday()}.json`), tasks);
+}
+
+// ========== 定时提醒 ==========
+function checkAlarms() {
+  const tasks = loadTasksFromFile();
+  const now = new Date();
+  const currentHHMM = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+
+  const due = tasks.filter(t => t.alarmTime === currentHHMM && !t.completed);
+  if (due.length === 0) return;
+
+  const lines = due.map(t => `任务「${t.task}」的时间到了`);
+  showAlarmWindow(lines);
+}
+
+function showAlarmWindow(lines) {
+  if (alarmWin && !alarmWin.isDestroyed()) return; // 已有弹窗，不重复
+
+  const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
+
+  alarmWin = new BrowserWindow({
+    width: 340,
+    height: 140 + lines.length * 28,
+    x: sw - 360 - 8,
+    y: sh - 520 - 150 - lines.length * 28,
+    frame: false,
+    resizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    backgroundColor: '#ffffff',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+    *{margin:0;padding:0;box-sizing:border-box;}
+    body{font-family:-apple-system,"Microsoft YaHei",sans-serif;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.15);border:1px solid #e2e2ec;margin:4px;padding:16px 20px;}
+    h3{font-size:14px;color:#2a2a36;margin-bottom:10px;}
+    .lines{font-size:13px;color:#555;line-height:1.8;margin-bottom:14px;}
+    button{display:block;margin:0 auto;padding:6px 32px;background:#5b5be0;color:#fff;border:none;border-radius:6px;font-size:13px;cursor:pointer;font-family:inherit;}
+    button:hover{background:#4848d0;}
+  </style></head><body>
+    <h3>便利贴 - 提醒</h3>
+    <div class="lines">${lines.join('<br>')}</div>
+    <button onclick="window.close()">确认</button>
+    <script>const{ipcRenderer}=require('electron');</script>
+  </body></html>`;
+
+  alarmWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  alarmWin.setVisibleOnAllWorkspaces(true);
+  alarmWin.show();
+
+  alarmWin.on('closed', () => { alarmWin = null; });
+}
+
+function startAlarmTimer() {
+  if (alarmTimer) return;
+  checkAlarms(); // 启动时也检查一次
+  alarmTimer = setInterval(checkAlarms, 60000);
 }
 
 // ========== IPC 处理 ==========
@@ -250,6 +337,19 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.setVisibleOnAllWorkspaces(true);
+
+  // 物理裁切圆角（CSS border-radius 在透明窗口无效）
+  win.once('ready-to-show', () => {
+    const R = 16;
+    const rects = [];
+    for (let y = 0; y < height; y++) {
+      let i = 0;
+      if (y < R) i = R - Math.round(Math.sqrt(R * R - (R - y) ** 2));
+      else if (y >= height - R) i = R - Math.round(Math.sqrt(R * R - (y - (height - R)) ** 2));
+      rects.push({ x: i, y, width: width - i * 2, height: 1 });
+    }
+    win.setShape(rects);
+  });
 
   win.on('blur', () => {
     if (win && !win.isDestroyed() && !animating) {
@@ -341,6 +441,8 @@ app.whenReady().then(() => {
   if (!ok) {
     try { globalShortcut.register('Alt+Backquote', toggleWindow); } catch (e) { /* ignore */ }
   }
+
+  startAlarmTimer();
 
   // 首次启动检查 API Key 配置
   const cfg = loadConfig();
