@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>便利贴</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="app">
+  <!-- 任务清单区 -->
+  <div id="task-list">
+    <div id="task-empty" class="empty-state">
+      <div class="empty-icon">📋</div>
+      <div class="empty-title">还没有任务</div>
+      <div class="empty-desc">在下方输入想做的事，然后点击「整理」</div>
+    </div>
+    <div id="task-items"></div>
+  </div>
+
+  <!-- 分隔线 -->
+  <div class="divider"></div>
+
+  <!-- 输入区 -->
+  <div id="input-area">
+    <!-- 图片预览区 -->
+    <div id="image-previews"></div>
+    <!-- 文字输入 -->
+    <textarea id="text-input" placeholder="记录想做的事..." rows="4"></textarea>
+    <!-- 操作栏 -->
+    <div id="input-actions">
+      <span class="hint">Ctrl+V 贴图 ｜ 关闭窗口自动整理</span>
+      <button id="btn-organize" disabled>整理 ▸</button>
+    </div>
+  </div>
+
+  <!-- API Key 配置遮罩 -->
+  <div id="config-overlay" class="hidden">
+    <div id="config-dialog">
+      <div class="config-title">便利贴 - 初始配置</div>
+      <div class="config-subtitle">需要配置 AI 服务才能使用</div>
+      <label>API Key</label>
+      <input type="password" id="config-apikey" placeholder="sk-xxxxxxxxxxxxxxxxxxxx">
+      <label>API 地址（可选，默认 DeepSeek）</label>
+      <input type="text" id="config-baseurl" placeholder="https://api.deepseek.com">
+      <button id="btn-config-save">保存并启动</button>
+    </div>
+  </div>
+
+  <!-- 整理中提示 -->
+  <div id="processing-overlay" class="hidden">
+    <div class="spinner"></div>
+    <div id="processing-text">AI 整理中...</div>
+  </div>
+</div>
+
+<script src="renderer.js"></script>
+</body>
+</html>
