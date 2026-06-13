@@ -9,6 +9,7 @@ app.commandLine.appendSwitch('disable-gpu-compositing');
 // ========== 全局状态 ==========
 let win = null;
 let tray = null;
+let animating = false;
 const userDataPath = app.getPath('userData');
 const configPath = path.join(userDataPath, 'config.enc');
 
@@ -251,12 +252,8 @@ function createWindow() {
   win.setVisibleOnAllWorkspaces(true);
 
   win.on('blur', () => {
-    if (win && !win.isDestroyed()) {
-      win.webContents.send('window-blur');
-      // 延迟隐藏，给渲染进程时间自动整理
-      setTimeout(() => {
-        if (win && !win.isDestroyed()) win.hide();
-      }, 500);
+    if (win && !win.isDestroyed() && !animating) {
+      hideWindow();
     }
   });
 
@@ -266,25 +263,36 @@ function createWindow() {
   });
 }
 
+const LOCK_MS = 400;
+
+let lockTimer = null;
+
 function showWindow() {
   if (!win || win.isDestroyed()) createWindow();
   const { x, y, width, height } = getWindowPosition();
   win.setBounds({ x, y, width, height });
   win.show();
   win.focus();
+  animating = true;
+  clearTimeout(lockTimer);
   win.webContents.send('window-shown');
+  lockTimer = setTimeout(() => { animating = false; }, LOCK_MS);
 }
 
 function hideWindow() {
   if (win && !win.isDestroyed()) {
+    animating = true;
+    clearTimeout(lockTimer);
     win.webContents.send('window-will-hide');
-    setTimeout(() => {
+    lockTimer = setTimeout(() => {
       if (win && !win.isDestroyed()) win.hide();
-    }, 200);
+      animating = false;
+    }, LOCK_MS);
   }
 }
 
 function toggleWindow() {
+  if (animating) return; // 动画进行中，忽略快捷键
   if (win && win.isVisible()) hideWindow();
   else showWindow();
 }

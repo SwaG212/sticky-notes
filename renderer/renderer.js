@@ -15,6 +15,7 @@ const btnOrganize = $('#btn-organize');
 const configOverlay = $('#config-overlay');
 const processingOverlay = $('#processing-overlay');
 const processingText = $('#processing-text');
+const app = $('#app');
 
 // ========== 初始化 ==========
 async function init() {
@@ -33,13 +34,16 @@ async function init() {
 
   if (window.electronAPI) {
     window.electronAPI.onOpenConfig(() => showConfig());
-    window.electronAPI.onWindowShown(() => textInput.focus());
-    window.electronAPI.onWindowBlur(() => {
-      // 失焦自动整理（有内容时）
-      if (hasContent() && !state.organizing) organize();
+    window.electronAPI.onWindowShown(() => {
+      app.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 350, easing: 'ease', fill: 'forwards' });
+      textInput.focus();
     });
     window.electronAPI.onWindowWillHide(() => {
-      if (hasContent() && !state.organizing) organize();
+      const anim = app.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 350, easing: 'ease', fill: 'forwards' });
+      anim.finished.then(() => { /* 动画完成，元素停在 opacity:0 */ });
+      if (hasContent() && !state.organizing) {
+        setTimeout(() => { organize(); }, 50);
+      }
     });
   }
 }
@@ -322,3 +326,9 @@ function showProcessing(show, text = '') {
 
 // ========== 启动 ==========
 init();
+// 兜底：renderer 晚于主进程 showWindow 时，主动淡入
+setTimeout(() => {
+  if (parseFloat(getComputedStyle(app).opacity) < 0.1) {
+    app.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 350, easing: 'ease', fill: 'forwards' });
+  }
+}, 300);

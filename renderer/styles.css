@@ -41,6 +41,7 @@ body {
   box-shadow: var(--shadow);
   border: 1px solid var(--border);
   overflow: hidden;
+  opacity: 0; /* 首帧透明，Web Animations API 负责淡入 */
 }
 
 /* ========== 任务清单区 ========== */
