@@ -48,6 +48,11 @@ body {
   min-height: 0;
 }
 
+#task-list::-webkit-scrollbar { width: 4px; -webkit-appearance: none; }
+#task-list::-webkit-scrollbar-track { background: #f5f5f8; }
+#task-list::-webkit-scrollbar-thumb { background: #b0b0bc; border-radius: 2px; }
+#task-list::-webkit-scrollbar-thumb:hover { background: #8a8a98; }
+
 /* 空状态 */
 .empty-state {
   display: flex;
