@@ -84,7 +84,18 @@ async function saveTasks() {
 }
 
 // ========== 任务渲染 ==========
-function renderTasks() {
+function snapshotPositions() {
+  const map = {};
+  taskItems.querySelectorAll('.task-item').forEach(el => {
+    map[el.dataset.id] = el.getBoundingClientRect().top;
+  });
+  return map;
+}
+
+function renderTasks(shouldAnimate = false) {
+  // FLIP 动画第一步：记录旧位置
+  const oldPos = shouldAnimate ? snapshotPositions() : null;
+
   taskItems.innerHTML = '';
   if (state.tasks.length === 0) {
     taskEmpty.classList.remove('hidden');
@@ -95,6 +106,7 @@ function renderTasks() {
   state.tasks.forEach((task, idx) => {
     const row = document.createElement('div');
     row.className = 'task-item';
+    row.dataset.id = task.id;
 
     const cb = document.createElement('div');
     cb.className = `task-checkbox${task.completed ? ' checked' : ''}`;
@@ -110,7 +122,6 @@ function renderTasks() {
     del.textContent = '✕';
     del.addEventListener('click', (e) => { e.stopPropagation(); deleteTask(idx); });
 
-    // 用 click 计时模拟双击，比 dblclick 事件更可靠
     let clickTimer = null;
     row.addEventListener('click', (e) => {
       if (e.target === del || e.target === cb) return;
@@ -126,14 +137,37 @@ function renderTasks() {
     row.append(cb, text, del);
     taskItems.appendChild(row);
   });
+
+  // FLIP 动画第二三四步：计算新位置 → 反转 → 播放
+  if (oldPos) {
+    taskItems.querySelectorAll('.task-item').forEach(el => {
+      const id = el.dataset.id;
+      const newTop = el.getBoundingClientRect().top;
+      const oldTop = oldPos[id];
+      if (oldTop !== undefined && Math.abs(newTop - oldTop) > 1) {
+        const delta = oldTop - newTop;
+        el.animate([
+          { transform: `translateY(${delta}px)` },
+          { transform: 'translateY(0)' }
+        ], { duration: 300, easing: 'ease' });
+      }
+    });
+  }
 }
 
 // ========== 任务操作 ==========
+function sortTasks() {
+  const undone = state.tasks.filter(t => !t.completed);
+  const done = state.tasks.filter(t => t.completed);
+  state.tasks = [...undone, ...done];
+}
+
 function toggleTask(idx) {
   state.tasks[idx].completed = !state.tasks[idx].completed;
   state.tasks[idx].completedAt = state.tasks[idx].completed ? new Date().toISOString() : null;
+  sortTasks();
   saveTasks();
-  renderTasks();
+  renderTasks(true);
 }
 
 function deleteTask(idx) {
