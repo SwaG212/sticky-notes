@@ -1,7 +1,8 @@
-const { app, BrowserWindow, Tray, globalShortcut, Menu, nativeImage, screen, ipcMain, safeStorage } = require('electron');
+const { app, BrowserWindow, Tray, globalShortcut, Menu, nativeImage, screen, ipcMain, safeStorage, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execSync } = require('child_process');
+const os = require('os');
 
 // ========== 透明窗口必需参数 ==========
 app.commandLine.appendSwitch('enable-transparent-visuals');
@@ -44,7 +45,7 @@ function loadConfig() {
       return JSON.parse(decrypted);
     }
   } catch (e) { /* ignore */ }
-  return { apiKey: '', baseUrl: 'https://api.deepseek.com' };
+  return { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '' };
 }
 
 function saveConfig(cfg) {
@@ -413,6 +414,22 @@ function setupIPC() {
   ipcMain.handle('ai-name-note', async (_e, filename, content) => {
     const newName = await aiNameNote(filename, content);
     return { newFilename: newName };
+  });
+
+  ipcMain.handle('generate-daily-report', (_event, tasks) => {
+    const cfg = loadConfig();
+    const name = cfg.reportName || os.userInfo().username || '未命名';
+    const done = tasks.filter(t => t.completed);
+    const undone = tasks.filter(t => !t.completed);
+    const ordered = [...done, ...undone];
+    const today = getToday();
+    const mmdd = today.slice(5).replace('-', '');
+    let report = `${name} ${mmdd}`;
+    ordered.forEach((t, i) => {
+      report += `\n${i + 1}、${t.task}${t.completed ? ' 已完成' : ''}`;
+    });
+    clipboard.writeText(report);
+    return { report };
   });
 }
 

@@ -30,4 +30,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   renameNote: (oldName, newName) => ipcRenderer.invoke('rename-note', oldName, newName),
   deleteNote: (filename) => ipcRenderer.invoke('delete-note', filename),
   aiNameNote: (filename, content) => ipcRenderer.invoke('ai-name-note', filename, content),
+
+  // 日报
+  generateDailyReport: (tasks) => ipcRenderer.invoke('generate-daily-report', tasks),
 });

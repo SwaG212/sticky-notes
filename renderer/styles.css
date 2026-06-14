@@ -306,6 +306,21 @@ body {
   color: var(--text-dim);
   opacity: 0.6;
 }
+.daily-report-group {
+  display: flex;
+  align-items: center;
+}
+.daily-report-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  opacity: 0;
+  transition: opacity 0.2s;
+  margin-left: 4px;
+  white-space: nowrap;
+}
+.daily-report-hint.show {
+  opacity: 0.8;
+}
 .input-buttons {
   display: flex;
   align-items: center;
@@ -330,6 +345,20 @@ body {
   color: var(--text-dim);
   cursor: not-allowed;
 }
+
+#btn-daily-report {
+  padding: 6px 14px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+#btn-daily-report:hover { background: var(--accent-hover); }
 
 /* ========== 整理中遮罩 ========== */
 #processing-overlay {
@@ -550,8 +579,18 @@ body {
   z-index: 15;
   overflow-y: auto;
   padding: 4px 0;
+  transform-origin: top;
+  transition: max-height 250ms ease, opacity 250ms ease, padding 250ms ease, border-width 250ms ease;
 }
-#note-list-overlay.hidden { display: none; }
+#note-list-overlay.hidden {
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-width: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
 #note-list-overlay::-webkit-scrollbar { width: 3px; }
 #note-list-overlay::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 

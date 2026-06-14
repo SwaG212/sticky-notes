@@ -28,6 +28,8 @@ const btnNotepadBack = $('#btn-notepad-back');
 const notepadTextarea = $('#notepad-textarea');
 const noteListOverlay = $('#note-list-overlay');
 const noteListItems = $('#note-list-items');
+const btnDailyReport = $('#btn-daily-report');
+const dailyReportHint = $('#daily-report-hint');
 
 // ========== 初始化 ==========
 async function init() {
@@ -47,6 +49,7 @@ async function init() {
   btnNotepadBack.addEventListener('click', switchToMain);
   btnNoteList.addEventListener('click', toggleNoteList);
   btnNoteNew.addEventListener('click', createNote);
+  btnDailyReport.addEventListener('click', generateDailyReport);
   notepadTextarea.addEventListener('input', onNotepadInput);
   notepadTextarea.addEventListener('paste', handleNotepadPaste);
 
@@ -726,6 +729,21 @@ document.addEventListener('click', (e) => {
     noteListOverlay.classList.add('hidden');
   }
 });
+
+async function generateDailyReport() {
+  if (!window.electronAPI) return;
+  if (state.tasks.length === 0) {
+    dailyReportHint.textContent = '今日暂无完成任务';
+    dailyReportHint.classList.add('show');
+    setTimeout(() => { dailyReportHint.classList.remove('show'); }, 1000);
+    return;
+  }
+  await saveTasks();
+  await window.electronAPI.generateDailyReport(state.tasks);
+  dailyReportHint.textContent = '日报内容已复制至剪切板';
+  dailyReportHint.classList.add('show');
+  setTimeout(() => { dailyReportHint.classList.remove('show'); }, 1000);
+}
 
 // ========== 启动 ==========
 init();
