@@ -541,7 +541,7 @@ body {
   position: absolute;
   top: 36px;
   left: 8px;
-  width: 260px;
+  width: 320px;
   max-height: 300px;
   background: var(--bg);
   border: 1px solid var(--border);

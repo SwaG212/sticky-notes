@@ -50,6 +50,11 @@ async function init() {
   notepadTextarea.addEventListener('input', onNotepadInput);
   notepadTextarea.addEventListener('paste', handleNotepadPaste);
 
+  document.addEventListener('keydown', (e) => {
+    if (e.altKey && e.key === '1') { e.preventDefault(); switchToMain(); }
+    if (e.altKey && e.key === '2') { e.preventDefault(); switchToNotepad(); }
+  });
+
   if (window.electronAPI) {
     window.electronAPI.onOpenConfig(() => showConfig());
     window.electronAPI.onWindowShown(() => {
@@ -541,13 +546,30 @@ async function loadNotesList() {
 
 async function openNote(filename) {
   if (filename === state.currentNoteFile) { noteListOverlay.classList.add('hidden'); return; }
-  // 切换前保存+AI命名
-  await saveCurrentNote();
-  if (!window.electronAPI) return;
+  // 切换前先抓取旧文件信息，避免竞态
+  const prevFile = state.currentNoteFile;
+  const prevContent = state.noteContent;
+  // 立即切换目标文件，不阻塞 UI
   state.currentNoteFile = filename;
+  if (!window.electronAPI) return;
   state.noteContent = await window.electronAPI.readNote(filename);
   notepadTextarea.value = state.noteContent;
   noteListOverlay.classList.add('hidden');
+  // 后台保存旧文件
+  if (prevFile) persistPreviousNote(prevFile, prevContent);
+}
+
+async function persistPreviousNote(prevFile, prevContent) {
+  if (!window.electronAPI) return;
+  await window.electronAPI.saveNote(prevFile, prevContent);
+  const isNewFile = /^untitled_\d+\.md$/.test(prevFile);
+  if (!isNewFile) return;
+  if (prevContent.trim()) {
+    triggerAiName(prevFile, prevContent);
+  } else {
+    await window.electronAPI.deleteNote(prevFile);
+    state.notes = await window.electronAPI.listNotes();
+  }
 }
 
 async function saveCurrentNote() {
@@ -640,16 +662,23 @@ function renderNoteList() {
       clickTimer = setTimeout(() => {
         clickTimer = null;
         openNote(note.filename);
-      }, 300);
+      }, 200);
     });
     row.addEventListener('dblclick', () => {
       if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
       enterNoteRename(row, note.filename);
     });
+    let rightTimer = null;
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
-      deleteNoteHandler(note.filename);
+      if (rightTimer) {
+        clearTimeout(rightTimer);
+        rightTimer = null;
+        deleteNoteHandler(note.filename);
+      } else {
+        rightTimer = setTimeout(() => { rightTimer = null; }, 400);
+      }
     });
 
     noteListItems.appendChild(row);
