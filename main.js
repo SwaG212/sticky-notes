@@ -226,20 +226,24 @@ function checkAlarms() {
   const due = tasks.filter(t => t.alarmTime === currentHHMM && !t.completed);
   if (due.length === 0) return;
 
-  const lines = due.map(t => `任务「${t.task}」的时间到了`);
-  showAlarmWindow(lines);
+  const names = due.map(t => t.task);
+  showAlarmWindow(names);
 }
 
-function showAlarmWindow(lines) {
-  if (alarmWin && !alarmWin.isDestroyed()) return; // 已有弹窗，不重复
+function showAlarmWindow(tasks) {
+  if (alarmWin && !alarmWin.isDestroyed()) return;
 
   const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
 
+  const taskLines = tasks.map(t => `<div class="task-name">「${t}」</div>`).join('');
+
+  const popupHeight = Math.min(450, 180 + tasks.length * 30);
+  const popupWidth = 300;
   alarmWin = new BrowserWindow({
-    width: 340,
-    height: 140 + lines.length * 28,
-    x: sw - 360 - 8,
-    y: sh - 520 - 150 - lines.length * 28,
+    width: popupWidth,
+    height: popupHeight,
+    x: sw - popupWidth - 16,
+    y: sh - popupHeight - 16,
     frame: false,
     resizable: false,
     alwaysOnTop: true,
@@ -255,14 +259,21 @@ function showAlarmWindow(lines) {
 
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
     *{margin:0;padding:0;box-sizing:border-box;}
-    body{font-family:-apple-system,"Microsoft YaHei",sans-serif;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.15);border:1px solid #e2e2ec;margin:4px;padding:16px 20px;}
-    h3{font-size:14px;color:#2a2a36;margin-bottom:10px;}
-    .lines{font-size:13px;color:#555;line-height:1.8;margin-bottom:14px;}
-    button{display:block;margin:0 auto;padding:6px 32px;background:#5b5be0;color:#fff;border:none;border-radius:6px;font-size:13px;cursor:pointer;font-family:inherit;}
+    body{font-family:-apple-system,"Microsoft YaHei",sans-serif;background:#fff;overflow:hidden;margin:4px;padding:20px 16px 16px;text-align:center;display:flex;flex-direction:column;height:calc(100vh - 8px);}
+    .title{font-size:14px;color:#2a2a36;font-weight:bold;margin-bottom:12px;flex-shrink:0;}
+    .task-list{flex:1;overflow-y:auto;min-height:0;padding:4px 0;}
+    .task-list::-webkit-scrollbar{width:3px;}
+    .task-list::-webkit-scrollbar-thumb{background:#d0d0dc;border-radius:2px;}
+    .task-name{font-size:15px;color:#2a2a36;font-weight:bold;line-height:1.8;}
+    .note{font-size:13px;color:#2a2a36;margin-top:10px;margin-bottom:12px;font-weight:bold;flex-shrink:0;}
+    .divider{width:100%;height:1px;background:#e2e2ec;margin:8px 0;flex-shrink:0;}
+    button{padding:6px 40px;background:#5b5be0;color:#fff;border:none;border-radius:6px;font-size:13px;cursor:pointer;font-family:inherit;flex-shrink:0;}
     button:hover{background:#4848d0;}
   </style></head><body>
-    <h3>便利贴 - 提醒</h3>
-    <div class="lines">${lines.join('<br>')}</div>
+    <div class="title">便利贴 - 提醒</div>
+    <div class="task-list">${taskLines}</div>
+    <div class="divider"></div>
+    <div class="note">时间到了！</div>
     <button onclick="window.close()">确认</button>
     <script>const{ipcRenderer}=require('electron');</script>
   </body></html>`;
