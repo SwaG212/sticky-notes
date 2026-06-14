@@ -7,6 +7,7 @@ const state = {
   notes: [],
   currentNoteFile: null,
   noteContent: '',
+  noteOriginalContent: '',
   shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' },
 };
 
@@ -650,10 +651,13 @@ async function switchToNotepad() {
     if (notes.length === 0) {
       const filename = await window.electronAPI.createNote();
       state.currentNoteFile = filename;
+      state.noteContent = '';
+      state.noteOriginalContent = '';
       state.notes = await window.electronAPI.listNotes();
     } else if (!state.currentNoteFile || !notes.find(n => n.filename === state.currentNoteFile)) {
       state.currentNoteFile = notes[0].filename;
       state.noteContent = await window.electronAPI.readNote(notes[0].filename);
+      state.noteOriginalContent = state.noteContent;
     }
   }
   pagesContainer.classList.add('on-notepad');
@@ -694,23 +698,24 @@ async function loadNotesList() {
 
 async function openNote(filename) {
   if (filename === state.currentNoteFile) { noteListOverlay.classList.add('hidden'); return; }
-  // 切换前先抓取旧文件信息，避免竞态
   const prevFile = state.currentNoteFile;
   const prevContent = state.noteContent;
-  // 立即切换目标文件，不阻塞 UI
+  const prevOriginal = state.noteOriginalContent;
   state.currentNoteFile = filename;
   if (!window.electronAPI) return;
   state.noteContent = await window.electronAPI.readNote(filename);
+  state.noteOriginalContent = state.noteContent;
   notepadTextarea.value = state.noteContent;
   noteListOverlay.classList.add('hidden');
-  // 后台保存旧文件
-  if (prevFile) persistPreviousNote(prevFile, prevContent);
+  if (prevFile) persistPreviousNote(prevFile, prevContent, prevOriginal);
 }
 
-async function persistPreviousNote(prevFile, prevContent) {
+async function persistPreviousNote(prevFile, prevContent, prevOriginal) {
   if (!window.electronAPI) return;
-  await window.electronAPI.saveNote(prevFile, prevContent);
-  state.notes = await window.electronAPI.listNotes();
+  if (prevContent !== prevOriginal) {
+    await window.electronAPI.saveNote(prevFile, prevContent);
+    state.notes = await window.electronAPI.listNotes();
+  }
   const isNewFile = /^untitled_\d+\.md$/.test(prevFile);
   if (!isNewFile) return;
   if (prevContent.trim()) {
@@ -724,8 +729,11 @@ async function persistPreviousNote(prevFile, prevContent) {
 async function saveCurrentNote() {
   if (!window.electronAPI || !state.currentNoteFile) return;
   const content = state.noteContent;
-  await window.electronAPI.saveNote(state.currentNoteFile, content);
-  state.notes = await window.electronAPI.listNotes();
+  if (content !== state.noteOriginalContent) {
+    await window.electronAPI.saveNote(state.currentNoteFile, content);
+    state.noteOriginalContent = content;
+    state.notes = await window.electronAPI.listNotes();
+  }
 
   const isNewFile = /^untitled_\d+\.md$/.test(state.currentNoteFile);
   if (!isNewFile) return;
@@ -736,6 +744,7 @@ async function saveCurrentNote() {
     await window.electronAPI.deleteNote(state.currentNoteFile);
     state.currentNoteFile = null;
     state.noteContent = '';
+    state.noteOriginalContent = '';
     state.notes = await window.electronAPI.listNotes();
   }
 }
@@ -746,6 +755,7 @@ async function createNote() {
   const filename = await window.electronAPI.createNote();
   state.currentNoteFile = filename;
   state.noteContent = '';
+  state.noteOriginalContent = '';
   notepadTextarea.value = '';
   state.notes = await window.electronAPI.listNotes();
   // 如果文件列表打开着，刷新显示
