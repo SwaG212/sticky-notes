@@ -527,6 +527,7 @@ function createWindow() {
   });
 
   win.on('close', (e) => {
+    if (app.isQuitting) return; // 真正退出，允许窗口关闭
     e.preventDefault();
     win.hide();
   });
