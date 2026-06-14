@@ -9,6 +9,7 @@ const state = {
   noteContent: '',
   noteOriginalContent: '',
   pinnedNotes: [],
+  noteSearchQuery: '',
   shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' },
 };
 
@@ -62,6 +63,15 @@ async function init() {
   // 快捷键捕获相关
   document.querySelectorAll('.shortcut-input').forEach(input => {
     input.addEventListener('click', () => startShortcutCapture(input));
+  });
+
+  // 笔记搜索
+  $('#note-list-search').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      state.noteSearchQuery = e.target.value.trim().toLowerCase();
+      renderNoteList();
+    }
   });
 
   document.addEventListener('keydown', (e) => {
@@ -723,7 +733,7 @@ async function loadNotesList() {
 }
 
 async function openNote(filename) {
-  if (filename === state.currentNoteFile) { noteListOverlay.classList.add('hidden'); return; }
+  if (filename === state.currentNoteFile) { closeNoteList(); return; }
   const prevFile = state.currentNoteFile;
   const prevContent = state.noteContent;
   const prevOriginal = state.noteOriginalContent;
@@ -732,7 +742,7 @@ async function openNote(filename) {
   state.noteContent = await window.electronAPI.readNote(filename);
   state.noteOriginalContent = state.noteContent;
   notepadTextarea.value = state.noteContent;
-  noteListOverlay.classList.add('hidden');
+  closeNoteList();
   if (prevFile) persistPreviousNote(prevFile, prevContent, prevOriginal);
 }
 
@@ -816,18 +826,30 @@ async function triggerAiName(filename, content) {
 // ========== 文件列表 ==========
 function toggleNoteList() {
   if (noteListOverlay.classList.contains('hidden')) {
+    state.noteSearchQuery = '';
     loadNotesList().then(() => renderNoteList());
     noteListOverlay.classList.remove('hidden');
+    const searchInput = $('#note-list-search');
+    searchInput.value = '';
+    setTimeout(() => searchInput.focus(), 100);
   } else {
-    noteListOverlay.classList.add('hidden');
+    closeNoteList();
   }
 }
 
 function renderNoteList() {
   noteListItems.innerHTML = '';
   const pinnedSet = new Set(state.pinnedNotes.filter(f => state.notes.some(n => n.filename === f)));
+
+  // 模糊搜索过滤
+  const q = state.noteSearchQuery;
+  let filtered = state.notes;
+  if (q) {
+    filtered = state.notes.filter(n => n.filename.replace(/\.md$/, '').toLowerCase().includes(q));
+  }
+
   // 置顶在前（按 mtime 降序），未置顶在后（按 mtime 降序）
-  const sorted = [...state.notes].sort((a, b) => {
+  const sorted = [...filtered].sort((a, b) => {
     const aPinned = pinnedSet.has(a.filename);
     const bPinned = pinnedSet.has(b.filename);
     if (aPinned && !bPinned) return -1;
@@ -923,8 +945,7 @@ function enterNoteRename(row, filename) {
       }
     }
     renderNoteList();
-    // 关闭编辑后关闭列表
-    noteListOverlay.classList.add('hidden');
+    closeNoteList();
   }
   input.addEventListener('blur', finish);
   input.addEventListener('keydown', (e) => {
@@ -933,12 +954,18 @@ function enterNoteRename(row, filename) {
   });
 }
 
+function closeNoteList() {
+  state.noteSearchQuery = '';
+  $('#note-list-search').value = '';
+  noteListOverlay.classList.add('hidden');
+}
+
 // 点击列表外部关闭
 document.addEventListener('click', (e) => {
   if (!noteListOverlay.classList.contains('hidden') &&
       !noteListOverlay.contains(e.target) &&
       e.target !== btnNoteList) {
-    noteListOverlay.classList.add('hidden');
+    closeNoteList();
   }
 });
 
