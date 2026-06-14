@@ -710,6 +710,7 @@ async function openNote(filename) {
 async function persistPreviousNote(prevFile, prevContent) {
   if (!window.electronAPI) return;
   await window.electronAPI.saveNote(prevFile, prevContent);
+  state.notes = await window.electronAPI.listNotes();
   const isNewFile = /^untitled_\d+\.md$/.test(prevFile);
   if (!isNewFile) return;
   if (prevContent.trim()) {
@@ -724,8 +725,8 @@ async function saveCurrentNote() {
   if (!window.electronAPI || !state.currentNoteFile) return;
   const content = state.noteContent;
   await window.electronAPI.saveNote(state.currentNoteFile, content);
+  state.notes = await window.electronAPI.listNotes();
 
-  // 仅新建文件（untitled_N.md）触发 AI 命名或删除
   const isNewFile = /^untitled_\d+\.md$/.test(state.currentNoteFile);
   if (!isNewFile) return;
 
