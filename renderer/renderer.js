@@ -510,6 +510,10 @@ async function confirmSettings() {
   const reportName = $('#settings-reportname').value.trim();
   const notesDir = $('#settings-notesdir').value.trim();
 
+  // 检测文件位置是否变更
+  const oldCfg = window.electronAPI ? await window.electronAPI.getConfig() : {};
+  const dirChanged = notesDir !== (oldCfg.notesDir || '');
+
   collectShortcutsFromInputs();
   const cfg = { apiKey, baseUrl, reportName, notesDir, shortcuts: { ...state.shortcuts } };
 
@@ -518,6 +522,24 @@ async function confirmSettings() {
   } else {
     localStorage.setItem('sticky_config', JSON.stringify(cfg));
   }
+
+  // 文件位置变更后，刷新笔记列表
+  if (dirChanged && window.electronAPI) {
+    state.notes = await window.electronAPI.listNotes();
+    state.pinnedNotes = await window.electronAPI.getPinnedNotes();
+    state.currentNoteFile = null;
+    state.noteContent = '';
+    state.noteOriginalContent = '';
+    if (state.currentPage === 'notepad') {
+      if (state.notes.length > 0) {
+        state.currentNoteFile = state.notes[0].filename;
+        state.noteContent = await window.electronAPI.readNote(state.notes[0].filename);
+        state.noteOriginalContent = state.noteContent;
+        notepadTextarea.value = state.noteContent;
+      }
+    }
+  }
+
   settingsOverlay.classList.add('hidden');
 }
 
