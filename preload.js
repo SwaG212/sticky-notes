@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 笔记操作
   listNotes: () => ipcRenderer.invoke('list-notes'),
+  getPinnedNotes: () => ipcRenderer.invoke('get-pinned-notes'),
+  togglePinNote: (filename) => ipcRenderer.invoke('toggle-pin-note', filename),
   readNote: (filename) => ipcRenderer.invoke('read-note', filename),
   saveNote: (filename, content) => ipcRenderer.invoke('save-note', filename, content),
   createNote: () => ipcRenderer.invoke('create-note'),

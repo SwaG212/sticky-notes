@@ -224,6 +224,27 @@ function saveTasksToFile(tasks) {
 
 // ========== 笔记文件存储 ==========
 const notesDir = path.join(userDataPath, 'notes');
+const pinsPath = path.join(notesDir, 'pins.json');
+
+function getPinnedNotes() {
+  return readJSON(pinsPath) || [];
+}
+
+function savePinnedNotes(pinned) {
+  writeJSON(pinsPath, pinned);
+}
+
+function togglePinNote(filename) {
+  const pinned = getPinnedNotes();
+  const idx = pinned.indexOf(filename);
+  if (idx === -1) {
+    pinned.unshift(filename);
+  } else {
+    pinned.splice(idx, 1);
+  }
+  savePinnedNotes(pinned);
+  return pinned;
+}
 
 function listNotes() {
   ensureDir(notesDir);
@@ -261,19 +282,25 @@ function renameNoteFile(oldName, newName) {
   if (!fs.existsSync(oldPath)) throw new Error('FILE_NOT_FOUND');
   if (fs.existsSync(newPath)) throw new Error('FILE_EXISTS');
   fs.renameSync(oldPath, newPath);
+  // 更新置顶记录
+  const pinned = getPinnedNotes();
+  const idx = pinned.indexOf(oldName);
+  if (idx !== -1) { pinned[idx] = newName; savePinnedNotes(pinned); }
 }
 
 function deleteNoteFile(filename) {
   const filePath = path.join(notesDir, filename);
   if (!fs.existsSync(filePath)) return;
-  // 移入回收站，不在磁盘上彻底删除
   const psCmd = `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('${filePath.replace(/'/g, "''")}', 'OnlyErrorDialogs', 'SendToRecycleBin')`;
   try {
     execSync(`powershell -NoProfile -Command "${psCmd}"`, { timeout: 5000 });
   } catch (e) {
-    // 回收站失败时退回彻底删除
     fs.unlinkSync(filePath);
   }
+  // 清理置顶记录
+  const pinned = getPinnedNotes();
+  const idx = pinned.indexOf(filename);
+  if (idx !== -1) { pinned.splice(idx, 1); savePinnedNotes(pinned); }
 }
 
 // ========== AI 笔记命名 ==========
@@ -408,6 +435,8 @@ function setupIPC() {
 
   ipcMain.handle('set-page', (_e, page) => { currentPage = page; });
   ipcMain.handle('list-notes', () => listNotes());
+  ipcMain.handle('get-pinned-notes', () => getPinnedNotes());
+  ipcMain.handle('toggle-pin-note', (_e, filename) => togglePinNote(filename));
   ipcMain.handle('read-note', (_e, filename) => readNote(filename));
   ipcMain.handle('save-note', (_e, filename, content) => { saveNote(filename, content); return { success: true }; });
   ipcMain.handle('create-note', () => createNote());

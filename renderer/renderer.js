@@ -8,6 +8,7 @@ const state = {
   currentNoteFile: null,
   noteContent: '',
   noteOriginalContent: '',
+  pinnedNotes: [],
   shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' },
 };
 
@@ -694,6 +695,7 @@ function handleNotepadPaste(e) {
 async function loadNotesList() {
   if (!window.electronAPI) return;
   state.notes = await window.electronAPI.listNotes();
+  state.pinnedNotes = await window.electronAPI.getPinnedNotes();
 }
 
 async function openNote(filename) {
@@ -799,7 +801,17 @@ function toggleNoteList() {
 
 function renderNoteList() {
   noteListItems.innerHTML = '';
-  state.notes.forEach(note => {
+  const pinnedSet = new Set(state.pinnedNotes.filter(f => state.notes.some(n => n.filename === f)));
+  // 置顶在前（按 mtime 降序），未置顶在后（按 mtime 降序）
+  const sorted = [...state.notes].sort((a, b) => {
+    const aPinned = pinnedSet.has(a.filename);
+    const bPinned = pinnedSet.has(b.filename);
+    if (aPinned && !bPinned) return -1;
+    if (!aPinned && bPinned) return 1;
+    return b.mtime.localeCompare(a.mtime);
+  });
+
+  sorted.forEach(note => {
     const row = document.createElement('div');
     row.className = 'note-list-item';
     if (note.filename === state.currentNoteFile) row.classList.add('active');
@@ -809,11 +821,24 @@ function renderNoteList() {
     nameSpan.style.overflow = 'hidden';
     nameSpan.style.textOverflow = 'ellipsis';
 
+    const rightGroup = document.createElement('span');
+    rightGroup.className = 'note-list-right';
+
     const timeSpan = document.createElement('span');
     timeSpan.className = 'note-list-mtime';
     timeSpan.textContent = note.mtime.slice(0, 10);
 
-    row.append(nameSpan, timeSpan);
+    const pinBtn = document.createElement('button');
+    pinBtn.className = 'note-list-pin';
+    pinBtn.textContent = pinnedSet.has(note.filename) ? '📌' : '📍';
+    pinBtn.title = pinnedSet.has(note.filename) ? '取消置顶' : '置顶';
+    pinBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      togglePin(note.filename);
+    });
+
+    rightGroup.append(timeSpan, pinBtn);
+    row.append(nameSpan, rightGroup);
 
     let clickTimer = null;
     row.addEventListener('click', () => {
@@ -842,6 +867,12 @@ function renderNoteList() {
 
     noteListItems.appendChild(row);
   });
+}
+
+async function togglePin(filename) {
+  if (!window.electronAPI) return;
+  state.pinnedNotes = await window.electronAPI.togglePinNote(filename);
+  renderNoteList();
 }
 
 function enterNoteRename(row, filename) {
