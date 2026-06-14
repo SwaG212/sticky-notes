@@ -513,6 +513,23 @@ body {
 .settings-section input:focus { border-color: var(--accent); }
 .settings-section input::placeholder { color: var(--text-dim); opacity: 0.4; }
 
+/* 设置页复选框 */
+.settings-checkbox-row { margin-top: 12px; }
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+}
+.checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 /* 快捷键行 */
 .shortcut-row {
   display: flex;

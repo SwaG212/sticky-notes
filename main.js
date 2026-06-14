@@ -440,6 +440,8 @@ function setupIPC() {
 
   ipcMain.handle('get-config', () => loadConfig());
   ipcMain.handle('save-config', (_event, cfg) => { saveConfig(cfg); return { success: true }; });
+  ipcMain.handle('get-login-settings', () => app.getLoginItemSettings().openAtLogin);
+  ipcMain.handle('set-login-settings', (_e, enabled) => app.setLoginItemSettings({ openAtLogin: enabled }));
   ipcMain.handle('load-tasks', () => loadTasksFromFile());
   ipcMain.handle('save-tasks', (_event, tasks) => { saveTasksToFile(tasks); return { success: true }; });
 

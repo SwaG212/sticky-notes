@@ -491,6 +491,9 @@ async function openSettings() {
     $('#settings-baseurl').value = cfg.baseUrl || 'https://api.deepseek.com';
     $('#settings-reportname').value = cfg.reportName || '';
     $('#settings-notesdir').value = cfg.notesDir || '';
+    if (window.electronAPI) {
+      $('#settings-autostart').checked = await window.electronAPI.getLoginSettings();
+    }
     if (cfg.shortcuts) {
       state.shortcuts = { ...state.shortcuts, ...cfg.shortcuts };
     }
@@ -529,6 +532,7 @@ async function confirmSettings() {
 
   if (window.electronAPI) {
     await window.electronAPI.saveConfig(cfg);
+    await window.electronAPI.setLoginSettings($('#settings-autostart').checked);
   } else {
     localStorage.setItem('sticky_config', JSON.stringify(cfg));
   }
