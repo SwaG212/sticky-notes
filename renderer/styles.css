@@ -306,6 +306,11 @@ body {
   color: var(--text-dim);
   opacity: 0.6;
 }
+.input-buttons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 
 #btn-organize {
   padding: 6px 18px;
@@ -445,9 +450,9 @@ body {
   width: 30px;
   height: 30px;
   padding: 0;
-  background: var(--accent);
-  color: white;
-  border: none;
+  background: var(--bg-secondary);
+  color: var(--text);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 14px;
   font-family: inherit;
@@ -455,11 +460,10 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-left: 6px;
   transition: background 0.15s;
   flex-shrink: 0;
 }
-#btn-switch-notepad:hover { background: var(--accent-hover); }
+#btn-switch-notepad:hover { background: var(--border); }
 
 /* ========== 记事本页面 ========== */
 .page-notepad {
@@ -504,6 +508,10 @@ body {
   line-height: 1.6;
   min-height: 0;
 }
+#notepad-textarea::-webkit-scrollbar { width: 4px; -webkit-appearance: none; }
+#notepad-textarea::-webkit-scrollbar-track { background: var(--bg-input); }
+#notepad-textarea::-webkit-scrollbar-thumb { background: #b0b0bc; border-radius: 2px; }
+#notepad-textarea::-webkit-scrollbar-thumb:hover { background: #8a8a98; }
 #notepad-textarea::placeholder { color: var(--text-dim); opacity: 0.5; }
 
 .notepad-footer {
@@ -563,9 +571,20 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 .note-list-item:hover { background: var(--bg-secondary); }
 .note-list-item.active { background: var(--bg-input); font-weight: bold; }
+.note-list-mtime {
+  font-size: 11px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  margin-left: 8px;
+  display: none;
+}
+.note-list-item:hover .note-list-mtime { display: inline; }
 .note-list-item-edit {
   margin: 2px 8px;
   padding: 3px 6px;

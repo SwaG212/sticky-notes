@@ -582,6 +582,20 @@ async function createNote() {
   notepadTextarea.focus();
 }
 
+async function deleteNoteHandler(filename) {
+  if (!window.electronAPI || state.notes.length <= 1) return;
+  await window.electronAPI.deleteNote(filename);
+  state.notes = await window.electronAPI.listNotes();
+  if (state.currentNoteFile === filename) {
+    state.currentNoteFile = state.notes[0]?.filename || null;
+    state.noteContent = state.currentNoteFile
+      ? await window.electronAPI.readNote(state.currentNoteFile)
+      : '';
+    notepadTextarea.value = state.noteContent;
+  }
+  renderNoteList();
+}
+
 async function triggerAiName(filename, content) {
   if (!window.electronAPI) return;
   const result = await window.electronAPI.aiNameNote(filename, content);
@@ -608,21 +622,34 @@ function renderNoteList() {
     const row = document.createElement('div');
     row.className = 'note-list-item';
     if (note.filename === state.currentNoteFile) row.classList.add('active');
-    // 显示名去掉 .md 后缀
-    row.textContent = note.filename.replace(/\.md$/, '');
+
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = note.filename.replace(/\.md$/, '');
+    nameSpan.style.overflow = 'hidden';
+    nameSpan.style.textOverflow = 'ellipsis';
+
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'note-list-mtime';
+    timeSpan.textContent = note.mtime.slice(0, 10);
+
+    row.append(nameSpan, timeSpan);
 
     let clickTimer = null;
     row.addEventListener('click', () => {
-      if (clickTimer) {
-        clearTimeout(clickTimer);
+      if (clickTimer) { clearTimeout(clickTimer); }
+      clickTimer = setTimeout(() => {
         clickTimer = null;
-        enterNoteRename(row, note.filename);
-      } else {
-        clickTimer = setTimeout(() => {
-          clickTimer = null;
-          openNote(note.filename);
-        }, 300);
-      }
+        openNote(note.filename);
+      }, 300);
+    });
+    row.addEventListener('dblclick', () => {
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+      enterNoteRename(row, note.filename);
+    });
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+      deleteNoteHandler(note.filename);
     });
 
     noteListItems.appendChild(row);

@@ -55,10 +55,12 @@ const displayName = (filename) => filename.replace(/\.md$/, '');
 assert(displayName('untitled_1.md') === 'untitled_1', 'strips .md suffix');
 assert(displayName('my-note.md') === 'my-note', 'strips .md for custom name');
 
-// --- AI naming format ---
-console.log('\n--- AI 命名格式 ---');
-const aiNameFormat = (summary, date) => `${summary}_${date}.md`;
-assert(aiNameFormat('超市购物', '2026-06-14') === '超市购物_2026-06-14.md', 'AI naming: summary_date.md');
+// --- AI naming format (no date) ---
+console.log('\n--- AI 命名格式（仅摘要） ---');
+const aiNameFormat = (summary) => `${summary}.md`;
+assert(aiNameFormat('超市购物') === '超市购物.md', 'AI naming: summary.md');
+const dedupName = (summary, n) => `${summary}_${n}.md`;
+assert(dedupName('超市购物', 2) === '超市购物_2.md', 'duplicate: summary_2.md');
 const cleaned = '带空格 的 摘要'.replace(/[，,。\.！!？?\n\r]/g, '').trim().slice(0, 15);
 assert(cleaned === '带空格 的 摘要', 'special chars cleaned from summary');
 

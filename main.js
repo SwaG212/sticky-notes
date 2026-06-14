@@ -1,6 +1,7 @@
 const { app, BrowserWindow, Tray, globalShortcut, Menu, nativeImage, screen, ipcMain, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { execSync } = require('child_process');
 
 // ========== 透明窗口必需参数 ==========
 app.commandLine.appendSwitch('enable-transparent-visuals');
@@ -261,7 +262,15 @@ function renameNoteFile(oldName, newName) {
 
 function deleteNoteFile(filename) {
   const filePath = path.join(notesDir, filename);
-  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  if (!fs.existsSync(filePath)) return;
+  // 移入回收站，不在磁盘上彻底删除
+  const psCmd = `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('${filePath.replace(/'/g, "''")}', 'OnlyErrorDialogs', 'SendToRecycleBin')`;
+  try {
+    execSync(`powershell -NoProfile -Command "${psCmd}"`, { timeout: 5000 });
+  } catch (e) {
+    // 回收站失败时退回彻底删除
+    fs.unlinkSync(filePath);
+  }
 }
 
 // ========== AI 笔记命名 ==========
@@ -278,15 +287,13 @@ async function aiNameNote(filename, content) {
     let summary = response.choices?.[0]?.message?.content || '';
     summary = summary.replace(/[，,。\.！!？?\n\r]/g, '').trim().slice(0, 15);
     if (!summary) return null;
-    const today = getToday();
-    const newName = `${summary}_${today}.md`;
+    const newName = `${summary}.md`;
     const oldPath = path.join(notesDir, filename);
     const newPath = path.join(notesDir, newName);
     if (fs.existsSync(newPath)) {
-      const base = `${summary}_${today}`;
-      let n = 1;
-      while (fs.existsSync(path.join(notesDir, `${base}_${n}.md`))) n++;
-      const altName = `${base}_${n}.md`;
+      let n = 2;
+      while (fs.existsSync(path.join(notesDir, `${summary}_${n}.md`))) n++;
+      const altName = `${summary}_${n}.md`;
       fs.renameSync(oldPath, path.join(notesDir, altName));
       return altName;
     }
