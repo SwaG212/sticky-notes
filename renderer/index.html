@@ -44,6 +44,7 @@
 
     <!-- 记事本页面 -->
     <div class="page page-notepad">
+      <button id="btn-settings" title="设置">⚙</button>
       <div class="notepad-toolbar">
         <button id="btn-note-list">☰</button>
         <button id="btn-note-new">+</button>
@@ -58,16 +59,44 @@
     </div>
   </div>
 
-  <!-- API Key 配置遮罩 -->
-  <div id="config-overlay" class="hidden">
-    <div id="config-dialog">
-      <div class="config-title">便利贴 - 初始配置</div>
-      <div class="config-subtitle">需要配置 AI 服务才能使用</div>
-      <label>API Key</label>
-      <input type="password" id="config-apikey" placeholder="sk-xxxxxxxxxxxxxxxxxxxx">
-      <label>API 地址（可选，默认 DeepSeek）</label>
-      <input type="text" id="config-baseurl" placeholder="https://api.deepseek.com">
-      <button id="btn-config-save">保存并启动</button>
+  <!-- 设置页面遮罩 -->
+  <div id="settings-overlay" class="hidden">
+    <div id="settings-dialog">
+      <div class="settings-header">
+        <button id="btn-settings-back">← 返回</button>
+        <span class="settings-title">设置</span>
+        <button id="btn-settings-confirm">确认</button>
+      </div>
+      <div class="settings-body">
+        <div class="settings-section">
+          <div class="settings-section-title">API 配置</div>
+          <label>API Key</label>
+          <input type="password" id="settings-apikey" placeholder="sk-xxxxxxxxxxxxxxxxxxxx">
+          <label>API 地址（可选，默认 DeepSeek）</label>
+          <input type="text" id="settings-baseurl" placeholder="https://api.deepseek.com">
+          <label>日报姓名</label>
+          <input type="text" id="settings-reportname" placeholder="输入姓名，用于日报">
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">快捷键设置</div>
+          <div class="shortcut-row">
+            <span class="shortcut-label">唤出/隐藏</span>
+            <input type="text" class="shortcut-input" id="shortcut-toggle" readonly placeholder="点击设置快捷键">
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-label">整理</span>
+            <input type="text" class="shortcut-input" id="shortcut-organize" readonly placeholder="点击设置快捷键">
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-label">切换任务页面</span>
+            <input type="text" class="shortcut-input" id="shortcut-switchTask" readonly placeholder="点击设置快捷键">
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-label">切换笔记页面</span>
+            <input type="text" class="shortcut-input" id="shortcut-switchNotepad" readonly placeholder="点击设置快捷键">
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 

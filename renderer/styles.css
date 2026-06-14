@@ -390,44 +390,116 @@ body {
   color: var(--text-dim);
 }
 
-/* ========== API Key 配置遮罩 ========== */
-#config-overlay {
+/* ========== 齿轮设置按钮 ========== */
+#btn-settings {
   position: absolute;
-  inset: 0;
-  background: rgba(255,255,255,0.97);
+  top: 6px;
+  right: 6px;
+  z-index: 5;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
+  opacity: 0.5;
+  transition: opacity 0.15s, background 0.15s;
+  color: var(--text);
+}
+#btn-settings:hover {
+  opacity: 1;
+  background: var(--bg-secondary);
+}
+
+/* ========== 设置页面遮罩 ========== */
+#settings-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(255,255,255,0.98);
+  display: flex;
+  flex-direction: column;
   z-index: 20;
   border-radius: 12px;
 }
-#config-overlay.hidden { display: none; }
+#settings-overlay.hidden { display: none; }
 
-#config-dialog {
-  width: 280px;
-  padding: 24px 20px;
+#settings-dialog {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
-.config-title {
-  font-size: 16px;
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+.settings-title {
+  font-size: 15px;
   font-weight: bold;
-  margin-bottom: 4px;
-  text-align: center;
+  color: var(--text);
 }
-.config-subtitle {
-  font-size: 12px;
-  color: var(--text-dim);
-  text-align: center;
+#btn-settings-back, #btn-settings-confirm {
+  padding: 5px 14px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+#btn-settings-back {
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+#btn-settings-back:hover { background: var(--border); }
+#btn-settings-confirm {
+  background: var(--accent);
+  color: white;
+}
+#btn-settings-confirm:hover { background: var(--accent-hover); }
+
+.settings-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 14px;
+}
+.settings-body::-webkit-scrollbar { width: 4px; }
+.settings-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.settings-section {
   margin-bottom: 20px;
 }
-#config-dialog label {
+.settings-section:last-child { margin-bottom: 0; }
+.settings-section-title {
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-section label {
   display: block;
   font-size: 12px;
   color: var(--text-dim);
   margin-bottom: 4px;
-  margin-top: 12px;
+  margin-top: 10px;
 }
-#config-dialog label:first-of-type { margin-top: 0; }
-#config-dialog input {
+.settings-section label:first-of-type { margin-top: 0; }
+.settings-section input[type="text"],
+.settings-section input[type="password"] {
   width: 100%;
   padding: 8px 10px;
   background: var(--bg-input);
@@ -438,22 +510,46 @@ body {
   font-family: inherit;
   outline: none;
 }
-#config-dialog input:focus { border-color: var(--accent); }
-#config-dialog input::placeholder { color: var(--text-dim); opacity: 0.4; }
+.settings-section input:focus { border-color: var(--accent); }
+.settings-section input::placeholder { color: var(--text-dim); opacity: 0.4; }
 
-#btn-config-save {
-  width: 100%;
-  margin-top: 20px;
-  padding: 10px;
-  background: var(--accent);
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  font-family: inherit;
-  cursor: pointer;
+/* 快捷键行 */
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--bg-secondary);
 }
-#btn-config-save:hover { background: var(--accent-hover); }
+.shortcut-row:last-child { border-bottom: none; }
+.shortcut-label {
+  font-size: 13px;
+  color: var(--text);
+  flex-shrink: 0;
+}
+.shortcut-input {
+  width: 130px !important;
+  padding: 5px 8px !important;
+  margin: 0 !important;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px !important;
+  font-family: inherit;
+  text-align: center;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+.shortcut-input:hover { border-color: var(--accent); }
+.shortcut-input:focus { border-color: var(--accent); }
+.shortcut-input.capturing {
+  border-color: var(--accent);
+  background: #f0f0ff;
+  color: var(--accent);
+}
+.shortcut-input::placeholder { color: var(--text-dim); opacity: 0.5; }
 
 /* ========== 页面容器与滑动动画 ========== */
 .pages-container {

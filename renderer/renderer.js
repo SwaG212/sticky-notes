@@ -7,6 +7,7 @@ const state = {
   notes: [],
   currentNoteFile: null,
   noteContent: '',
+  shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' },
 };
 
 // ========== DOM 引用 ==========
@@ -16,7 +17,7 @@ const taskEmpty = $('#task-empty');
 const textInput = $('#text-input');
 const imagePreviews = $('#image-previews');
 const btnOrganize = $('#btn-organize');
-const configOverlay = $('#config-overlay');
+const settingsOverlay = $('#settings-overlay');
 const processingOverlay = $('#processing-overlay');
 const processingText = $('#processing-text');
 const app = $('#app');
@@ -34,17 +35,20 @@ const dailyReportHint = $('#daily-report-hint');
 // ========== 初始化 ==========
 async function init() {
   await loadTasks();
+  await loadShortcutsFromConfig();
   renderTasks();
   updateOrganizeButton();
 
   textInput.addEventListener('input', updateOrganizeButton);
   textInput.addEventListener('paste', handlePaste);
   textInput.addEventListener('keydown', (e) => {
-    if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); organize(); }
+    if (matchShortcut(e, state.shortcuts.organize)) { e.preventDefault(); e.stopPropagation(); organize(); }
   });
 
   btnOrganize.addEventListener('click', organize);
-  $('#btn-config-save').addEventListener('click', saveConfig);
+  $('#btn-settings-confirm').addEventListener('click', confirmSettings);
+  $('#btn-settings-back').addEventListener('click', cancelSettings);
+  $('#btn-settings').addEventListener('click', openSettings);
   btnSwitchNotepad.addEventListener('click', switchToNotepad);
   btnNotepadBack.addEventListener('click', switchToMain);
   btnNoteList.addEventListener('click', toggleNoteList);
@@ -53,13 +57,23 @@ async function init() {
   notepadTextarea.addEventListener('input', onNotepadInput);
   notepadTextarea.addEventListener('paste', handleNotepadPaste);
 
+  // 快捷键捕获相关
+  document.querySelectorAll('.shortcut-input').forEach(input => {
+    input.addEventListener('click', () => startShortcutCapture(input));
+  });
+
   document.addEventListener('keydown', (e) => {
-    if (e.altKey && e.key === '1') { e.preventDefault(); switchToMain(); }
-    if (e.altKey && e.key === '2') { e.preventDefault(); switchToNotepad(); }
+    const sc = state.shortcuts;
+    if (matchShortcut(e, sc.switchTask)) { e.preventDefault(); switchToMain(); }
+    if (matchShortcut(e, sc.switchNotepad)) { e.preventDefault(); switchToNotepad(); }
+    if (matchShortcut(e, sc.organize) && state.currentPage === 'main') {
+      e.preventDefault();
+      if (!state.organizing) organize();
+    }
   });
 
   if (window.electronAPI) {
-    window.electronAPI.onOpenConfig(() => showConfig());
+    window.electronAPI.onOpenConfig(() => openSettings());
     window.electronAPI.onWindowShown(() => {
       app.style.opacity = '0';
       app.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 350, easing: 'ease', fill: 'forwards' });
@@ -448,29 +462,160 @@ function showError(msg) {
   alert(msg);
 }
 
-// ========== 配置管理 ==========
-async function showConfig() {
+// ========== 配置与设置管理 ==========
+async function loadShortcutsFromConfig() {
   if (window.electronAPI) {
     const cfg = await window.electronAPI.getConfig();
-    $('#config-apikey').value = cfg.apiKey || '';
-    $('#config-baseurl').value = cfg.baseUrl || 'https://api.deepseek.com';
+    if (cfg.shortcuts) {
+      state.shortcuts = { ...state.shortcuts, ...cfg.shortcuts };
+    }
   }
-  configOverlay.classList.remove('hidden');
-  $('#config-apikey').focus();
 }
 
-async function saveConfig() {
-  const apiKey = $('#config-apikey').value.trim();
-  const baseUrl = $('#config-baseurl').value.trim() || 'https://api.deepseek.com';
+async function openSettings() {
+  if (window.electronAPI) {
+    const cfg = await window.electronAPI.getConfig();
+    $('#settings-apikey').value = cfg.apiKey || '';
+    $('#settings-baseurl').value = cfg.baseUrl || 'https://api.deepseek.com';
+    $('#settings-reportname').value = cfg.reportName || '';
+    if (cfg.shortcuts) {
+      state.shortcuts = { ...state.shortcuts, ...cfg.shortcuts };
+    }
+  }
+  renderShortcutInputs();
+  settingsOverlay.classList.remove('hidden');
+  $('#settings-apikey').focus();
+}
 
-  if (!apiKey) { alert('请填写 API Key'); return; }
+function renderShortcutInputs() {
+  $('#shortcut-toggle').value = formatShortcutDisplay(state.shortcuts.toggle);
+  $('#shortcut-organize').value = formatShortcutDisplay(state.shortcuts.organize);
+  $('#shortcut-switchTask').value = formatShortcutDisplay(state.shortcuts.switchTask);
+  $('#shortcut-switchNotepad').value = formatShortcutDisplay(state.shortcuts.switchNotepad);
+  // 清除上次捕获的临时数据
+  document.querySelectorAll('.shortcut-input').forEach(el => delete el.dataset.accel);
+}
+
+function formatShortcutDisplay(accel) {
+  // "Alt+`" → "Alt + `"
+  return accel.replace(/\+/g, ' + ');
+}
+
+async function confirmSettings() {
+  const apiKey = $('#settings-apikey').value.trim();
+  const baseUrl = $('#settings-baseurl').value.trim() || 'https://api.deepseek.com';
+  const reportName = $('#settings-reportname').value.trim();
+
+  collectShortcutsFromInputs();
+  const cfg = { apiKey, baseUrl, reportName, shortcuts: { ...state.shortcuts } };
 
   if (window.electronAPI) {
-    await window.electronAPI.saveConfig({ apiKey, baseUrl });
+    await window.electronAPI.saveConfig(cfg);
   } else {
-    localStorage.setItem('sticky_config', JSON.stringify({ apiKey, baseUrl }));
+    localStorage.setItem('sticky_config', JSON.stringify(cfg));
   }
-  configOverlay.classList.add('hidden');
+  settingsOverlay.classList.add('hidden');
+}
+
+function cancelSettings() {
+  // 放弃修改：恢复 shortcuts 为已保存的值
+  if (window.electronAPI) {
+    window.electronAPI.getConfig().then(cfg => {
+      if (cfg.shortcuts) {
+        state.shortcuts = { ...state.shortcuts, ...cfg.shortcuts };
+      }
+    });
+  }
+  settingsOverlay.classList.add('hidden');
+}
+
+// ========== 快捷键捕获 ==========
+function startShortcutCapture(input) {
+  const oldValue = input.value;
+  input.value = '按下快捷键...';
+  input.classList.add('capturing');
+
+  function onKeyDown(e) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (e.key === 'Escape') {
+      input.value = oldValue;
+      finish();
+      return;
+    }
+
+    // 忽略纯修饰键
+    if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return;
+
+    const parts = [];
+    if (e.ctrlKey || e.metaKey) parts.push('Ctrl');
+    if (e.altKey) parts.push('Alt');
+    if (e.shiftKey) parts.push('Shift');
+
+    let keyName = e.key;
+    if (keyName === ' ') keyName = 'Space';
+    else if (keyName.length === 1) keyName = keyName.toUpperCase();
+
+    parts.push(keyName);
+    input.value = parts.join(' + ');
+    input.dataset.accel = parts.join('+');
+    finish();
+  }
+
+  function finish() {
+    input.classList.remove('capturing');
+    input.removeEventListener('keydown', onKeyDown);
+    input.removeEventListener('blur', onBlur);
+  }
+
+  function onBlur() {
+    input.value = oldValue;
+    finish();
+  }
+
+  input.addEventListener('keydown', onKeyDown);
+  input.addEventListener('blur', onBlur);
+  input.focus();
+}
+
+// 读取快捷键输入值，同步到 state.shortcuts
+function collectShortcutsFromInputs() {
+  const getVal = (id) => {
+    const input = document.getElementById(id);
+    return input.dataset.accel || state.shortcuts[id.replace('shortcut-', '')] || input.value.replace(/\s*\+\s*/g, '+');
+  };
+  state.shortcuts.toggle = getVal('shortcut-toggle');
+  state.shortcuts.organize = getVal('shortcut-organize');
+  state.shortcuts.switchTask = getVal('shortcut-switchTask');
+  state.shortcuts.switchNotepad = getVal('shortcut-switchNotepad');
+}
+
+// ========== 快捷键匹配 ==========
+function matchShortcut(e, accel) {
+  if (!accel) return false;
+  const parts = accel.split('+');
+  const expectedKey = parts.pop().toLowerCase();
+  const expectedMods = {
+    ctrl: parts.includes('Ctrl') || parts.includes('CommandOrControl'),
+    alt: parts.includes('Alt'),
+    shift: parts.includes('Shift'),
+    meta: parts.includes('Meta') || parts.includes('Command'),
+  };
+
+  let actualKey = e.key;
+  // 统一特殊键名
+  const keyMap = {
+    'control': 'ctrl', 'escape': 'esc', ' ': 'space',
+    'arrowup': 'up', 'arrowdown': 'down', 'arrowleft': 'left', 'arrowright': 'right',
+  };
+  actualKey = keyMap[actualKey.toLowerCase()] || actualKey.toLowerCase();
+  const expectedMapped = keyMap[expectedKey] || expectedKey;
+
+  return actualKey === expectedMapped &&
+    (e.ctrlKey || e.metaKey) === expectedMods.ctrl &&
+    e.altKey === expectedMods.alt &&
+    e.shiftKey === expectedMods.shift;
 }
 
 // ========== 工具函数 ==========

@@ -45,13 +45,15 @@ function loadConfig() {
       return JSON.parse(decrypted);
     }
   } catch (e) { /* ignore */ }
-  return { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '' };
+  return { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' } };
 }
 
 function saveConfig(cfg) {
   const json = JSON.stringify(cfg);
   const encrypted = safeStorage.encryptString(json);
   fs.writeFileSync(configPath, encrypted);
+  // 重新注册全局快捷键
+  registerToggleShortcut(cfg.shortcuts?.toggle || 'Alt+`');
 }
 
 // ========== OCR 模块 ==========
@@ -559,21 +561,30 @@ function createTray() {
   tray.on('click', toggleWindow);
 }
 
+// ========== 全局快捷键管理 ==========
+function registerToggleShortcut(accel) {
+  globalShortcut.unregisterAll();
+  try {
+    globalShortcut.register(accel, toggleWindow);
+  } catch (e) {
+    if (accel === 'Alt+`') {
+      try { globalShortcut.register('Alt+Backquote', toggleWindow); } catch (e2) { /* ignore */ }
+    }
+  }
+}
+
 // ========== 应用生命周期 ==========
 app.whenReady().then(() => {
   setupIPC();
   createTray();
   createWindow();
 
-  const ok = globalShortcut.register('Alt+`', toggleWindow);
-  if (!ok) {
-    try { globalShortcut.register('Alt+Backquote', toggleWindow); } catch (e) { /* ignore */ }
-  }
+  const cfg = loadConfig();
+  registerToggleShortcut(cfg.shortcuts?.toggle || 'Alt+`');
 
   startAlarmTimer();
 
   // 首次启动检查 API Key 配置
-  const cfg = loadConfig();
   if (!cfg.apiKey) {
     setTimeout(() => {
       showWindow();
