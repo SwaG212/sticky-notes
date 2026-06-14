@@ -3,6 +3,10 @@ const state = {
   tasks: [],
   images: [],
   organizing: false,
+  currentPage: 'main',
+  notes: [],
+  currentNoteFile: null,
+  noteContent: '',
 };
 
 // ========== DOM 引用 ==========
@@ -16,6 +20,14 @@ const configOverlay = $('#config-overlay');
 const processingOverlay = $('#processing-overlay');
 const processingText = $('#processing-text');
 const app = $('#app');
+const pagesContainer = $('.pages-container');
+const btnSwitchNotepad = $('#btn-switch-notepad');
+const btnNoteList = $('#btn-note-list');
+const btnNoteNew = $('#btn-note-new');
+const btnNotepadBack = $('#btn-notepad-back');
+const notepadTextarea = $('#notepad-textarea');
+const noteListOverlay = $('#note-list-overlay');
+const noteListItems = $('#note-list-items');
 
 // ========== 初始化 ==========
 async function init() {
@@ -31,18 +43,27 @@ async function init() {
 
   btnOrganize.addEventListener('click', organize);
   $('#btn-config-save').addEventListener('click', saveConfig);
+  btnSwitchNotepad.addEventListener('click', switchToNotepad);
+  btnNotepadBack.addEventListener('click', switchToMain);
+  btnNoteList.addEventListener('click', toggleNoteList);
+  btnNoteNew.addEventListener('click', createNote);
+  notepadTextarea.addEventListener('input', onNotepadInput);
+  notepadTextarea.addEventListener('paste', handleNotepadPaste);
 
   if (window.electronAPI) {
     window.electronAPI.onOpenConfig(() => showConfig());
     window.electronAPI.onWindowShown(() => {
       app.style.opacity = '0';
       app.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 350, easing: 'ease', fill: 'forwards' });
-      textInput.focus();
+      if (state.currentPage === 'notepad') notepadTextarea.focus();
+      else textInput.focus();
     });
     window.electronAPI.onWindowWillHide(() => {
       const anim = app.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 350, easing: 'ease', fill: 'forwards' });
       anim.finished.then(() => { /* 动画完成，元素停在 opacity:0 */ });
-      if (hasContent() && !state.organizing) {
+      if (state.currentPage === 'notepad') {
+        saveCurrentNote();
+      } else if (hasContent() && !state.organizing) {
         setTimeout(() => { organize(); }, 50);
       }
     });
@@ -463,6 +484,192 @@ function showProcessing(show, text = '') {
   if (show) { processingText.textContent = text; processingOverlay.classList.remove('hidden'); }
   else { processingOverlay.classList.add('hidden'); }
 }
+
+// ========== 页面切换 ==========
+async function switchToNotepad() {
+  if (state.currentPage === 'notepad') return;
+  state.currentPage = 'notepad';
+  if (window.electronAPI) {
+    window.electronAPI.setPage('notepad');
+    // 加载笔记列表，首次进入自动创建笔记
+    const notes = await window.electronAPI.listNotes();
+    state.notes = notes;
+    if (notes.length === 0) {
+      const filename = await window.electronAPI.createNote();
+      state.currentNoteFile = filename;
+      state.notes = await window.electronAPI.listNotes();
+    } else if (!state.currentNoteFile || !notes.find(n => n.filename === state.currentNoteFile)) {
+      state.currentNoteFile = notes[0].filename;
+      state.noteContent = await window.electronAPI.readNote(notes[0].filename);
+    }
+  }
+  pagesContainer.classList.add('on-notepad');
+  notepadTextarea.value = state.noteContent;
+  setTimeout(() => notepadTextarea.focus(), 400);
+}
+
+async function switchToMain() {
+  if (state.currentPage === 'main') return;
+  // 保存当前笔记
+  saveCurrentNote();
+  state.currentPage = 'main';
+  if (window.electronAPI) window.electronAPI.setPage('main');
+  pagesContainer.classList.remove('on-notepad');
+  setTimeout(() => textInput.focus(), 400);
+}
+
+// ========== 笔记管理 ==========
+function onNotepadInput() {
+  state.noteContent = notepadTextarea.value;
+}
+
+function handleNotepadPaste(e) {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      e.preventDefault();
+      return;
+    }
+  }
+}
+
+async function loadNotesList() {
+  if (!window.electronAPI) return;
+  state.notes = await window.electronAPI.listNotes();
+}
+
+async function openNote(filename) {
+  if (filename === state.currentNoteFile) { noteListOverlay.classList.add('hidden'); return; }
+  // 切换前保存+AI命名
+  await saveCurrentNote();
+  if (!window.electronAPI) return;
+  state.currentNoteFile = filename;
+  state.noteContent = await window.electronAPI.readNote(filename);
+  notepadTextarea.value = state.noteContent;
+  noteListOverlay.classList.add('hidden');
+}
+
+async function saveCurrentNote() {
+  if (!window.electronAPI || !state.currentNoteFile) return;
+  const content = state.noteContent;
+  await window.electronAPI.saveNote(state.currentNoteFile, content);
+
+  // 仅新建文件（untitled_N.md）触发 AI 命名或删除
+  const isNewFile = /^untitled_\d+\.md$/.test(state.currentNoteFile);
+  if (!isNewFile) return;
+
+  if (content.trim()) {
+    triggerAiName(state.currentNoteFile, content);
+  } else {
+    await window.electronAPI.deleteNote(state.currentNoteFile);
+    state.currentNoteFile = null;
+    state.noteContent = '';
+    state.notes = await window.electronAPI.listNotes();
+  }
+}
+
+async function createNote() {
+  await saveCurrentNote();
+  if (!window.electronAPI) return;
+  const filename = await window.electronAPI.createNote();
+  state.currentNoteFile = filename;
+  state.noteContent = '';
+  notepadTextarea.value = '';
+  state.notes = await window.electronAPI.listNotes();
+  // 如果文件列表打开着，刷新显示
+  if (!noteListOverlay.classList.contains('hidden')) renderNoteList();
+  notepadTextarea.focus();
+}
+
+async function triggerAiName(filename, content) {
+  if (!window.electronAPI) return;
+  const result = await window.electronAPI.aiNameNote(filename, content);
+  if (result.newFilename && state.currentNoteFile === filename) {
+    state.currentNoteFile = result.newFilename;
+    state.notes = await window.electronAPI.listNotes();
+    if (!noteListOverlay.classList.contains('hidden')) renderNoteList();
+  }
+}
+
+// ========== 文件列表 ==========
+function toggleNoteList() {
+  if (noteListOverlay.classList.contains('hidden')) {
+    loadNotesList().then(() => renderNoteList());
+    noteListOverlay.classList.remove('hidden');
+  } else {
+    noteListOverlay.classList.add('hidden');
+  }
+}
+
+function renderNoteList() {
+  noteListItems.innerHTML = '';
+  state.notes.forEach(note => {
+    const row = document.createElement('div');
+    row.className = 'note-list-item';
+    if (note.filename === state.currentNoteFile) row.classList.add('active');
+    // 显示名去掉 .md 后缀
+    row.textContent = note.filename.replace(/\.md$/, '');
+
+    let clickTimer = null;
+    row.addEventListener('click', () => {
+      if (clickTimer) {
+        clearTimeout(clickTimer);
+        clickTimer = null;
+        enterNoteRename(row, note.filename);
+      } else {
+        clickTimer = setTimeout(() => {
+          clickTimer = null;
+          openNote(note.filename);
+        }, 300);
+      }
+    });
+
+    noteListItems.appendChild(row);
+  });
+}
+
+function enterNoteRename(row, filename) {
+  const oldName = filename.replace(/\.md$/, '');
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'note-list-item-edit';
+  input.value = oldName;
+  row.replaceWith(input);
+  input.focus();
+  input.select();
+
+  async function finish() {
+    const newName = input.value.trim();
+    if (newName && newName !== oldName) {
+      const newFilename = newName + '.md';
+      try {
+        await window.electronAPI.renameNote(filename, newFilename);
+        state.notes = await window.electronAPI.listNotes();
+        if (state.currentNoteFile === filename) state.currentNoteFile = newFilename;
+      } catch (e) {
+        // 重命名失败，恢复原状
+      }
+    }
+    renderNoteList();
+    // 关闭编辑后关闭列表
+    noteListOverlay.classList.add('hidden');
+  }
+  input.addEventListener('blur', finish);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { input.value = oldName; input.blur(); }
+  });
+}
+
+// 点击列表外部关闭
+document.addEventListener('click', (e) => {
+  if (!noteListOverlay.classList.contains('hidden') &&
+      !noteListOverlay.contains(e.target) &&
+      e.target !== btnNoteList) {
+    noteListOverlay.classList.add('hidden');
+  }
+});
 
 // ========== 启动 ==========
 init();

@@ -9,26 +9,47 @@
 <body>
 
 <div id="app">
-  <!-- 任务清单区 -->
-  <div id="task-list">
-    <div id="task-empty" class="empty-state">
-      <div class="empty-icon">📋</div>
-      <div class="empty-title">还没有任务</div>
-      <div class="empty-desc">在下方输入想做的事，然后点击「整理」</div>
+  <div class="pages-container">
+    <!-- 主页面（任务管理） -->
+    <div class="page page-main">
+      <!-- 任务清单区 -->
+      <div id="task-list">
+        <div id="task-empty" class="empty-state">
+          <div class="empty-icon">📋</div>
+          <div class="empty-title">还没有任务</div>
+          <div class="empty-desc">在下方输入想做的事，然后点击「整理」</div>
+        </div>
+        <div id="task-items"></div>
+      </div>
+
+      <!-- 分隔线 -->
+      <div class="divider"></div>
+
+      <!-- 输入区 -->
+      <div id="input-area">
+        <div id="image-previews"></div>
+        <textarea id="text-input" placeholder="记录想做的事..." rows="4"></textarea>
+        <div id="input-actions">
+          <span class="hint">Ctrl+V 贴图 ｜ 关闭窗口自动整理</span>
+          <button id="btn-organize" disabled>整理 ▸</button>
+          <button id="btn-switch-notepad">→</button>
+        </div>
+      </div>
     </div>
-    <div id="task-items"></div>
-  </div>
 
-  <!-- 分隔线 -->
-  <div class="divider"></div>
-
-  <!-- 输入区 -->
-  <div id="input-area">
-    <div id="image-previews"></div>
-    <textarea id="text-input" placeholder="记录想做的事..." rows="4"></textarea>
-    <div id="input-actions">
-      <span class="hint">Ctrl+V 贴图 ｜ 关闭窗口自动整理</span>
-      <button id="btn-organize" disabled>整理 ▸</button>
+    <!-- 记事本页面 -->
+    <div class="page page-notepad">
+      <div class="notepad-toolbar">
+        <button id="btn-note-list">☰</button>
+        <button id="btn-note-new">+</button>
+      </div>
+      <textarea id="notepad-textarea" placeholder="记录笔记..."></textarea>
+      <div class="notepad-footer">
+        <button id="btn-notepad-back">←</button>
+      </div>
+      <div id="note-list-overlay" class="hidden">
+        <div id="note-list-items"></div>
+      </div>
     </div>
   </div>
 

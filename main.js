@@ -11,6 +11,7 @@ let tray = null;
 let alarmWin = null;
 let animating = false;
 let alarmTimer = null;
+let currentPage = 'main';
 const userDataPath = app.getPath('userData');
 const configPath = path.join(userDataPath, 'config.enc');
 
@@ -217,6 +218,86 @@ function saveTasksToFile(tasks) {
   writeJSON(path.join(userDataPath, 'tasks', `${getToday()}.json`), tasks);
 }
 
+// ========== 笔记文件存储 ==========
+const notesDir = path.join(userDataPath, 'notes');
+
+function listNotes() {
+  ensureDir(notesDir);
+  const files = fs.readdirSync(notesDir).filter(f => f.endsWith('.md'));
+  return files.map(f => {
+    const stat = fs.statSync(path.join(notesDir, f));
+    return { filename: f, mtime: stat.mtime.toISOString() };
+  }).sort((a, b) => b.mtime.localeCompare(a.mtime));
+}
+
+function readNote(filename) {
+  const filePath = path.join(notesDir, filename);
+  if (!fs.existsSync(filePath)) return '';
+  return fs.readFileSync(filePath, 'utf-8');
+}
+
+function saveNote(filename, content) {
+  ensureDir(notesDir);
+  fs.writeFileSync(path.join(notesDir, filename), content, 'utf-8');
+}
+
+function createNote() {
+  ensureDir(notesDir);
+  const existing = fs.readdirSync(notesDir).filter(f => f.endsWith('.md'));
+  let n = 1;
+  while (existing.includes(`untitled_${n}.md`)) n++;
+  const filename = `untitled_${n}.md`;
+  fs.writeFileSync(path.join(notesDir, filename), '', 'utf-8');
+  return filename;
+}
+
+function renameNoteFile(oldName, newName) {
+  const oldPath = path.join(notesDir, oldName);
+  const newPath = path.join(notesDir, newName);
+  if (!fs.existsSync(oldPath)) throw new Error('FILE_NOT_FOUND');
+  if (fs.existsSync(newPath)) throw new Error('FILE_EXISTS');
+  fs.renameSync(oldPath, newPath);
+}
+
+function deleteNoteFile(filename) {
+  const filePath = path.join(notesDir, filename);
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+}
+
+// ========== AI 笔记命名 ==========
+async function aiNameNote(filename, content) {
+  const cfg = loadConfig();
+  if (!cfg.apiKey) return null;
+  const prompt = `用不超过15个字概括以下笔记的主要内容，只返回概括文字，不要日期、标点或任何额外内容。\n\n笔记内容：\n${content}`;
+  try {
+    const response = await callDeepSeek(
+      [{ role: 'user', content: prompt }],
+      cfg.apiKey,
+      cfg.baseUrl
+    );
+    let summary = response.choices?.[0]?.message?.content || '';
+    summary = summary.replace(/[，,。\.！!？?\n\r]/g, '').trim().slice(0, 15);
+    if (!summary) return null;
+    const today = getToday();
+    const newName = `${summary}_${today}.md`;
+    const oldPath = path.join(notesDir, filename);
+    const newPath = path.join(notesDir, newName);
+    if (fs.existsSync(newPath)) {
+      const base = `${summary}_${today}`;
+      let n = 1;
+      while (fs.existsSync(path.join(notesDir, `${base}_${n}.md`))) n++;
+      const altName = `${base}_${n}.md`;
+      fs.renameSync(oldPath, path.join(notesDir, altName));
+      return altName;
+    }
+    fs.renameSync(oldPath, newPath);
+    return newName;
+  } catch (e) {
+    console.warn('AI naming failed:', e.message);
+    return null;
+  }
+}
+
 // ========== 定时提醒 ==========
 function checkAlarms() {
   const tasks = loadTasksFromFile();
@@ -314,6 +395,18 @@ function setupIPC() {
   ipcMain.handle('save-config', (_event, cfg) => { saveConfig(cfg); return { success: true }; });
   ipcMain.handle('load-tasks', () => loadTasksFromFile());
   ipcMain.handle('save-tasks', (_event, tasks) => { saveTasksToFile(tasks); return { success: true }; });
+
+  ipcMain.handle('set-page', (_e, page) => { currentPage = page; });
+  ipcMain.handle('list-notes', () => listNotes());
+  ipcMain.handle('read-note', (_e, filename) => readNote(filename));
+  ipcMain.handle('save-note', (_e, filename, content) => { saveNote(filename, content); return { success: true }; });
+  ipcMain.handle('create-note', () => createNote());
+  ipcMain.handle('rename-note', (_e, oldName, newName) => { renameNoteFile(oldName, newName); return { success: true }; });
+  ipcMain.handle('delete-note', (_e, filename) => { deleteNoteFile(filename); return { success: true }; });
+  ipcMain.handle('ai-name-note', async (_e, filename, content) => {
+    const newName = await aiNameNote(filename, content);
+    return { newFilename: newName };
+  });
 }
 
 // ========== 窗口管理 ==========
@@ -363,7 +456,7 @@ function createWindow() {
   });
 
   win.on('blur', () => {
-    if (win && !win.isDestroyed() && !animating) {
+    if (win && !win.isDestroyed() && !animating && currentPage === 'main') {
       hideWindow();
     }
   });
