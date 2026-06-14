@@ -480,6 +480,7 @@ async function openSettings() {
     $('#settings-apikey').value = cfg.apiKey || '';
     $('#settings-baseurl').value = cfg.baseUrl || 'https://api.deepseek.com';
     $('#settings-reportname').value = cfg.reportName || '';
+    $('#settings-notesdir').value = cfg.notesDir || '';
     if (cfg.shortcuts) {
       state.shortcuts = { ...state.shortcuts, ...cfg.shortcuts };
     }
@@ -507,9 +508,10 @@ async function confirmSettings() {
   const apiKey = $('#settings-apikey').value.trim();
   const baseUrl = $('#settings-baseurl').value.trim() || 'https://api.deepseek.com';
   const reportName = $('#settings-reportname').value.trim();
+  const notesDir = $('#settings-notesdir').value.trim();
 
   collectShortcutsFromInputs();
-  const cfg = { apiKey, baseUrl, reportName, shortcuts: { ...state.shortcuts } };
+  const cfg = { apiKey, baseUrl, reportName, notesDir, shortcuts: { ...state.shortcuts } };
 
   if (window.electronAPI) {
     await window.electronAPI.saveConfig(cfg);

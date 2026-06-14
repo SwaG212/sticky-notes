@@ -45,7 +45,7 @@ function loadConfig() {
       return JSON.parse(decrypted);
     }
   } catch (e) { /* ignore */ }
-  return { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' } };
+  return { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' } };
 }
 
 function saveConfig(cfg) {
@@ -223,15 +223,21 @@ function saveTasksToFile(tasks) {
 }
 
 // ========== 笔记文件存储 ==========
-const notesDir = path.join(userDataPath, 'notes');
-const pinsPath = path.join(notesDir, 'pins.json');
+function getNotesDir() {
+  const cfg = loadConfig();
+  return cfg.notesDir && cfg.notesDir.trim() ? cfg.notesDir.trim() : path.join(userDataPath, 'notes');
+}
+
+function getPinsPath() {
+  return path.join(getNotesDir(), 'pins.json');
+}
 
 function getPinnedNotes() {
-  return readJSON(pinsPath) || [];
+  return readJSON(getPinsPath()) || [];
 }
 
 function savePinnedNotes(pinned) {
-  writeJSON(pinsPath, pinned);
+  writeJSON(getPinsPath(), pinned);
 }
 
 function togglePinNote(filename) {
@@ -247,49 +253,52 @@ function togglePinNote(filename) {
 }
 
 function listNotes() {
-  ensureDir(notesDir);
-  const files = fs.readdirSync(notesDir).filter(f => f.endsWith('.md'));
+  const dir = getNotesDir();
+  ensureDir(dir);
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.md'));
   return files.map(f => {
-    const stat = fs.statSync(path.join(notesDir, f));
+    const stat = fs.statSync(path.join(dir, f));
     return { filename: f, mtime: stat.mtime.toISOString() };
   }).sort((a, b) => b.mtime.localeCompare(a.mtime));
 }
 
 function readNote(filename) {
-  const filePath = path.join(notesDir, filename);
+  const filePath = path.join(getNotesDir(), filename);
   if (!fs.existsSync(filePath)) return '';
   return fs.readFileSync(filePath, 'utf-8');
 }
 
 function saveNote(filename, content) {
-  ensureDir(notesDir);
-  fs.writeFileSync(path.join(notesDir, filename), content, 'utf-8');
+  const dir = getNotesDir();
+  ensureDir(dir);
+  fs.writeFileSync(path.join(dir, filename), content, 'utf-8');
 }
 
 function createNote() {
-  ensureDir(notesDir);
-  const existing = fs.readdirSync(notesDir).filter(f => f.endsWith('.md'));
+  const dir = getNotesDir();
+  ensureDir(dir);
+  const existing = fs.readdirSync(dir).filter(f => f.endsWith('.md'));
   let n = 1;
   while (existing.includes(`untitled_${n}.md`)) n++;
   const filename = `untitled_${n}.md`;
-  fs.writeFileSync(path.join(notesDir, filename), '', 'utf-8');
+  fs.writeFileSync(path.join(dir, filename), '', 'utf-8');
   return filename;
 }
 
 function renameNoteFile(oldName, newName) {
-  const oldPath = path.join(notesDir, oldName);
-  const newPath = path.join(notesDir, newName);
+  const dir = getNotesDir();
+  const oldPath = path.join(dir, oldName);
+  const newPath = path.join(dir, newName);
   if (!fs.existsSync(oldPath)) throw new Error('FILE_NOT_FOUND');
   if (fs.existsSync(newPath)) throw new Error('FILE_EXISTS');
   fs.renameSync(oldPath, newPath);
-  // 更新置顶记录
   const pinned = getPinnedNotes();
   const idx = pinned.indexOf(oldName);
   if (idx !== -1) { pinned[idx] = newName; savePinnedNotes(pinned); }
 }
 
 function deleteNoteFile(filename) {
-  const filePath = path.join(notesDir, filename);
+  const filePath = path.join(getNotesDir(), filename);
   if (!fs.existsSync(filePath)) return;
   const psCmd = `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('${filePath.replace(/'/g, "''")}', 'OnlyErrorDialogs', 'SendToRecycleBin')`;
   try {
@@ -318,13 +327,14 @@ async function aiNameNote(filename, content) {
     summary = summary.replace(/[，,。\.！!？?\n\r]/g, '').trim().slice(0, 15);
     if (!summary) return null;
     const newName = `${summary}.md`;
-    const oldPath = path.join(notesDir, filename);
-    const newPath = path.join(notesDir, newName);
+    const dir = getNotesDir();
+    const oldPath = path.join(dir, filename);
+    const newPath = path.join(dir, newName);
     if (fs.existsSync(newPath)) {
       let n = 2;
-      while (fs.existsSync(path.join(notesDir, `${summary}_${n}.md`))) n++;
+      while (fs.existsSync(path.join(dir, `${summary}_${n}.md`))) n++;
       const altName = `${summary}_${n}.md`;
-      fs.renameSync(oldPath, path.join(notesDir, altName));
+      fs.renameSync(oldPath, path.join(dir, altName));
       return altName;
     }
     fs.renameSync(oldPath, newPath);
