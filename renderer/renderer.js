@@ -814,6 +814,7 @@ function renderNoteList() {
   sorted.forEach(note => {
     const row = document.createElement('div');
     row.className = 'note-list-item';
+    if (pinnedSet.has(note.filename)) row.classList.add('pinned');
     if (note.filename === state.currentNoteFile) row.classList.add('active');
 
     const nameSpan = document.createElement('span');

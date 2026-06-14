@@ -712,6 +712,8 @@ body {
 }
 .note-list-item:hover { background: var(--bg-secondary); }
 .note-list-item.active { background: var(--bg-input); font-weight: bold; }
+.note-list-item.pinned { background: #f0f0f4; }
+.note-list-item.pinned:hover { background: #e8e8ee; }
 .note-list-mtime {
   font-size: 11px;
   color: var(--text-dim);
