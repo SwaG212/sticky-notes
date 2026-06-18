@@ -86,11 +86,17 @@ async function init() {
 
   if (window.electronAPI) {
     window.electronAPI.onOpenConfig(() => openSettings());
-    window.electronAPI.onWindowShown(() => {
+    window.electronAPI.onWindowShown(async () => {
       app.style.opacity = '0';
       app.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 350, easing: 'ease', fill: 'forwards' });
-      if (state.currentPage === 'notepad') notepadTextarea.focus();
-      else textInput.focus();
+      if (state.currentPage === 'notepad') {
+        notepadTextarea.focus();
+      } else {
+        // 每次窗口显示时重新加载任务，确保跨天后已完成任务被清除
+        await loadTasks();
+        renderTasks();
+        textInput.focus();
+      }
     });
     window.electronAPI.onWindowWillHide(() => {
       const anim = app.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 350, easing: 'ease', fill: 'forwards' });
@@ -114,12 +120,10 @@ async function loadTasks() {
       const raw = localStorage.getItem(`tasks_${today}`);
       state.tasks = raw ? JSON.parse(raw) : [];
     } catch (e) { state.tasks = []; }
-    // 跨天清空 alarmTime（仅今天首次加载时）
     let changed = false;
     if (!raw) {
       state.tasks.forEach(t => { if (t.alarmTime) { t.alarmTime = null; changed = true; } });
     }
-    // 加载昨天未完成的
     const yesterday = getYesterday();
     try {
       const raw = localStorage.getItem(`tasks_${yesterday}`);
@@ -134,6 +138,13 @@ async function loadTasks() {
     } catch (e) {}
     if (changed) saveTasks();
   }
+  // 向后兼容：没有 sortOrder 的任务按当前顺序赋值
+  let needsSave = false;
+  state.tasks.forEach((t, i) => {
+    if (t.sortOrder === undefined) { t.sortOrder = i; needsSave = true; }
+  });
+  if (needsSave) saveTasks();
+  sortTasks();
 }
 
 async function saveTasks() {
@@ -167,6 +178,7 @@ function renderTasks(shouldAnimate = false) {
   state.tasks.forEach((task, idx) => {
     const row = document.createElement('div');
     row.className = 'task-item';
+    if (task.completed) row.classList.add('completed');
     row.dataset.id = task.id;
 
     const cb = document.createElement('div');
@@ -198,6 +210,17 @@ function renderTasks(shouldAnimate = false) {
 
     row.addEventListener('mouseenter', () => { hoverBar.style.display = 'flex'; row.style.background = '#f3f3f8'; });
     row.addEventListener('mouseleave', () => { hoverBar.style.display = 'none'; row.style.background = ''; });
+
+    // 拖拽手柄（仅未完成任务）
+    if (!task.completed) {
+      const dragHandle = document.createElement('div');
+      dragHandle.className = 'task-drag-handle';
+      dragHandle.textContent = '⋮⋮';
+      dragHandle.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); startDrag(e, idx); });
+      row.append(cb, text, hoverBar, dragHandle);
+    } else {
+      row.append(cb, text, hoverBar);
+    }
 
     let clickTimer = null;
     row.addEventListener('click', (e) => {
@@ -236,7 +259,130 @@ function renderTasks(shouldAnimate = false) {
 function sortTasks() {
   const undone = state.tasks.filter(t => !t.completed);
   const done = state.tasks.filter(t => t.completed);
+  undone.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+  done.sort((a, b) => new Date(b.completedAt || 0).getTime() - new Date(a.completedAt || 0).getTime());
   state.tasks = [...undone, ...done];
+}
+
+function reassignSortOrders() {
+  const undone = state.tasks.filter(t => !t.completed);
+  undone.forEach((t, i) => { t.sortOrder = i; });
+}
+
+// ========== 拖拽排序 ==========
+let dragState = null;
+
+function startDrag(e, taskIdx) {
+  const row = e.currentTarget.closest('.task-item');
+  const rect = row.getBoundingClientRect();
+
+  // 创建浮动克隆
+  const clone = row.cloneNode(true);
+  clone.classList.add('task-dragging');
+  Object.assign(clone.style, {
+    position: 'fixed',
+    left: rect.left + 'px',
+    top: rect.top + 'px',
+    width: rect.width + 'px',
+    height: rect.height + 'px',
+    zIndex: '1000',
+    pointerEvents: 'none',
+  });
+  document.body.appendChild(clone);
+
+  // 原位置插入占位块
+  const placeholder = document.createElement('div');
+  placeholder.className = 'task-placeholder';
+  placeholder.style.height = rect.height + 'px';
+  row.parentNode.insertBefore(placeholder, row);
+  row.remove();
+
+  dragState = {
+    taskIdx,
+    clone,
+    placeholder,
+    offsetY: e.clientY - rect.top,
+    undoneCount: state.tasks.filter(t => !t.completed).length,
+    lastTargetIdx: -1,
+  };
+
+  document.addEventListener('mousemove', onDragMove);
+  document.addEventListener('mouseup', onDragEnd);
+}
+
+function onDragMove(e) {
+  if (!dragState) return;
+  dragState.clone.style.top = (e.clientY - dragState.offsetY) + 'px';
+
+  const rows = [...taskItems.querySelectorAll('.task-item')];
+  let targetIdx = dragState.undoneCount;
+  for (let i = 0; i < dragState.undoneCount && i < rows.length; i++) {
+    const rect = rows[i].getBoundingClientRect();
+    if (e.clientY < rect.top + rect.height / 2) {
+      targetIdx = i;
+      break;
+    }
+  }
+
+  if (targetIdx === dragState.lastTargetIdx) return;
+  dragState.lastTargetIdx = targetIdx;
+
+  // FLIP 第一步: 记录所有行和占位块的旧位置
+  const oldPos = [];
+  taskItems.querySelectorAll('.task-item, .task-placeholder').forEach(el => {
+    oldPos.push({ el, top: el.getBoundingClientRect().top });
+  });
+
+  // 移动占位块
+  if (targetIdx < rows.length) {
+    taskItems.insertBefore(dragState.placeholder, rows[targetIdx]);
+  } else {
+    taskItems.appendChild(dragState.placeholder);
+  }
+
+  // FLIP 第二三四步
+  requestAnimationFrame(() => {
+    oldPos.forEach(({ el, top: oldTop }) => {
+      if (!el.isConnected) return;
+      const newTop = el.getBoundingClientRect().top;
+      const delta = oldTop - newTop;
+      if (Math.abs(delta) < 1) return;
+      el.getAnimations().forEach(a => a.cancel());
+      el.animate([
+        { transform: `translateY(${delta}px)` },
+        { transform: 'translateY(0)' }
+      ], { duration: 150, easing: 'ease-out' });
+    });
+  });
+}
+
+function onDragEnd() {
+  if (!dragState) return;
+
+  // 计算占位块在 task-items 子元素中的位置
+  const placeholderIdx = [...taskItems.children].indexOf(dragState.placeholder);
+  let targetIdx = 0;
+  for (let i = 0; i < placeholderIdx; i++) {
+    if (taskItems.children[i].classList.contains('task-item')) targetIdx++;
+  }
+  targetIdx = Math.min(targetIdx, dragState.undoneCount);
+
+  // 更新任务数组
+  if (targetIdx !== dragState.taskIdx) {
+    const [task] = state.tasks.splice(dragState.taskIdx, 1);
+    state.tasks.splice(targetIdx, 0, task);
+    reassignSortOrders();
+    saveTasks();
+  }
+
+  // 清理
+  dragState.clone.remove();
+  dragState.placeholder.remove();
+  document.removeEventListener('mousemove', onDragMove);
+  document.removeEventListener('mouseup', onDragEnd);
+  dragState = null;
+
+  renderTasks();
 }
 
 function toggleTask(idx) {
@@ -277,11 +423,32 @@ function enterEditMode(row, idx) {
 }
 
 function addTasks(newTasks) {
+  // 去重保护：跳过已存在的同名任务
+  const existingTexts = new Set(state.tasks.map(t => t.task));
+  const unique = newTasks.filter(t => !existingTexts.has(t.task));
+  if (unique.length === 0) return;
+
   const now = new Date().toISOString();
-  const items = newTasks.map(t => ({
-    id: genId(), task: t.task, completed: false, createdAt: now, completedAt: null, alarmTime: null,
+  const maxOrder = state.tasks.reduce((max, t) => Math.max(max, t.sortOrder ?? 0), -1);
+  const items = unique.map((t, i) => ({
+    id: genId(), task: t.task, completed: false, createdAt: now, completedAt: null,
+    alarmTime: null, sortOrder: maxOrder + 1 + i,
   }));
   state.tasks = [...items, ...state.tasks];
+
+  // 数量上限保护：最多保留 500 条，超出部分从末尾（最旧的已完成任务）删除
+  if (state.tasks.length > 500) {
+    const keep = state.tasks.length - 500;
+    const undone = state.tasks.filter(t => !t.completed);
+    const done = state.tasks.filter(t => t.completed);
+    if (undone.length >= 500) {
+      state.tasks = undone.slice(0, 500);
+    } else {
+      state.tasks = [...undone, ...done.slice(0, 500 - undone.length)];
+    }
+  }
+
+  sortTasks();
   saveTasks();
   renderTasks();
 }
@@ -383,12 +550,21 @@ function handlePaste(e) {
   const items = e.clipboardData?.items;
   if (!items) return;
   for (const item of items) {
-    if (item.type.startsWith('image/') && state.images.length < 5) {
+    if (item.type.startsWith('image/') && state.images.length < 3) {
       e.preventDefault();
       const blob = item.getAsFile();
-      if (blob.size > 20 * 1024 * 1024) { alert('图片过大，单张不超过 20MB'); continue; }
+      if (blob.size > 10 * 1024 * 1024) { showError('图片过大，单张不超过 10MB'); continue; }
       const reader = new FileReader();
-      reader.onload = (ev) => { state.images.push(ev.target.result); renderImages(); updateOrganizeButton(); };
+      reader.onload = (ev) => {
+        state.images.push(ev.target.result);
+        // 总 base64 size 防御
+        const totalBytes = state.images.reduce((s, u) => s + u.length, 0);
+        if (totalBytes > 20 * 1024 * 1024) {
+          state.images.pop();
+          showError('已超过总图片大小限制 20MB');
+        }
+        renderImages(); updateOrganizeButton();
+      };
       reader.readAsDataURL(blob);
     }
   }
@@ -447,10 +623,8 @@ async function organize() {
       if (tasks.length > 0) addTasks(tasks);
     }
   } catch (e) {
-    showError('操作失败：' + e.message);
-    textInput.value = text;
-    state.images = imgs;
-    renderImages();
+    showError(e.message);
+    // 不恢复原文到输入框，防止 windowWillHide 再次触发 organize 形成死循环
   } finally {
     state.organizing = false;
     showProcessing(false);
@@ -470,8 +644,9 @@ function fallbackOrganize(text, imgs) {
 }
 
 function showError(msg) {
-  // 简单 alert，后续可改为 toast
-  alert(msg);
+  dailyReportHint.textContent = msg;
+  dailyReportHint.classList.add('show');
+  setTimeout(() => { dailyReportHint.classList.remove('show'); }, 2500);
 }
 
 // ========== 配置与设置管理 ==========

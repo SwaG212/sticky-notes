@@ -14,11 +14,29 @@
     "directories": {
       "output": "dist"
     },
+    "electronLanguages": ["zh-CN", "en-US"],
+    "compression": "maximum",
+    "afterPack": "./scripts/clean-locales.js",
     "files": [
       "main.js",
       "preload.js",
       "renderer/**/*",
-      "assets/**/*"
+      "assets/**/*",
+      "node_modules/**/*",
+      "!node_modules/tesseract.js-core/tesseract-core.wasm",
+      "!node_modules/tesseract.js-core/tesseract-core.wasm.js",
+      "!node_modules/tesseract.js-core/tesseract-core.js",
+      "!node_modules/tesseract.js-core/tesseract-core-simd.wasm",
+      "!node_modules/tesseract.js-core/tesseract-core-simd.wasm.js",
+      "!node_modules/tesseract.js-core/tesseract-core-simd.js",
+      "!node_modules/tesseract.js-core/tesseract-core-lstm.wasm",
+      "!node_modules/tesseract.js-core/tesseract-core-lstm.wasm.js",
+      "!node_modules/tesseract.js-core/tesseract-core-lstm.js",
+      "!node_modules/tesseract.js-core/tesseract-core-simd-lstm.wasm.js",
+      "!node_modules/tesseract.js-core/tesseract-core-simd-lstm.js"
+    ],
+    "asarUnpack": [
+      "node_modules/tesseract.js-core/tesseract-core-simd-lstm.wasm"
     ],
     "win": {
       "target": "nsis",

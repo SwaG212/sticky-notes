@@ -48,10 +48,51 @@ body {
   min-height: 0;
 }
 
-#task-list::-webkit-scrollbar { width: 4px; -webkit-appearance: none; }
-#task-list::-webkit-scrollbar-track { background: #f5f5f8; }
-#task-list::-webkit-scrollbar-thumb { background: #b0b0bc; border-radius: 2px; }
-#task-list::-webkit-scrollbar-thumb:hover { background: #8a8a98; }
+/* 统一滚动条样式 */
+#task-list::-webkit-scrollbar,
+#text-input::-webkit-scrollbar,
+#notepad-textarea::-webkit-scrollbar,
+.settings-body::-webkit-scrollbar {
+  width: 4px;
+}
+
+#task-list::-webkit-scrollbar-track,
+#text-input::-webkit-scrollbar-track,
+#notepad-textarea::-webkit-scrollbar-track,
+.settings-body::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+#task-list::-webkit-scrollbar-thumb,
+#text-input::-webkit-scrollbar-thumb,
+#notepad-textarea::-webkit-scrollbar-thumb,
+.settings-body::-webkit-scrollbar-thumb {
+  background: #b0b0bc;
+  border-radius: 2px;
+}
+
+#task-list::-webkit-scrollbar-thumb:hover,
+#text-input::-webkit-scrollbar-thumb:hover,
+#notepad-textarea::-webkit-scrollbar-thumb:hover,
+.settings-body::-webkit-scrollbar-thumb:hover {
+  background: #8a8a98;
+}
+
+.tp-col::-webkit-scrollbar,
+#note-list-overlay::-webkit-scrollbar {
+  width: 4px;
+}
+
+.tp-col::-webkit-scrollbar-thumb,
+#note-list-overlay::-webkit-scrollbar-thumb {
+  background: #b0b0bc;
+  border-radius: 2px;
+}
+
+.tp-col::-webkit-scrollbar-thumb:hover,
+#note-list-overlay::-webkit-scrollbar-thumb:hover {
+  background: #8a8a98;
+}
 
 /* 空状态 */
 .empty-state {
@@ -72,7 +113,7 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 6px;
+  padding: 8px 56px 8px 6px;
   border-radius: 6px;
   position: relative;
   background: rgba(255, 255, 255, 0.01);
@@ -121,7 +162,7 @@ body {
 /* 悬停操作栏：绝对定位在行右侧 */
 .hover-bar {
   position: absolute;
-  right: 6px;
+  right: 36px;
   top: 50%;
   transform: translateY(-50%);
   display: flex;
@@ -132,6 +173,49 @@ body {
   padding: 2px 4px 2px 8px;
   border-radius: 6px;
   z-index: 2;
+}
+
+/* 拖拽手柄 */
+.task-drag-handle {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  color: var(--text-dim);
+  font-size: 14px;
+  letter-spacing: -2px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 0 0 1px var(--border), 0 1px 4px rgba(0,0,0,0.06);
+  border-radius: 4px;
+  z-index: 2;
+  user-select: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.task-item:hover .task-drag-handle { opacity: 1; }
+.task-drag-handle:active { cursor: grabbing; opacity: 1; background: var(--bg-secondary); }
+.task-item.completed .task-drag-handle { display: none; }
+
+/* 拖拽中的浮动克隆 */
+.task-dragging {
+  opacity: 0.92 !important;
+  background: var(--bg) !important;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.18) !important;
+  border-radius: 6px;
+  z-index: 1000;
+}
+
+/* 拖拽占位 */
+.task-placeholder {
+  border: 2px dashed var(--border);
+  border-radius: 6px;
+  margin: 2px 6px;
 }
 
 .task-alarm {
@@ -194,8 +278,7 @@ body {
   max-height: 170px;
   overflow-y: auto;
 }
-.tp-col::-webkit-scrollbar { width: 3px; }
-.tp-col::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
 
 .tp-opt {
   padding: 3px 6px;
@@ -472,8 +555,7 @@ body {
   overflow-y: auto;
   padding: 16px 14px;
 }
-.settings-body::-webkit-scrollbar { width: 4px; }
-.settings-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
 
 .settings-section {
   margin-bottom: 20px;
@@ -650,10 +732,7 @@ body {
   line-height: 1.6;
   min-height: 0;
 }
-#notepad-textarea::-webkit-scrollbar { width: 4px; -webkit-appearance: none; }
-#notepad-textarea::-webkit-scrollbar-track { background: var(--bg-input); }
-#notepad-textarea::-webkit-scrollbar-thumb { background: #b0b0bc; border-radius: 2px; }
-#notepad-textarea::-webkit-scrollbar-thumb:hover { background: #8a8a98; }
+
 #notepad-textarea::placeholder { color: var(--text-dim); opacity: 0.5; }
 
 .notepad-footer {
@@ -722,8 +801,7 @@ body {
 }
 #note-list-search:focus { border-color: var(--accent); }
 #note-list-search::placeholder { color: var(--text-dim); opacity: 0.5; }
-#note-list-overlay::-webkit-scrollbar { width: 3px; }
-#note-list-overlay::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
 
 #note-list-items {
   display: flex;

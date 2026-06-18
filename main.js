@@ -4,8 +4,23 @@ const fs = require('fs');
 const { execSync } = require('child_process');
 const os = require('os');
 
+// ========== 性能优化 ==========
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch('disable-software-rasterizer');
+
 // ========== 透明窗口必需参数 ==========
 app.commandLine.appendSwitch('enable-transparent-visuals');
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=128');
+
+// ========== 单实例锁 ==========
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (win) showWindow();
+  });
+}
 
 // ========== 全局状态 ==========
 let win = null;
@@ -36,38 +51,58 @@ function writeJSON(filePath, data) {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
-// ========== 配置管理（加密存储） ==========
+// ========== 配置管理（加密存储 + 内存缓存） ==========
+let cachedConfig = null;
+
 function loadConfig() {
+  if (cachedConfig) return cachedConfig;
   try {
     if (fs.existsSync(configPath)) {
       const encrypted = fs.readFileSync(configPath);
       const decrypted = safeStorage.decryptString(encrypted);
-      return JSON.parse(decrypted);
+      cachedConfig = JSON.parse(decrypted);
+      return cachedConfig;
     }
   } catch (e) { /* ignore */ }
-  return { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' } };
+  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' } };
+  return cachedConfig;
 }
 
 function saveConfig(cfg) {
+  cachedConfig = cfg;
   const json = JSON.stringify(cfg);
   const encrypted = safeStorage.encryptString(json);
   fs.writeFileSync(configPath, encrypted);
-  // 重新注册全局快捷键
   registerToggleShortcut(cfg.shortcuts?.toggle || 'Alt+`');
 }
 
 // ========== OCR 模块 ==========
 let ocrWorker = null;
+let ocrIdleTimer = null;
+const OCR_IDLE_TIMEOUT = 5 * 60 * 1000;
 
 async function initOCR() {
   if (ocrWorker) return;
   const { createWorker } = require('tesseract.js');
-  ocrWorker = await createWorker('chi_sim');
+  const corePath = path.join(
+    __dirname, 'node_modules', 'tesseract.js-core', 'tesseract-core-simd-lstm.wasm'
+  );
+  ocrWorker = await createWorker('chi_sim', 1, { corePath });
+}
+
+function resetOcrIdleTimer() {
+  clearTimeout(ocrIdleTimer);
+  ocrIdleTimer = setTimeout(async () => {
+    if (ocrWorker) {
+      await ocrWorker.terminate();
+      ocrWorker = null;
+    }
+  }, OCR_IDLE_TIMEOUT);
 }
 
 async function ocrImage(dataUrl) {
   await initOCR();
-  // dataUrl 格式: "data:image/png;base64,..."
+  resetOcrIdleTimer();
   const base64 = dataUrl.split(',')[1];
   const buf = Buffer.from(base64, 'base64');
   const { data } = await ocrWorker.recognize(buf);
@@ -180,6 +215,15 @@ function getYesterday() {
 function loadTasksFromFile() {
   const today = getToday();
   const filePath = path.join(userDataPath, 'tasks', `${today}.json`);
+
+  // 文件损坏保护：>5MB 自动归档
+  try {
+    if (fs.existsSync(filePath) && fs.statSync(filePath).size > 5 * 1024 * 1024) {
+      const archivePath = filePath.replace(/\.json$/, `_corrupted_${Date.now()}.json`);
+      fs.renameSync(filePath, archivePath);
+    }
+  } catch (e) { /* ignore */ }
+
   let tasks = readJSON(filePath) || [];
 
   // 仅在该文件不是今天创建时，才清空 alarmTime（说明是跨天首次加载）
@@ -194,21 +238,30 @@ function loadTasksFromFile() {
   let changed = false;
   if (isNewDay) {
     tasks.forEach(t => { if (t.alarmTime) { t.alarmTime = null; changed = true; } });
-  }
 
-  // 加载昨天未完成任务
-  const yesterday = getYesterday();
-  const yesterdayTasks = readJSON(path.join(userDataPath, 'tasks', `${yesterday}.json`));
-  if (yesterdayTasks) {
-    const unfinished = yesterdayTasks.filter(t => !t.completed);
-    if (unfinished.length > 0) {
-      unfinished.forEach(t => {
-        t.createdAt = new Date().toISOString();
-        t.id = 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
-        t.alarmTime = null; // 跨天迁移清空
-      });
-      tasks = [...unfinished, ...tasks];
-      changed = true;
+    // 迁移昨日未完成任务——仅跨天首次加载时执行一次
+    const yesterday = getYesterday();
+    const yesterdayPath = path.join(userDataPath, 'tasks', `${yesterday}.json`);
+    const yesterdayTasks = readJSON(yesterdayPath);
+    if (yesterdayTasks) {
+      const unfinished = yesterdayTasks.filter(t => !t.completed);
+      if (unfinished.length > 0) {
+        // 去重保护：跳过今天已存在的同名任务
+        const todayTexts = new Set(tasks.map(t => t.task));
+        const unique = unfinished.filter(t => !todayTexts.has(t.task));
+        if (unique.length > 0) {
+          unique.forEach((t, i) => {
+            t.createdAt = new Date().toISOString();
+            t.id = 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+            t.alarmTime = null;
+            t.sortOrder = i;
+          });
+          // 今天已有任务 sortOrder 顺延
+          tasks.forEach((t, i) => { t.sortOrder = unique.length + i; });
+          tasks = [...unique, ...tasks];
+          changed = true;
+        }
+      }
     }
   }
 
@@ -252,14 +305,16 @@ function togglePinNote(filename) {
   return pinned;
 }
 
-function listNotes() {
+async function listNotes() {
   const dir = getNotesDir();
   ensureDir(dir);
-  const files = fs.readdirSync(dir).filter(f => f.endsWith('.md'));
-  return files.map(f => {
-    const stat = fs.statSync(path.join(dir, f));
+  const files = await fs.promises.readdir(dir);
+  const mdFiles = files.filter(f => f.endsWith('.md'));
+  const result = await Promise.all(mdFiles.map(async f => {
+    const stat = await fs.promises.stat(path.join(dir, f));
     return { filename: f, mtime: stat.mtime.toISOString() };
-  }).sort((a, b) => b.mtime.localeCompare(a.mtime));
+  }));
+  return result.sort((a, b) => b.mtime.localeCompare(a.mtime));
 }
 
 function readNote(filename) {
@@ -390,8 +445,9 @@ function showAlarmWindow(tasks) {
     body{font-family:-apple-system,"Microsoft YaHei",sans-serif;background:#fff;overflow:hidden;margin:4px;padding:20px 16px 16px;text-align:center;display:flex;flex-direction:column;height:calc(100vh - 8px);}
     .title{font-size:14px;color:#2a2a36;font-weight:bold;margin-bottom:12px;flex-shrink:0;}
     .task-list{flex:1;overflow-y:auto;min-height:0;padding:4px 0;}
-    .task-list::-webkit-scrollbar{width:3px;}
-    .task-list::-webkit-scrollbar-thumb{background:#d0d0dc;border-radius:2px;}
+    .task-list::-webkit-scrollbar{width:4px;}
+    .task-list::-webkit-scrollbar-thumb{background:#b0b0bc;border-radius:2px;}
+    .task-list::-webkit-scrollbar-thumb:hover{background:#8a8a98;}
     .task-name{font-size:15px;color:#2a2a36;font-weight:bold;line-height:1.8;}
     .note{font-size:13px;color:#2a2a36;margin-top:10px;margin-bottom:12px;font-weight:bold;flex-shrink:0;}
     .divider{width:100%;height:1px;background:#e2e2ec;margin:8px 0;flex-shrink:0;}
@@ -503,6 +559,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: true,
+      spellcheck: false,
     },
   });
 
@@ -619,26 +677,25 @@ function registerToggleShortcut(accel) {
 app.whenReady().then(() => {
   setupIPC();
   createTray();
-  createWindow();
 
   const cfg = loadConfig();
   registerToggleShortcut(cfg.shortcuts?.toggle || 'Alt+`');
 
   startAlarmTimer();
 
-  // 首次启动检查 API Key 配置
+  // 首次启动检查 API Key 配置：无 Key 时自动弹出配置窗口
   if (!cfg.apiKey) {
     setTimeout(() => {
       showWindow();
       if (win) win.webContents.send('open-config');
     }, 800);
-  } else {
-    showWindow();
   }
+  // 有 Key 时延迟创建窗口，等待用户首次 Alt+` 唤出（Lazy Window）
 });
 
 app.on('before-quit', () => { app.isQuitting = true; });
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  clearTimeout(ocrIdleTimer);
   if (ocrWorker) { ocrWorker.terminate().catch(() => {}); ocrWorker = null; }
 });
