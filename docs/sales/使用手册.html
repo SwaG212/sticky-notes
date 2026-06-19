@@ -3,231 +3,138 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>便利贴 使用手册</title>
+<title>便利贴 · 使用手册</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,"Microsoft YaHei",sans-serif;background:#0f0f0f;color:#e0e0e0;line-height:1.8;padding:20px;max-width:800px;margin:0 auto}
-h1{text-align:center;font-size:2em;margin:30px 0 10px;background:linear-gradient(90deg,#ffd700,#ff6b6b);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.subtitle{text-align:center;color:#888;margin-bottom:40px}
-h2{color:#ffd700;font-size:1.4em;margin:40px 0 15px;padding-bottom:8px;border-bottom:1px solid #2a2a4a}
-h3{color:#ffa500;font-size:1.1em;margin:20px 0 8px}
-p{margin:8px 0;color:#bbb}
-ul,ol{padding-left:24px;margin:8px 0}
-li{margin:4px 0;color:#bbb}
-kbd{background:#2a2a4a;border:1px solid #444;border-radius:4px;padding:2px 8px;font-size:0.9em;font-family:inherit;white-space:nowrap}
-.tip{background:#1a2e1a;border-left:3px solid #4caf50;padding:12px 16px;margin:15px 0;border-radius:4px}
-.tip strong{color:#4caf50}
-.warn{background:#2e2a1a;border-left:3px solid #ffd700;padding:12px 16px;margin:15px 0;border-radius:4px}
-.warn strong{color:#ffd700}
-.step{background:#1a1a2e;border-radius:8px;padding:15px 20px;margin:10px 0;border:1px solid #2a2a4a}
-.step .num{display:inline-block;background:#ff6b6b;color:#fff;width:24px;height:24px;text-align:center;border-radius:50%;font-size:0.85em;line-height:24px;margin-right:10px}
-table{width:100%;border-collapse:collapse;margin:15px 0}
-th,td{border:1px solid #2a2a4a;padding:10px 14px;text-align:left}
-th{background:#1a1a2e;color:#ffd700}
-td{color:#bbb}
-.toc{background:#1a1a2e;border-radius:8px;padding:20px;margin:20px 0}
-.toc a{color:#ffd700;text-decoration:none}
-.toc a:hover{text-decoration:underline}
+body{font-family:-apple-system,"Microsoft YaHei",sans-serif;background:#0f0f0f;color:#e0e0e0;line-height:1.7;padding:20px;max-width:720px;margin:0 auto}
+h1{text-align:center;font-size:1.8em;margin:20px 0 5px;color:#ffd700}
+.sub{text-align:center;color:#888;margin-bottom:30px;font-size:0.9em}
+h2{color:#ffd700;font-size:1.2em;margin:35px 0 12px;padding-left:10px;border-left:3px solid #ff6b6b}
+kbd{background:#2a2a4a;border:1px solid #444;border-radius:3px;padding:1px 6px;font-size:0.9em}
+.row{display:flex;gap:15px;flex-wrap:wrap;margin:10px 0}
+.card{flex:1;min-width:200px;background:#1a1a2e;border-radius:8px;padding:16px;border:1px solid #2a2a4a}
+.card h3{color:#ffa500;font-size:1em;margin-bottom:6px}
+.card p{color:#aaa;font-size:0.9em}
+.steps{margin:10px 0}
+.step{display:flex;align-items:flex-start;gap:10px;margin:10px 0;padding:12px 14px;background:#1a1a2e;border-radius:8px}
+.step .n{flex-shrink:0;width:26px;height:26px;background:#ff6b6b;color:#fff;border-radius:50%;text-align:center;line-height:26px;font-size:0.85em;font-weight:bold}
+.step .t{color:#bbb;font-size:0.95em}
+.step .t strong{color:#ffd700}
+.tip{margin:12px 0;padding:10px 14px;background:#1a2e1a;border-radius:6px;font-size:0.9em;color:#9ccc9c}
+.warn{margin:12px 0;padding:10px 14px;background:#2e2a1a;border-radius:6px;font-size:0.9em;color:#e6d88a}
+.footer{text-align:center;margin-top:40px;padding:20px;color:#555;font-size:0.8em}
 </style>
 </head>
 <body>
 
-<h1>便利贴 使用手册</h1>
-<p class="subtitle">Windows 桌面 AI 效率工具 · 一次付费,终身使用</p>
+<h1>便利贴 · 使用手册</h1>
+<p class="sub">一页看完所有功能怎么用</p>
 
-<div class="toc">
-<strong style="color:#ffd700">目录</strong>
-<ol>
-<li><a href="#install">下载与安装</a></li>
-<li><a href="#first-setup">首次配置 (必须)</a></li>
-<li><a href="#sticky-page">便利贴页 — 记录任务</a></li>
-<li><a href="#notepad-page">记事本页 — 写笔记</a></li>
-<li><a href="#daily-report">日报生成</a></li>
-<li><a href="#settings">设置页详解</a></li>
-<li><a href="#shortcuts">快捷键一览</a></li>
-<li><a href="#tray">系统托盘</a></li>
-<li><a href="#faq">常见问题</a></li>
-</ol>
+<!-- ====== 唤出 ====== -->
+<h2>怎么唤出来</h2>
+<p>按 <kbd>Alt</kbd> + <kbd>`</kbd>（ESC 下面那个键），窗口从右下角弹出。用完点窗口外面或再按一次就隐藏。</p>
+<p>软件启动后在右下角系统托盘常驻，是个黄色小方块。左键点它也能唤出。</p>
+<div class="tip">开机自动启动，不用每次都手动开。</div>
+
+<!-- ====== 便利贴 ====== -->
+<h2>便利贴页 — 记待办</h2>
+
+<div class="row">
+<div class="card">
+<h3>打字记</h3>
+<p>底部输入框直接敲字，多件事可以换行写。</p>
+</div>
+<div class="card">
+<h3>贴截图</h3>
+<p>截图后 <kbd>Ctrl</kbd>+<kbd>V</kbd> 粘贴，内置 OCR 识别图中文字。</p>
+</div>
+<div class="card">
+<h3>一键整理</h3>
+<p>点「整理 ▸」或直接关窗，AI 自动拆成任务清单。</p>
+</div>
 </div>
 
-<!-- ============ 1. 下载安装 ============ -->
-<h2 id="install">1. 下载与安装</h2>
+<div class="row">
+<div class="card">
+<h3>✓ 勾掉任务</h3>
+<p>点圆圈勾选完成，自动沉底，动画丝滑。</p>
+</div>
+<div class="card">
+<h3>✎ 编辑文字</h3>
+<p>双击任务文字就能改，回车确认。</p>
+</div>
+<div class="card">
+<h3>✕ 删除</h3>
+<p>鼠标移到任务上，右侧出现 ✕，点了就删。</p>
+</div>
+</div>
 
-<div class="step"><span class="num">1</span> 下载 <code>Setup.1.0.0.exe</code>（约 91MB）</div>
-<div class="step"><span class="num">2</span> 双击运行，选择安装目录，勾选"创建桌面快捷方式"</div>
-<div class="step"><span class="num">3</span> 安装完成后，桌面会出现「便利贴」图标</div>
-<div class="step"><span class="num">4</span> 双击启动，或设为开机自启后自动运行</div>
+<div class="row">
+<div class="card">
+<h3>⏰ 设闹钟</h3>
+<p>鼠标移到任务 → 点时间（--:--）→ 选几时几分。到点右下角弹窗提醒。</p>
+</div>
+<div class="card">
+<h3>⋮⋮ 拖拽排序</h3>
+<p>按住 ⋮⋮ 手柄上下拖，想怎么排就怎么排。</p>
+</div>
+<div class="card">
+<h3>📋 一键日报</h3>
+<p>点「日报」按钮，今日任务自动写入剪贴板，Ctrl+V 直接粘贴到微信/钉钉。</p>
+</div>
+</div>
 
-<div class="tip"><strong>提示：</strong>软件启动后出现在系统托盘（右下角小图标区域），不会弹出窗口。按 <kbd>Alt</kbd> + <kbd>`</kbd> 呼出。</div>
+<div class="tip">每天凌晨自动把昨天没完成的任务搬到今天，闹钟时间清零。不丢东西。</div>
 
-<!-- ============ 2. 首次配置 ============ -->
-<h2 id="first-setup">2. 首次配置（必须）</h2>
+<!-- ====== 记事本 ====== -->
+<h2>记事本页 — 写笔记</h2>
 
-<p>首次启动会自动弹出设置窗口。如果没弹出，右键系统托盘图标 →「配置 API Key」。</p>
+<p>便利贴页点右下角「→」切换过去（快捷键 <kbd>Alt</kbd>+<kbd>2</kbd>）。回来按 <kbd>Alt</kbd>+<kbd>1</kbd> 或点「←」。</p>
 
-<div class="step"><span class="num">1</span><strong>获取 DeepSeek API Key</strong>：打开 <code>platform.deepseek.com</code>，注册账号 → 左侧「API Keys」→ 创建新 Key → 复制</div>
-<div class="step"><span class="num">2</span> 在设置页粘贴到「API Key」输入框</div>
-<div class="step"><span class="num">3</span>「API 地址」保持默认 <code>https://api.deepseek.com</code>（无需改动）</div>
-<div class="step"><span class="num">4</span> 点击右上角「确认」保存</div>
+<div class="row">
+<div class="card">
+<h3>☰ 文件列表</h3>
+<p>左上角 ☰ 打开，列出所有笔记。点文件名切换，双击改名，右键删除。</p>
+</div>
+<div class="card">
+<h3>📌 置顶</h3>
+<p>文件列表中点 📍 图标置顶，重要笔记始终排在最前面。</p>
+</div>
+<div class="card">
+<h3>🔍 搜索</h3>
+<p>文件列表顶部搜索框，输入关键词回车过滤。</p>
+</div>
+</div>
 
-<div class="warn"><strong>注意：</strong>DeepSeek 注册即送免费额度，日常使用够用数月。API Key 使用系统级加密存储，不会上传任何服务器。</div>
+<div class="row">
+<div class="card">
+<h3>+ 新建</h3>
+<p>点左上角 +，创建空白笔记。</p>
+</div>
+<div class="card">
+<h3>🤖 AI 自动起名</h3>
+<p>写完笔记切到别的文件，AI 自动根据内容生成文件名。</p>
+</div>
+<div class="card">
+<h3>💾 自动保存</h3>
+<p>打字即存，关窗也存。不用找保存按钮。</p>
+</div>
+</div>
 
-<!-- ============ 3. 便利贴页 ============ -->
-<h2 id="sticky-page">3. 便利贴页 — 记录与整理任务</h2>
-
-<p>这是主页面，快捷键 <kbd>Alt</kbd> + <kbd>`</kbd> 唤出后默认显示。</p>
-
-<h3>3.1 输入文字</h3>
-<p>在底部输入框打字，可以是单条任务，也可以是多行杂乱想法。例如：</p>
-<div class="step">"明天前把合同出了，找运维要服务器账号，记得买牛奶"</div>
-
-<h3>3.2 粘贴截图</h3>
-<p>复制任意截图后，在输入框中 <kbd>Ctrl</kbd> + <kbd>V</kbd> 粘贴。支持粘贴最多 3 张图片，单张不超过 10MB。图片会显示在输入框上方。</p>
-
-<h3>3.3 AI 整理</h3>
-<p>点击「整理 ▸」按钮，或直接关掉窗口（失去焦点自动整理），或按 <kbd>Ctrl</kbd> + <kbd>Enter</kbd>。</p>
-<p>AI 会：</p>
-<ul>
-<li>先 OCR 识别截图中的中文文字</li>
-<li>将文字 + 识别结果一起发给 DeepSeek AI</li>
-<li>AI 拆解为独立任务，返回结构化清单</li>
+<!-- ====== 设置 ====== -->
+<h2>设置 — 改配置</h2>
+<p>切换到记事本页 → 点右上角 ⚙。或者右键系统托盘图标 →「配置 API Key」。</p>
+<ul style="color:#aaa;padding-left:20px;margin:8px 0">
+<li><strong style="color:#ffd700">API Key</strong> — DeepSeek 密钥，没它 AI 不能用</li>
+<li><strong style="color:#ffd700">日报姓名</strong> — 日报里显示"张三 0619"</li>
+<li><strong style="color:#ffd700">文件位置</strong> — 笔记存哪，不改就默认 <code>AppData</code></li>
+<li><strong style="color:#ffd700">快捷键</strong> — 点输入框按下新组合键即改</li>
 </ul>
-<div class="tip"><strong>离线可用：</strong>没有网络时，系统会按换行符自动拆分文字为独立任务，不会丢失数据。</div>
+<p style="color:#aaa">详细配置步骤看：<a href="配置指南.html" style="color:#ffd700">配置指南</a></p>
 
-<h3>3.4 任务操作</h3>
-<table>
-<tr><th>操作</th><th>方法</th></tr>
-<tr><td>勾选完成</td><td>点击任务前面的圆圈</td></tr>
-<tr><td>编辑文字</td><td>双击任务文字，修改后按回车确认</td></tr>
-<tr><td>删除任务</td><td>鼠标移到任务上，点击右侧出现的 ✕</td></tr>
-<tr><td>拖拽排序</td><td>鼠标按住未完成任务右侧的 ⋮⋮ 手柄，上下拖动</td></tr>
-<tr><td>设置提醒</td><td>鼠标移到任务上，点击时间（如 --:--），选择小时和分钟</td></tr>
-</table>
-
-<h3>3.5 定时提醒</h3>
-<p>给任务设置闹钟时间后，系统每 60 秒检查一次，到点弹出提醒窗口（右下角弹窗，始终置顶）。点击「确认」关闭。</p>
-<ul>
-<li>每天凌晨会自动清除所有未触发的闹钟时间（恢复为 --:--）</li>
-<li>昨日未完成任务会自动迁移到今天</li>
-<li>已过时间不会弹窗</li>
-</ul>
-
-<!-- ============ 4. 记事本页 ============ -->
-<h2 id="notepad-page">4. 记事本页 — 写笔记</h2>
-
-<p>切换方式：便利贴页点击右下角「→」按钮，或按 <kbd>Alt</kbd> + <kbd>2</kbd>。</p>
-
-<h3>4.1 文件列表</h3>
-<p>点击左上角「☰」打开文件列表：</p>
-<ul>
-<li><strong>搜索</strong>：在顶部搜索框输入关键词，按回车过滤文件名</li>
-<li><strong>切换笔记</strong>：单击文件名</li>
-<li><strong>重命名</strong>：双击文件名，输入新名称后回车</li>
-<li><strong>删除</strong>：右键文件名（两次，防误触），删除后放入回收站</li>
-<li><strong>置顶</strong>：点击文件名右侧 📍 按钮，置顶后显示 📌，置顶笔记排在列表上方并有浅灰背景</li>
-</ul>
-<p>点击文件列表外部区域或再次点击「☰」关闭列表。</p>
-
-<h3>4.2 创建新笔记</h3>
-<p>点击左上角「+」按钮。新笔记默认命名为 <code>untitled_1.md</code>。</p>
-
-<h3>4.3 AI 自动命名</h3>
-<p>当你写完笔记并切换到其他文件（或关闭窗口）时，如果笔记文件名为 <code>untitled_X.md</code> 且有内容，AI 会读取内容并自动生成 15 字以内的文件名。</p>
-<ul>
-<li>打开笔记 → 写字 → 切换到其他笔记 → AI 自动改名</li>
-<li>如果没有内容（空文件），系统会自动删除该空白文件</li>
-</ul>
-
-<h3>4.4 自动保存</h3>
-<p>每次输入后 300 毫秒自动保存，关闭窗口时也会最终保存。无需手动保存。</p>
-
-<h3>4.5 返回便利贴页</h3>
-<p>点击左下角「←」按钮，或按 <kbd>Alt</kbd> + <kbd>1</kbd>。</p>
-
-<!-- ============ 5. 日报 ============ -->
-<h2 id="daily-report">5. 日报生成</h2>
-
-<p>在便利贴页底部点击「日报」按钮。系统会：</p>
-<div class="step">将今日任务按"已完成在前、未完成在后"排序，拼接为"姓名 + 日期 + 编号任务清单"格式，自动写入剪贴板。</div>
-<p>然后直接 <kbd>Ctrl</kbd> + <kbd>V</kbd> 粘贴到微信、钉钉或其他地方即可。</p>
-
-<div class="tip"><strong>自定义姓名：</strong>在设置页填写「日报姓名」，不填则使用系统用户名。</div>
-
-<!-- ============ 6. 设置页 ============ -->
-<h2 id="settings">6. 设置页详解</h2>
-
-<p>打开方式：切换到记事本页 → 点击右上角 ⚙ 按钮，或右键系统托盘图标 →「配置 API Key」。</p>
-
-<table>
-<tr><th>设置项</th><th>说明</th></tr>
-<tr><td>API Key</td><td>DeepSeek 的 API 密钥，必填。加密存储，安全</td></tr>
-<tr><td>API 地址</td><td>默认 DeepSeek 官方，可改为其他兼容接口</td></tr>
-<tr><td>日报姓名</td><td>日报中显示"某某 0619"的名字</td></tr>
-<tr><td>文件读取位置</td><td>笔记存储目录。留空用默认（AppData），可改为 D:\我的笔记 等</td></tr>
-<tr><td>开机自启</td><td>勾选后随 Windows 启动，使用系统登录项</td></tr>
-<tr><td>快捷键</td><td>点击输入框，按下想要的组合键即可自定义（见下方）</td></tr>
-</table>
-
-<div class="warn"><strong>修改文件读取位置后</strong>，笔记列表会立即刷新为新目录内容，原目录文件不会被删除。</div>
-
-<!-- ============ 7. 快捷键 ============ -->
-<h2 id="shortcuts">7. 快捷键一览</h2>
-
-<table>
-<tr><th>功能</th><th>默认快捷键</th><th>可自定义</th></tr>
-<tr><td>唤出/隐藏窗口</td><td><kbd>Alt</kbd> + <kbd>`</kbd></td><td>✔</td></tr>
-<tr><td>AI 整理 (在便利贴页)</td><td><kbd>Ctrl</kbd> + <kbd>Enter</kbd></td><td>✔</td></tr>
-<tr><td>切换到便利贴页</td><td><kbd>Alt</kbd> + <kbd>1</kbd></td><td>✔</td></tr>
-<tr><td>切换到记事本页</td><td><kbd>Alt</kbd> + <kbd>2</kbd></td><td>✔</td></tr>
-</table>
-
-<p>所有快捷键都可在设置页自定义：点击对应输入框 → 按下新组合键 → 自动记录。按 <kbd>Esc</kbd> 取消。</p>
-
-<!-- ============ 8. 系统托盘 ============ -->
-<h2 id="tray">8. 系统托盘</h2>
-
-<p>便利贴常驻系统托盘（右下角通知区域）。黄色小方块图标。</p>
-
-<table>
-<tr><th>操作</th><th>效果</th></tr>
-<tr><td>左键单击图标</td><td>唤出/隐藏窗口</td></tr>
-<tr><td>右键单击图标</td><td>弹出菜单</td></tr>
-</table>
-
-<p>右键菜单功能：</p>
-<ul>
-<li><strong>打开便利贴</strong> — 显示窗口</li>
-<li><strong>配置 API Key</strong> — 打开设置页</li>
-<li><strong>开机自启</strong> — 勾选/取消</li>
-<li><strong>退出便利贴</strong> — 彻底关闭程序</li>
-</ul>
-
-<!-- ============ 9. FAQ ============ -->
-<h2 id="faq">9. 常见问题</h2>
-
-<h3>Q: API Key 无效 / 401 错误？</h3>
-<p>检查 Key 是否复制完整，是否有多余空格。去 DeepSeek 后台确认 Key 状态。</p>
-
-<h3>Q: API 余额不足 / 402 错误？</h3>
-<p>DeepSeek 免费额度用完了，去 platform.deepseek.com 充值（很便宜，几块钱够用几个月）。</p>
-
-<h3>Q: 为什么粘贴截图后没反应？</h3>
-<p>确认粘贴的是图片（不是文件路径）。单张图片不超过 10MB。最多同时 3 张。</p>
-
-<h3>Q: 笔记存在哪里？</h3>
-<p>默认在 <code>%APPDATA%/sticky-notes/notes/</code>。可在设置页改为任意目录。</p>
-
-<h3>Q: 任务数据存在哪里？</h3>
-<p><code>%APPDATA%/sticky-notes/tasks/YYYY-MM-DD.json</code>。按日期分文件，旧任务不会丢失。</p>
-
-<h3>Q: 快捷键不生效？</h3>
-<p>检查是否被其他软件占用。<kbd>Alt</kbd> + <kbd>`</kbd> 在某些键盘上可能需要按 <kbd>Alt</kbd> + <kbd>~</kbd>。可在设置页改为其他组合键。</p>
-
-<h3>Q: 怎么彻底卸载？</h3>
-<p>Windows 设置 → 应用 → 找到「便利贴」→ 卸载。卸载后手动删除 <code>%APPDATA%/sticky-notes/</code> 清理数据。</p>
-
-<h3>Q: 窗口位置能调吗？</h3>
-<p>窗口固定在屏幕右下角（360×500），不支持拖动。即呼即走的定位就是这个设计思路。</p>
+<div class="footer">
+<a href="index.html" style="color:#ffd700">← 回销售页</a> &nbsp;|&nbsp; <a href="配置指南.html" style="color:#ffd700">配置指南</a>
+</div>
 
 </body>
 </html>

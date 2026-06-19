@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>便利贴 · 配置指南</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,"Microsoft YaHei",sans-serif;background:#0f0f0f;color:#e0e0e0;line-height:1.7;padding:20px;max-width:720px;margin:0 auto}
+h1{text-align:center;font-size:1.8em;margin:20px 0 5px;color:#ffd700}
+.sub{text-align:center;color:#888;margin-bottom:30px;font-size:0.9em}
+h2{color:#ffd700;font-size:1.2em;margin:35px 0 12px;padding-left:10px;border-left:3px solid #4caf50}
+kbd{background:#2a2a4a;border:1px solid #444;border-radius:3px;padding:1px 6px;font-size:0.9em}
+.step{display:flex;align-items:flex-start;gap:12px;margin:12px 0;padding:14px 16px;background:#1a1a2e;border-radius:8px}
+.step .n{flex-shrink:0;width:28px;height:28px;background:#4caf50;color:#fff;border-radius:50%;text-align:center;line-height:28px;font-size:0.9em;font-weight:bold}
+.step .t{color:#ccc;font-size:0.95em}
+.step .t strong{color:#ffd700}
+.step .t code{background:#2a2a4a;padding:1px 5px;border-radius:3px;font-size:0.9em;color:#ffa500}
+table{width:100%;border-collapse:collapse;margin:12px 0}
+th,td{border:1px solid #2a2a4a;padding:10px;text-align:left;font-size:0.9em}
+th{background:#1a1a2e;color:#ffd700}
+td{color:#bbb}
+img{max-width:100%;border-radius:8px;margin:8px 0;border:1px solid #333}
+.tip{margin:12px 0;padding:12px 16px;background:#1a2e1a;border-radius:6px;font-size:0.9em;color:#9ccc9c}
+.warn{margin:12px 0;padding:12px 16px;background:#2e2a1a;border-radius:6px;font-size:0.9em;color:#e6d88a}
+.footer{text-align:center;margin-top:40px;padding:20px;color:#555;font-size:0.8em}
+</style>
+</head>
+<body>
+
+<h1>便利贴 · 配置指南</h1>
+<p class="sub">装好后花 2 分钟搞定，以后就不用管了</p>
+
+<!-- ====== API Key ====== -->
+<h2>第一步：获取 DeepSeek API Key</h2>
+
+<div class="step"><span class="n">1</span><span class="t">打开 <strong>platform.deepseek.com</strong>，注册账号（用手机号或邮箱）</span></div>
+<div class="step"><span class="n">2</span><span class="t">登录后点左侧菜单 <strong>「API Keys」</strong></span></div>
+<div class="step"><span class="n">3</span><span class="t">点 <strong>「创建新的 API Key」</strong>，随便起个名字（比如"便利贴"），点创建</span></div>
+<div class="step"><span class="n">4</span><span class="t">复制生成的 Key（一长串 <code>sk-</code> 开头的字符），<strong>只显示一次，立刻复制</strong></span></div>
+
+<div class="tip">注册就送免费额度，日常够用好几个月。充值也很便宜，几块钱用一年。</div>
+
+<!-- ====== 填入 ====== -->
+<h2>第二步：填入便利贴</h2>
+
+<div class="step"><span class="n">1</span><span class="t">打开便利贴（系统托盘右键 →「打开便利贴」或按 <kbd>Alt</kbd>+<kbd>`</kbd>）</span></div>
+<div class="step"><span class="n">2</span><span class="t">点击右上角 <strong>⚙ 齿轮图标</strong>（在记事本页），或右键系统托盘图标 →「配置 API Key」</span></div>
+<div class="step"><span class="n">3</span><span class="t">把刚复制的 Key 粘贴到 <strong>「API Key」</strong> 输入框</span></div>
+<div class="step"><span class="n">4</span><span class="t">「API 地址」不用动，保持 <code>https://api.deepseek.com</code></span></div>
+<div class="step"><span class="n">5</span><span class="t">点右上角 <strong>「确认」</strong>，搞定</span></div>
+
+<div class="warn">Key 是以加密方式存你电脑上的，不会上传到任何服务器，放心。</div>
+
+<!-- ====== 其他设置 ====== -->
+<h2>其他可配置项</h2>
+
+<table>
+<tr><th>设置项</th><th>干什么的</th><th>不填会怎样</th></tr>
+<tr><td><strong>日报姓名</strong></td><td>日报里显示你的名字（如"张三 0619"）</td><td>用 Windows 用户名</td></tr>
+<tr><td><strong>文件读取位置</strong></td><td>笔记存哪。比如改到 <code>D:\我的笔记</code></td><td>默认 AppData 目录</td></tr>
+<tr><td><strong>开机自启</strong></td><td>勾上后开机自动启动</td><td>需手动打开</td></tr>
+<tr><td><strong>快捷键</strong></td><td>四个全局快捷键，点击输入框后按下新组合键即改</td><td>用默认的</td></tr>
+</table>
+
+<!-- ====== 快捷键 ====== -->
+<h2>默认快捷键</h2>
+
+<table>
+<tr><th>干什么</th><th>按什么</th></tr>
+<tr><td>唤出 / 隐藏</td><td><kbd>Alt</kbd> + <kbd>`</kbd></td></tr>
+<tr><td>AI 整理</td><td><kbd>Ctrl</kbd> + <kbd>Enter</kbd></td></tr>
+<tr><td>切到便利贴</td><td><kbd>Alt</kbd> + <kbd>1</kbd></td></tr>
+<tr><td>切到记事本</td><td><kbd>Alt</kbd> + <kbd>2</kbd></td></tr>
+</table>
+
+<div class="tip">快捷键在设置页点一下输入框再按新组合键就能改。比如把 Ctrl+Enter 改成 Ctrl+E。</div>
+
+<!-- ====== 常见问题 ====== -->
+<h2>常见报错</h2>
+
+<table>
+<tr><th>报错</th><th>怎么办</th></tr>
+<tr><td>「请先配置 API Key」</td><td>还没填 Key，按第二步操作</td></tr>
+<tr><td>「API Key 无效」(401)</td><td>Key 复制漏了或有多余空格，重新复制粘贴</td></tr>
+<tr><td>「余额不足」(402)</td><td>DeepSeek 免费额度用完了，去 platform.deepseek.com 充值</td></tr>
+<tr><td>快捷键没反应</td><td>被其他软件占了，去设置页换一个组合键</td></tr>
+<tr><td>AI 返回格式异常</td><td>偶尔网络抖动，重试一次就好</td></tr>
+</table>
+
+<div class="footer">
+<a href="index.html" style="color:#ffd700">← 回销售页</a> &nbsp;|&nbsp; <a href="使用手册.html" style="color:#ffd700">使用手册</a>
+</div>
+
+</body>
+</html>
