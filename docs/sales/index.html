@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>便利贴 - 桌面AI效率工具 | 随手记·AI整理·任务清单</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0f0f0f;color:#e0e0e0;line-height:1.6}
+.hero{text-align:center;padding:80px 20px 60px;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%)}
+.hero h1{font-size:3em;margin-bottom:10px;background:linear-gradient(90deg,#ffd700,#ff6b6b);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hero .sub{font-size:1.3em;color:#aaa;margin-bottom:30px}
+.price-tag{display:inline-block;background:#ffd700;color:#000;font-size:2em;font-weight:bold;padding:15px 40px;border-radius:50px;margin:20px 0}
+.price-tag small{font-size:0.5em;display:block;color:#333}
+.cta-btn{display:inline-block;background:#ff6b6b;color:#fff;font-size:1.2em;padding:15px 50px;border-radius:8px;text-decoration:none;margin:10px;font-weight:bold;transition:transform .2s}
+.cta-btn:hover{transform:scale(1.05)}
+.cta-btn.sec{background:transparent;border:2px solid #ffd700;color:#ffd700}
+.features{max-width:900px;margin:60px auto;padding:0 20px}
+.features h2{text-align:center;color:#ffd700;margin-bottom:40px;font-size:2em}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:25px}
+.card{background:#1a1a2e;border-radius:12px;padding:30px;border:1px solid #2a2a4a;transition:border-color .3s}
+.card:hover{border-color:#ffd700}
+.card h3{color:#ffd700;margin-bottom:10px}
+.card p{color:#aaa;font-size:0.95em}
+.pricing{text-align:center;padding:60px 20px;background:#1a1a2e}
+.pricing h2{color:#ffd700;margin-bottom:30px}
+.pricing .desc{color:#aaa;margin:15px 0}
+.pay-methods{display:flex;justify-content:center;gap:40px;flex-wrap:wrap;margin-top:30px}
+.pay-card{background:#2a2a4a;padding:25px;border-radius:12px;text-align:center;min-width:180px}
+.pay-card h4{color:#ffd700;margin-bottom:10px}
+.pay-card .qr-placeholder{width:150px;height:150px;background:#333;margin:15px auto;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#888;font-size:0.85em}
+.footer{text-align:center;padding:30px;color:#555;font-size:0.85em}
+.guarantee{display:flex;align-items:center;justify-content:center;gap:30px;margin:20px 0;flex-wrap:wrap}
+.g-item{display:flex;align-items:center;gap:8px;color:#aaa}
+.g-icon{font-size:1.5em}
+@media(max-width:600px){.hero h1{font-size:2em}}
+</style>
+</head>
+<body>
+
+<section class="hero">
+  <h1>便利贴</h1>
+  <p class="sub">随手记 · AI 智能整理 · 任务清单一键搞定</p>
+  <div class="price-tag">¥9.9 <small>终身买断 · 永久更新</small></div>
+  <p style="color:#aaa;margin:15px 0">一杯奶茶的钱，换一个全天候 AI 效率助手</p>
+  <div>
+    <a href="https://github.com/SwaG212/sticky-notes/releases/download/v1.0.0/便利贴 Setup 1.0.0.exe" class="cta-btn">立即下载免费试用</a>
+    <a href="#buy" class="cta-btn sec">¥9.9 购买 PRO</a>
+  </div>
+  <div class="guarantee" style="margin-top:30px">
+    <div class="g-item"><span class="g-icon">🔄</span> 7天无理由退款</div>
+    <div class="g-item"><span class="g-icon">⬆️</span> 终身免费更新</div>
+    <div class="g-item"><span class="g-icon">💬</span> 一对一技术支持</div>
+  </div>
+</section>
+
+<section class="features">
+  <h2>为什么你需要便利贴？</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>📝 随手记录</h3>
+      <p>输入文字或 Ctrl+V 粘贴截图，碎片想法秒级捕捉。支持图片 OCR 识别中文，截图也能变文字。</p>
+    </div>
+    <div class="card">
+      <h3>🤖 AI 智能整理</h3>
+      <p>一键调用 DeepSeek AI，将杂乱输入自动转化为结构化任务清单。分类、优先级、执行步骤一目了然。</p>
+    </div>
+    <div class="card">
+      <h3>⏰ 定时提醒</h3>
+      <p>为每个任务设置闹钟时间，到点弹窗提醒。再忙也不会遗漏重要事项。</p>
+    </div>
+    <div class="card">
+      <h3>✅ 勾选执行</h3>
+      <p>完成任务点击勾选，自动移至底部。流畅的 FLIP 排序动画，完成任务的快感看得见。</p>
+    </div>
+    <div class="card">
+      <h3>📒 内置记事本</h3>
+      <p>多文件纯文本笔记管理。AI 自动根据内容命名笔记，置顶重要笔记，支持自定义存储目录。</p>
+    </div>
+    <div class="card">
+      <h3>📊 一键日报</h3>
+      <p>下班前一键生成今日任务总结，按完成状态排序，自动写入剪贴板，直接粘贴到汇报。</p>
+    </div>
+    <div class="card">
+      <h3>💨 即呼即走</h3>
+      <p>Alt+` 全局快捷键随时唤出/隐藏。系统托盘常驻，不占任务栏，开机自启，低调高效。</p>
+    </div>
+    <div class="card">
+      <h3>🔒 隐私安全</h3>
+      <p>所有数据本地存储，API Key 系统级加密。你的数据你做主，不上传任何第三方服务器。</p>
+    </div>
+  </div>
+</section>
+
+<section class="pricing" id="buy">
+  <h2>简单透明的定价</h2>
+  <div class="price-tag">¥9.9 <small>终身买断</small></div>
+  <p class="desc">一次付费，永久使用，终身免费更新</p>
+  <p class="desc" style="color:#ffd700">现在购买锁定 PRO 权益：云同步 + 多设备 + 团队协作（即将推出）</p>
+  <div class="pay-methods">
+    <div class="pay-card">
+      <h4>微信支付</h4>
+      <div class="qr-placeholder">[微信收款码]</div>
+      <p style="color:#aaa;font-size:0.85em">扫码支付 9.9 元<br>备注"便利贴"</p>
+    </div>
+    <div class="pay-card">
+      <h4>支付宝</h4>
+      <div class="qr-placeholder">[支付宝收款码]</div>
+      <p style="color:#aaa;font-size:0.85em">扫码支付 9.9 元<br>备注"便利贴"</p>
+    </div>
+  </div>
+  <p style="color:#888;margin-top:20px;font-size:0.9em">付款后请添加微信发送截图，立即发送激活码 & 下载链接</p>
+</section>
+
+<div class="footer">
+  <p>© 2026 便利贴 | <a href="https://github.com/SwaG212/sticky-notes" style="color:#ffd700">GitHub</a> | 有问题？提 Issue 或加微信</p>
+</div>
+
+</body>
+</html>
