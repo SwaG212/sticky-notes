@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>便利贴 · 详情</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,"Microsoft YaHei",sans-serif;background:#0f0f0f;color:#e0e0e0;line-height:1.8}
+.wrap{max-width:680px;margin:0 auto;padding:30px 20px}
+h2{color:#ffd700;font-size:1.3em;margin:36px 0 14px}
+h3{color:#ffa500;font-size:1em;margin:18px 0 10px}
+p{color:#bbb;margin:8px 0;font-size:0.95em}
+.pain{background:#1a1218;border-left:3px solid #ff6b6b;padding:18px 22px;margin:20px 0;border-radius:6px}
+.pain h3{color:#ff6b6b;margin-top:0}
+.pain ul{padding-left:18px;color:#ccc;font-size:0.95em}
+.pain li{margin:6px 0}
+.solve{text-align:center;font-size:1.3em;color:#ffd700;font-weight:bold;margin:30px 0;padding:20px;background:rgba(255,215,0,0.06);border-radius:10px}
+.features{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:16px 0}
+@media(max-width:500px){.features{grid-template-columns:1fr}}
+.feat{background:#1a1a2e;border-radius:10px;padding:18px;border:1px solid #2a2a4a}
+.feat h3{color:#ffd700;margin:0 0 6px;font-size:0.95em}
+.feat p{color:#aaa;font-size:0.85em;margin:0}
+.note{margin:24px 0;padding:16px 20px;background:#1a2e2a;border-radius:8px;color:#9ccc9c;font-size:0.9em}
+.note strong{color:#4caf50}
+.highlight-box{background:#2e2a1a;border-radius:10px;padding:18px 22px;margin:16px 0}
+.highlight-box h3{color:#ffd700;margin:0 0 10px}
+.highlight-box ul{padding-left:18px;color:#ddd;font-size:0.9em}
+.highlight-box li{margin:4px 0}
+.bottom-line{text-align:center;margin:36px 0 16px;padding:20px;background:linear-gradient(135deg,#1a1a2e,#16213e);border-radius:12px}
+.bottom-line .big{font-size:1.6em;color:#ffd700;font-weight:bold}
+.bottom-line .small{color:#888;font-size:0.85em}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h2>这软件解决了什么问题？</h2>
+
+<div class="pain">
+<h3>你每天是不是这样</h3>
+<ul>
+<li>脑子里一堆事，记不住，理不清，越积越焦虑</li>
+<li>微信、钉钉、邮件飞来一堆任务，转头就忘</li>
+<li>截图存了一堆待办，但从来不去翻</li>
+<li>下班写日报时脑子一片空白，今天到底干了啥</li>
+<li>待办软件装了一大把，但打开太麻烦，坚持不到三天</li>
+</ul>
+</div>
+
+<div class="solve">便利贴就是来解决这个的——<br>三秒记、一键理、从不忘</div>
+
+<h2>主要功能</h2>
+
+<div class="features">
+<div class="feat">
+  <h3>AI 一键整理</h3>
+  <p>打字或贴截图，点一下，AI 自动拆成任务清单。一个项目里混了七八件事？AI 给你一条条拆好、去重、排列，不用自己费脑子分类。</p>
+</div>
+<div class="feat">
+  <h3>OCR 图片识别</h3>
+  <p>别人微信发你一张待办截图，Ctrl+V 贴进来，自动识别图里的中文文字，跟打字一样交给 AI 整理。</p>
+</div>
+<div class="feat">
+  <h3>即呼即走</h3>
+  <p>Alt+` 随时弹出来，记完就不管。没有启动画面，不占任务栏，零摩擦力。这是你能坚持用的关键。</p>
+</div>
+<div class="feat">
+  <h3>定时提醒</h3>
+  <p>设个时间，到点右下角弹窗。不怕漏。</p>
+</div>
+<div class="feat">
+  <h3>拖拽排序</h3>
+  <p>按住任务右边手柄上下拖，想先做哪个排哪个。</p>
+</div>
+<div class="feat">
+  <h3>一键日报</h3>
+  <p>点一下「日报」，今天完成的事 + 待办的事自动排好，写入剪贴板。Ctrl+V 直接粘贴到微信/钉钉，五秒搞定下班汇报。</p>
+</div>
+<div class="feat">
+  <h3>内置记事本</h3>
+  <p>多文件纯文本笔记，AI 根据内容自动起名。支持置顶、搜索、随便存哪个目录。</p>
+</div>
+<div class="feat">
+  <h3>数据全在本地</h3>
+  <p>不同步、不上传、不经过任何服务器。API Key 系统级加密。你的任务和笔记只在你电脑上。</p>
+</div>
+</div>
+
+<div class="highlight-box">
+<h3>补充信息</h3>
+<ul>
+<li>Windows 10/11 可用，系统托盘常驻，开机自启</li>
+<li>需要自备 DeepSeek API Key（免费注册，平台送额度，日常用够用几个月）</li>
+<li>不连 AI 也能用——没网时自动按行拆分文字为独立任务</li>
+<li>昨天没做完的任务，每天凌晨自动迁移到今天</li>
+<li>快捷键全可自定义（唤出/整理/切页面）</li>
+</ul>
+</div>
+
+<div class="note">
+<strong>适合谁：</strong>程序员、产品经理、项目经理、运营、学生、自由职业者——任何每天被杂事淹没需要清空大脑的人。<br><br>
+<strong>不适合谁：</strong>只用笔和纸、不需要任何数字化工具的人（如果这都算缺点的话）。
+</div>
+
+<div class="bottom-line">
+<div class="big">¥2.9 · 买断 · 不订阅</div>
+<div class="small">闲鱼搜「便利贴AI」直接拍，秒发</div>
+</div>
+
+</div>
+</body>
+</html>
