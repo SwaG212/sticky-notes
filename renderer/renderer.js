@@ -11,6 +11,7 @@ const state = {
   pinnedNotes: [],
   noteSearchQuery: '',
   shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' },
+  projectNames: [],
 };
 
 // ========== DOM 引用 ==========
@@ -64,6 +65,12 @@ async function init() {
   document.querySelectorAll('.shortcut-input').forEach(input => {
     input.addEventListener('click', () => startShortcutCapture(input));
   });
+
+  // 项目名称标签输入
+  $('#project-tags-text').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addProjectTag(e.target.value); }
+  });
+  $('#project-tags-input').addEventListener('click', () => $('#project-tags-text').focus());
 
   // 笔记搜索
   $('#note-list-search').addEventListener('keydown', (e) => {
@@ -187,7 +194,16 @@ function renderTasks(shouldAnimate = false) {
 
     const text = document.createElement('span');
     text.className = `task-text${task.completed ? ' done' : ''}`;
-    text.textContent = task.task;
+
+    // 项目徽标
+    if (task.project) {
+      const badge = document.createElement('span');
+      badge.className = 'project-badge';
+      badge.textContent = task.project;
+      text.appendChild(badge);
+    }
+    text.appendChild(document.createTextNode(task.task));
+
     text.title = task.task.length > 50 ? task.task : '';
 
     const alarm = document.createElement('span');
@@ -431,7 +447,7 @@ function addTasks(newTasks) {
   const now = new Date().toISOString();
   const maxOrder = state.tasks.reduce((max, t) => Math.max(max, t.sortOrder ?? 0), -1);
   const items = unique.map((t, i) => ({
-    id: genId(), task: t.task, completed: false, createdAt: now, completedAt: null,
+    id: genId(), task: t.task, project: t.project || null, completed: false, createdAt: now, completedAt: null,
     alarmTime: null, sortOrder: maxOrder + 1 + i,
   }));
   state.tasks = [...items, ...state.tasks];
@@ -605,21 +621,43 @@ async function organize() {
   showProcessing(true, imgs.length > 0 ? '识别图片中...' : 'AI 整理中...');
 
   try {
+    // 读取项目名配置，前端确定性匹配项目名
+    let projectNames = [];
+    let project = null;
+    let cleanedText = text;
+    if (window.electronAPI) {
+      const cfg = await window.electronAPI.getConfig();
+      projectNames = cfg.projectNames || [];
+    }
+    if (projectNames.length > 0) {
+      const lower = text.toLowerCase();
+      for (const name of projectNames) {
+        const idx = lower.indexOf(name.toLowerCase());
+        if (idx !== -1) {
+          project = name;
+          cleanedText = (text.slice(0, idx) + text.slice(idx + name.length)).replace(/\s+/g, '');
+          break;
+        }
+      }
+    }
+
     if (window.electronAPI) {
       // 生产模式：通过 IPC 调用主进程（OCR + DeepSeek）
-      const result = await window.electronAPI.organizeRequest({ text, images: imgs });
+      const result = await window.electronAPI.organizeRequest({ text: cleanedText || text, images: imgs, project });
       if (result.success && result.tasks.length > 0) {
+        // LLM 返回的 task 不含项目名，在前面拼上
+        if (project) result.tasks.forEach(t => { t.project = project; });
         addTasks(result.tasks);
       } else {
         // IPC 失败或无结果时 fallback，不丢失用户任务
         if (!result.success) console.warn(result.error);
-        const tasks = fallbackOrganize(text, imgs);
+        const tasks = fallbackOrganize(text, imgs, projectNames, project);
         if (tasks.length > 0) addTasks(tasks);
       }
     } else {
       // 浏览器调试模式：fallback 简单拆分
       await sleep(500);
-      const tasks = fallbackOrganize(text, imgs);
+      const tasks = fallbackOrganize(text, imgs, projectNames, project);
       if (tasks.length > 0) addTasks(tasks);
     }
   } catch (e) {
@@ -632,13 +670,41 @@ async function organize() {
   }
 }
 
-function fallbackOrganize(text, imgs) {
+function fallbackOrganize(text, imgs, projectNames, preMatchedProject) {
   const tasks = [];
   if (imgs.length > 0) tasks.push({ task: '【截图识别】请编辑此任务补充详情' });
   if (text) {
-    const parts = text.split(/[\n\r。，；;,.。、]+/).map(s => s.trim()).filter(s => s.length > 1);
-    if (parts.length > 1) parts.forEach(p => tasks.push({ task: p }));
-    else tasks.push({ task: text });
+    // 使用前端已匹配的项目名，或重新匹配
+    let project = preMatchedProject || null;
+    let contentText = text;
+    if (!project && projectNames && projectNames.length > 0) {
+      const lower = text.toLowerCase();
+      for (const name of projectNames) {
+        const idx = lower.indexOf(name.toLowerCase());
+        if (idx !== -1) {
+          project = name;
+          contentText = (text.slice(0, idx) + text.slice(idx + name.length)).replace(/\s+/g, '');
+          break;
+        }
+      }
+    } else if (project) {
+      const lower = text.toLowerCase();
+      const idx = lower.indexOf(project.toLowerCase());
+      if (idx !== -1) {
+        contentText = (text.slice(0, idx) + text.slice(idx + project.length)).replace(/\s+/g, '');
+      }
+    }
+
+    const parts = contentText.split(/[\n\r。，；;,.。、]+/).map(s => s.trim()).filter(s => s.length > 1);
+    if (project) {
+      if (parts.length > 1) parts.forEach(p => tasks.push({ task: p, project }));
+      else if (parts.length === 1) tasks.push({ task: parts[0], project });
+      else tasks.push({ task: '', project });
+    } else {
+      if (parts.length > 1) parts.forEach(p => tasks.push({ task: p }));
+      else if (parts.length === 1) tasks.push({ task: parts[0] });
+      else tasks.push({ task: text });
+    }
   }
   return tasks;
 }
@@ -650,6 +716,34 @@ function showError(msg) {
 }
 
 // ========== 配置与设置管理 ==========
+function renderProjectTags() {
+  const list = $('#project-tags-list');
+  list.innerHTML = '';
+  state.projectNames.forEach(name => {
+    const tag = document.createElement('span');
+    tag.className = 'project-tag';
+    tag.innerHTML = `<span>${escapeHtml(name)}</span><button class="project-tag-remove" data-name="${escapeHtml(name)}">×</button>`;
+    tag.querySelector('button').addEventListener('click', () => {
+      state.projectNames = state.projectNames.filter(n => n !== name);
+      renderProjectTags();
+    });
+    list.appendChild(tag);
+  });
+}
+
+function addProjectTag(name) {
+  const trimmed = name.trim();
+  if (!trimmed || state.projectNames.includes(trimmed)) return;
+  state.projectNames.push(trimmed);
+  renderProjectTags();
+  $('#project-tags-text').value = '';
+}
+
+function escapeHtml(s) {
+  const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  return s.replace(/[&<>"']/g, c => map[c]);
+}
+
 async function loadShortcutsFromConfig() {
   if (window.electronAPI) {
     const cfg = await window.electronAPI.getConfig();
@@ -672,6 +766,8 @@ async function openSettings() {
     if (cfg.shortcuts) {
       state.shortcuts = { ...state.shortcuts, ...cfg.shortcuts };
     }
+    state.projectNames = [...(cfg.projectNames || [])];
+    renderProjectTags();
   }
   renderShortcutInputs();
   settingsOverlay.classList.remove('hidden');
@@ -703,7 +799,7 @@ async function confirmSettings() {
   const dirChanged = notesDir !== (oldCfg.notesDir || '');
 
   collectShortcutsFromInputs();
-  const cfg = { apiKey, baseUrl, reportName, notesDir, shortcuts: { ...state.shortcuts } };
+  const cfg = { apiKey, baseUrl, reportName, notesDir, projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts } };
 
   if (window.electronAPI) {
     await window.electronAPI.saveConfig(cfg);
