@@ -29,8 +29,13 @@ let alarmWin = null;
 let animating = false;
 let alarmTimer = null;
 let currentPage = 'main';
+let winFixed = true;
+let savedWinX = null;
+let savedWinY = null;
+let moveSaveTimer = null;
 const userDataPath = app.getPath('userData');
 const configPath = path.join(userDataPath, 'config.enc');
+const windowStatePath = path.join(userDataPath, 'window-state.json');
 
 // ========== 存储模块 ==========
 function ensureDir(dir) {
@@ -75,6 +80,17 @@ function saveConfig(cfg) {
   const encrypted = safeStorage.encryptString(json);
   fs.writeFileSync(configPath, encrypted);
   registerToggleShortcut(cfg.shortcuts?.toggle || 'Alt+`');
+}
+
+function loadWindowState() {
+  const data = readJSON(windowStatePath);
+  if (data) { savedWinX = data.x; savedWinY = data.y; }
+}
+
+function saveWindowState(x, y) {
+  savedWinX = x;
+  savedWinY = y;
+  writeJSON(windowStatePath, { x, y });
 }
 
 // ========== OCR 模块 ==========
@@ -526,6 +542,13 @@ function setupIPC() {
   ipcMain.handle('set-login-settings', (_e, enabled) => app.setLoginItemSettings({ openAtLogin: enabled }));
   ipcMain.handle('load-tasks', () => loadTasksFromFile());
   ipcMain.handle('save-tasks', (_event, tasks) => { saveTasksToFile(tasks); return { success: true }; });
+  ipcMain.handle('set-window-fixed', (_e, fixed) => {
+    winFixed = fixed;
+    if (win && !win.isDestroyed() && fixed) {
+      const { x, y, width, height } = getWindowPosition();
+      win.setBounds({ x, y, width, height });
+    }
+  });
 
   ipcMain.handle('set-page', (_e, page) => { currentPage = page; });
   ipcMain.handle('list-notes', () => listNotes());
@@ -562,6 +585,9 @@ function setupIPC() {
 // ========== 窗口管理 ==========
 function getWindowPosition() {
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+  if (!winFixed && savedWinX != null && savedWinY != null) {
+    return { x: savedWinX, y: savedWinY, width: 360, height: 500 };
+  }
   return {
     x: width - 360 - 8,
     y: height - 500,
@@ -576,7 +602,7 @@ function createWindow() {
     width, height, x, y,
     frame: false,
     resizable: false,
-    movable: false,
+    movable: true,
     alwaysOnTop: true,
     skipTaskbar: true,
     show: false,
@@ -613,6 +639,18 @@ function createWindow() {
     }
   });
 
+  let moveSaveTimer = null;
+  win.on('move', () => {
+    if (winFixed) return;
+    clearTimeout(moveSaveTimer);
+    moveSaveTimer = setTimeout(() => {
+      if (win && !win.isDestroyed() && !winFixed) {
+        const [x, y] = win.getPosition();
+        saveWindowState(x, y);
+      }
+    }, 500);
+  });
+
   win.on('close', (e) => {
     if (app.isQuitting) return; // 真正退出，允许窗口关闭
     e.preventDefault();
@@ -626,8 +664,10 @@ let lockTimer = null;
 
 function showWindow() {
   if (!win || win.isDestroyed()) createWindow();
-  const { x, y, width, height } = getWindowPosition();
-  win.setBounds({ x, y, width, height });
+  if (winFixed) {
+    const { x, y, width, height } = getWindowPosition();
+    win.setBounds({ x, y, width, height });
+  }
   win.show();
   win.focus();
   animating = true;
@@ -706,6 +746,8 @@ app.whenReady().then(() => {
   createTray();
 
   const cfg = loadConfig();
+  winFixed = cfg.winFixed !== false;
+  loadWindowState();
   registerToggleShortcut(cfg.shortcuts?.toggle || 'Alt+`');
 
   startAlarmTimer();

@@ -44,6 +44,7 @@
 
     <!-- 记事本页面 -->
     <div class="page page-notepad">
+      <div class="drag-handle"></div>
       <button id="btn-settings" title="设置">⚙</button>
       <div class="notepad-toolbar">
         <button id="btn-note-list">☰</button>
@@ -56,6 +57,11 @@
       <div id="note-list-overlay" class="hidden">
         <div id="note-list-search-box">
           <input type="text" id="note-list-search" placeholder="搜索文件名...">
+          <div class="search-mode-toggle" id="search-mode-toggle">
+            <span class="toggle-thumb"></span>
+            <span class="toggle-label toggle-filename active">文件</span>
+            <span class="toggle-label toggle-content">内容</span>
+          </div>
         </div>
         <div id="note-list-items"></div>
       </div>
@@ -90,6 +96,12 @@
             <label class="checkbox-label">
               <input type="checkbox" id="settings-autostart">
               <span>开机自启</span>
+            </label>
+          </div>
+          <div class="settings-checkbox-row">
+            <label class="checkbox-label">
+              <input type="checkbox" id="settings-winfixed">
+              <span>固定到右下角</span>
             </label>
           </div>
         </div>

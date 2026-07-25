@@ -10,6 +10,7 @@ const state = {
   noteOriginalContent: '',
   pinnedNotes: [],
   noteSearchQuery: '',
+  searchMode: 'filename',
   shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' },
   projectNames: [],
 };
@@ -73,10 +74,32 @@ async function init() {
   $('#project-tags-input').addEventListener('click', () => $('#project-tags-text').focus());
 
   // 笔记搜索
-  $('#note-list-search').addEventListener('keydown', (e) => {
+  $('#note-list-search').addEventListener('keydown', async (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       state.noteSearchQuery = e.target.value.trim().toLowerCase();
+      await renderNoteList();
+    }
+  });
+
+  // 搜索模式切换
+  $('#search-mode-toggle').addEventListener('click', () => {
+    const toggle = $('#search-mode-toggle');
+    if (state.searchMode === 'filename') {
+      state.searchMode = 'content';
+      toggle.classList.add('content');
+      toggle.querySelector('.toggle-filename').classList.remove('active');
+      toggle.querySelector('.toggle-content').classList.add('active');
+      $('#note-list-search').placeholder = '搜索文件内容...';
+    } else {
+      state.searchMode = 'filename';
+      toggle.classList.remove('content');
+      toggle.querySelector('.toggle-filename').classList.add('active');
+      toggle.querySelector('.toggle-content').classList.remove('active');
+      $('#note-list-search').placeholder = '搜索文件名...';
+    }
+    // 如果当前有搜索词，立即重新搜索
+    if (state.noteSearchQuery) {
       renderNoteList();
     }
   });
@@ -755,6 +778,7 @@ async function loadShortcutsFromConfig() {
     if (cfg.shortcuts) {
       state.shortcuts = { ...state.shortcuts, ...cfg.shortcuts };
     }
+    app.classList.toggle('win-fixed', cfg.winFixed !== false);
   }
 }
 
@@ -768,6 +792,7 @@ async function openSettings() {
     if (window.electronAPI) {
       $('#settings-autostart').checked = await window.electronAPI.getLoginSettings();
     }
+    $('#settings-winfixed').checked = cfg.winFixed !== false;
     if (cfg.shortcuts) {
       state.shortcuts = { ...state.shortcuts, ...cfg.shortcuts };
     }
@@ -804,11 +829,14 @@ async function confirmSettings() {
   const dirChanged = notesDir !== (oldCfg.notesDir || '');
 
   collectShortcutsFromInputs();
-  const cfg = { apiKey, baseUrl, reportName, notesDir, projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts } };
+  const winFixed = $('#settings-winfixed').checked;
+  const cfg = { apiKey, baseUrl, reportName, notesDir, projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed };
 
   if (window.electronAPI) {
     await window.electronAPI.saveConfig(cfg);
     await window.electronAPI.setLoginSettings($('#settings-autostart').checked);
+    await window.electronAPI.setWindowFixed(winFixed);
+    app.classList.toggle('win-fixed', winFixed);
   } else {
     localStorage.setItem('sticky_config', JSON.stringify(cfg));
   }
@@ -1102,6 +1130,12 @@ async function triggerAiName(filename, content) {
 function toggleNoteList() {
   if (noteListOverlay.classList.contains('hidden')) {
     state.noteSearchQuery = '';
+    state.searchMode = 'filename';
+    const toggle = $('#search-mode-toggle');
+    toggle.classList.remove('content');
+    toggle.querySelector('.toggle-filename').classList.add('active');
+    toggle.querySelector('.toggle-content').classList.remove('active');
+    $('#note-list-search').placeholder = '搜索文件名...';
     loadNotesList().then(() => renderNoteList());
     noteListOverlay.classList.remove('hidden');
     const searchInput = $('#note-list-search');
@@ -1112,15 +1146,28 @@ function toggleNoteList() {
   }
 }
 
-function renderNoteList() {
+async function renderNoteList() {
   noteListItems.innerHTML = '';
   const pinnedSet = new Set(state.pinnedNotes.filter(f => state.notes.some(n => n.filename === f)));
 
-  // 模糊搜索过滤
+  // 搜索过滤
   const q = state.noteSearchQuery;
   let filtered = state.notes;
   if (q) {
-    filtered = state.notes.filter(n => n.filename.replace(/\.md$/, '').toLowerCase().includes(q));
+    if (state.searchMode === 'content' && window.electronAPI) {
+      // 按内容搜索：读取每个文件内容进行匹配
+      const results = [];
+      for (const note of state.notes) {
+        const content = await window.electronAPI.readNote(note.filename);
+        if (content && content.toLowerCase().includes(q)) {
+          results.push(note);
+        }
+      }
+      filtered = results;
+    } else {
+      // 按文件名搜索
+      filtered = state.notes.filter(n => n.filename.replace(/\.md$/, '').toLowerCase().includes(q));
+    }
   }
 
   // 置顶在前（按 mtime 降序），未置顶在后（按 mtime 降序）

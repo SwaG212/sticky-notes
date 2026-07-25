@@ -21,6 +21,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadTasks: () => ipcRenderer.invoke('load-tasks'),
   saveTasks: (tasks) => ipcRenderer.invoke('save-tasks', tasks),
 
+  // 窗口位置
+  setWindowFixed: (fixed) => ipcRenderer.invoke('set-window-fixed', fixed),
+
   // 页面切换
   setPage: (page) => ipcRenderer.invoke('set-page', page),
 
