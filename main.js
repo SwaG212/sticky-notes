@@ -236,11 +236,6 @@ function getToday() {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
-function getYesterday() {
-  const d = new Date(); d.setDate(d.getDate() - 1);
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-}
-
 function loadTasksFromFile() {
   const today = getToday();
   const filePath = path.join(userDataPath, 'tasks', `${today}.json`);
@@ -268,29 +263,31 @@ function loadTasksFromFile() {
   if (isNewDay) {
     tasks.forEach(t => { if (t.alarmTime) { t.alarmTime = null; changed = true; } });
 
-    // 迁移昨日未完成任务——仅跨天首次加载时执行一次
-    const yesterday = getYesterday();
-    const yesterdayPath = path.join(userDataPath, 'tasks', `${yesterday}.json`);
-    const yesterdayTasks = readJSON(yesterdayPath);
-    if (yesterdayTasks) {
-      const unfinished = yesterdayTasks.filter(t => !t.completed);
-      if (unfinished.length > 0) {
-        // 去重保护：跳过今天已存在的同名任务
-        const todayTexts = new Set(tasks.map(t => t.task));
-        const unique = unfinished.filter(t => !todayTexts.has(t.task));
-        if (unique.length > 0) {
-          unique.forEach((t, i) => {
-            t.createdAt = new Date().toISOString();
-            t.id = 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
-            t.alarmTime = null;
-            t.sortOrder = i;
-          });
-          // 今天已有任务 sortOrder 顺延
-          tasks.forEach((t, i) => { t.sortOrder = unique.length + i; });
-          tasks = [...unique, ...tasks];
-          changed = true;
-        }
+    // 迁移最近未完成任务——扫描过去14天，找到最近有未完成任务的那天进行迁移
+    for (let daysBack = 1; daysBack <= 14; daysBack++) {
+      const d = new Date(); d.setDate(d.getDate() - daysBack);
+      const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      const pastPath = path.join(userDataPath, 'tasks', `${dateStr}.json`);
+      const pastTasks = readJSON(pastPath);
+      if (!pastTasks) continue;
+      const unfinished = pastTasks.filter(t => !t.completed);
+      if (unfinished.length === 0) continue;
+      // 去重保护：跳过今天已存在的同名任务
+      const todayTexts = new Set(tasks.map(t => t.task));
+      const unique = unfinished.filter(t => !todayTexts.has(t.task));
+      if (unique.length > 0) {
+        unique.forEach((t, i) => {
+          t.createdAt = new Date().toISOString();
+          t.id = 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+          t.alarmTime = null;
+          t.sortOrder = i;
+        });
+        // 今天已有任务 sortOrder 顺延
+        tasks.forEach((t, i) => { t.sortOrder = unique.length + i; });
+        tasks = [...unique, ...tasks];
+        changed = true;
       }
+      break;
     }
   }
 

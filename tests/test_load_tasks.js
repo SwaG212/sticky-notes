@@ -29,8 +29,8 @@ function getToday() {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
-function getYesterday() {
-  const d = new Date(); d.setDate(d.getDate() - 1);
+function getDaysAgo(n) {
+  const d = new Date(); d.setDate(d.getDate() - n);
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
@@ -61,24 +61,27 @@ function loadTasksFromFile() {
   if (isNewDay) {
     tasks.forEach(t => { if (t.alarmTime) { t.alarmTime = null; changed = true; } });
 
-    const yesterday = getYesterday();
-    const yesterdayPath = path.join(tasksDir, `${yesterday}.json`);
-    const yesterdayTasks = readJSON(yesterdayPath);
-    if (yesterdayTasks) {
-      const unfinished = yesterdayTasks.filter(t => !t.completed);
-      if (unfinished.length > 0) {
-        const todayTexts = new Set(tasks.map(t => t.task));
-        const unique = unfinished.filter(t => !todayTexts.has(t.task));
-        if (unique.length > 0) {
-          unique.forEach(t => {
-            t.createdAt = new Date().toISOString();
-            t.id = 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
-            t.alarmTime = null;
-          });
-          tasks = [...unique, ...tasks];
-          changed = true;
-        }
+    // 扫描过去14天，找到最近有未完成任务的那天进行迁移
+    for (let daysBack = 1; daysBack <= 14; daysBack++) {
+      const d = new Date(); d.setDate(d.getDate() - daysBack);
+      const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      const pastPath = path.join(tasksDir, `${dateStr}.json`);
+      const pastTasks = readJSON(pastPath);
+      if (!pastTasks) continue;
+      const unfinished = pastTasks.filter(t => !t.completed);
+      if (unfinished.length === 0) continue;
+      const todayTexts = new Set(tasks.map(t => t.task));
+      const unique = unfinished.filter(t => !todayTexts.has(t.task));
+      if (unique.length > 0) {
+        unique.forEach(t => {
+          t.createdAt = new Date().toISOString();
+          t.id = 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+          t.alarmTime = null;
+        });
+        tasks = [...unique, ...tasks];
+        changed = true;
       }
+      break;
     }
   }
 
@@ -109,7 +112,7 @@ ensureDir(tasksDir);
 
 // --- 测试 1: 跨天迁移只迁移未完成任务，已完成的不带过来 ---
 console.log('\nTest 1: completed tasks not carried over');
-const yesterday = getYesterday();
+const yesterday = getDaysAgo(1);
 const today = getToday();
 const todayFile = path.join(tasksDir, `${today}.json`);
 writeJSON(path.join(tasksDir, `${yesterday}.json`), [
@@ -196,7 +199,32 @@ for (let i = 0; i < 10; i++) {
   loadTasksFromFile();
 }
 const r5b = loadTasksFromFile();
-assertEquals(r5b.length, 1, `after 10 calls should still be 1 (got ${r5b.length})`);
+assertEquals(r5b.length, 1, 'after 10 calls should still be 1');
+
+// --- 测试 6: 多天未开电脑，跨多天迁移（周五→周一，周六日关机）---
+console.log('\nTest 6: multi-day gap migration (e.g. Fri->Mon with weekend off)');
+fs.rmSync(tasksDir, { recursive: true });
+ensureDir(tasksDir);
+
+// 模拟周五（3天前）有未完成任务
+writeJSON(path.join(tasksDir, `${getDaysAgo(3)}.json`), [
+  { id: 'fri1', task: 'friday-unfinished', completed: false, createdAt: '2026-07-22', alarmTime: null },
+  { id: 'fri2', task: 'friday-done', completed: true, createdAt: '2026-07-22', alarmTime: null },
+]);
+// 周六（2天前）、周日（1天前）没有文件（模拟关机）
+// 确保今天也没有文件
+const todayFile6 = path.join(tasksDir, `${today}.json`);
+if (fs.existsSync(todayFile6)) fs.unlinkSync(todayFile6);
+
+const result6 = loadTasksFromFile();
+assertEquals(result6.length, 1, 'should migrate 1 unfinished task from 3 days ago');
+assert(result6[0].task === 'friday-unfinished', 'should be friday-unfinished');
+assert(!result6.some(t => t.task === 'friday-done'), 'completed task should not migrate');
+
+// 验证迁移后今天文件已创建
+assert(fs.existsSync(todayFile6), 'today file should be created after migration');
+const savedToday = readJSON(todayFile6);
+assertEquals(savedToday.length, 1, 'saved today file should have 1 task');
 
 // Cleanup
 fs.rmSync(testDir, { recursive: true });

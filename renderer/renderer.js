@@ -131,18 +131,23 @@ async function loadTasks() {
     if (!raw) {
       state.tasks.forEach(t => { if (t.alarmTime) { t.alarmTime = null; changed = true; } });
     }
-    const yesterday = getYesterday();
-    try {
-      const raw = localStorage.getItem(`tasks_${yesterday}`);
-      if (raw) {
-        const unfinished = JSON.parse(raw).filter(t => !t.completed);
-        if (unfinished.length > 0) {
-          unfinished.forEach(t => { t.createdAt = new Date().toISOString(); t.id = genId(); t.alarmTime = null; });
-          state.tasks = [...unfinished, ...state.tasks];
-          changed = true;
+    // 迁移最近未完成任务——扫描过去14天，找到最近有未完成任务的那天进行迁移
+    for (let daysBack = 1; daysBack <= 14; daysBack++) {
+      const d = new Date(); d.setDate(d.getDate() - daysBack);
+      const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      try {
+        const raw = localStorage.getItem(`tasks_${dateStr}`);
+        if (raw) {
+          const unfinished = JSON.parse(raw).filter(t => !t.completed);
+          if (unfinished.length > 0) {
+            unfinished.forEach(t => { t.createdAt = new Date().toISOString(); t.id = genId(); t.alarmTime = null; });
+            state.tasks = [...unfinished, ...state.tasks];
+            changed = true;
+            break;
+          }
         }
-      }
-    } catch (e) {}
+      } catch (e) {}
+    }
     if (changed) saveTasks();
   }
   // 向后兼容：没有 sortOrder 的任务按当前顺序赋值
@@ -934,11 +939,6 @@ function genId() { return 't_' + Date.now().toString(36) + '_' + Math.random().t
 
 function getToday() {
   const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-}
-
-function getYesterday() {
-  const d = new Date(); d.setDate(d.getDate() - 1);
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
