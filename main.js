@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, globalShortcut, Menu, nativeImage, screen, ipcMain, safeStorage, clipboard } = require('electron');
+const { app, BrowserWindow, Tray, globalShortcut, Menu, nativeImage, screen, ipcMain, safeStorage, clipboard, protocol, net, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execSync } = require('child_process');
@@ -70,7 +70,7 @@ function loadConfig() {
       return cachedConfig;
     }
   } catch (e) { /* ignore */ }
-  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', projectNames: [], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' } };
+  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', projectNames: [], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' }, pagesEnabled: { tasks: true } };
   return cachedConfig;
 }
 
@@ -559,6 +559,41 @@ function setupIPC() {
   ipcMain.handle('create-note', () => createNote());
   ipcMain.handle('rename-note', (_e, oldName, newName) => { renameNoteFile(oldName, newName); return { success: true }; });
   ipcMain.handle('delete-note', (_e, filename) => { deleteNoteFile(filename); return { success: true }; });
+  ipcMain.handle('save-note-image', (_event, dataUrl) => {
+    const dir = path.join(getNotesDir(), 'attachments');
+    ensureDir(dir);
+    const base64 = dataUrl.split(',')[1];
+    if (!base64) return { error: 'Invalid data URL' };
+    const buf = Buffer.from(base64, 'base64');
+    const filename = `img_${Date.now()}.png`;
+    fs.writeFileSync(path.join(dir, filename), buf);
+    return { filename: `attachments/${filename}` };
+  });
+  ipcMain.handle('read-note-image', async (_e, relativePath) => {
+    const fullPath = path.join(getNotesDir(), relativePath);
+    if (!fs.existsSync(fullPath)) return null;
+    const data = fs.readFileSync(fullPath);
+    const ext = path.extname(relativePath).toLowerCase();
+    const mimeTypes = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp' };
+    return `data:${mimeTypes[ext] || 'image/png'};base64,${data.toString('base64')}`;
+  });
+  ipcMain.handle('open-note-image', (_e, relativePath) => {
+    const fullPath = path.join(getNotesDir(), relativePath);
+    if (!fs.existsSync(fullPath)) return { error: 'File not found' };
+    shell.openPath(fullPath);
+    return { success: true };
+  });
+  ipcMain.handle('delete-note-image', (_e, relativePath) => {
+    const fullPath = path.join(getNotesDir(), relativePath);
+    if (!fs.existsSync(fullPath)) return { success: true };
+    const psCmd = `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('${fullPath.replace(/'/g, "''")}', 'OnlyErrorDialogs', 'SendToRecycleBin')`;
+    try {
+      execSync(`powershell -NoProfile -Command "${psCmd}"`, { timeout: 5000 });
+    } catch (e) {
+      fs.unlinkSync(fullPath);
+    }
+    return { success: true };
+  });
   ipcMain.handle('ai-name-note', async (_e, filename, content) => {
     const newName = await aiNameNote(filename, content);
     return { newFilename: newName };
@@ -742,6 +777,18 @@ function registerToggleShortcut(accel) {
 
 // ========== 应用生命周期 ==========
 app.whenReady().then(() => {
+  // 注册 note-image:// 自定义协议，用于在 contenteditable 中加载本地图片
+  protocol.handle('note-image', (request) => {
+    const url = new URL(request.url);
+    const relativePath = url.host + url.pathname;
+    const fullPath = path.join(getNotesDir(), relativePath);
+    try {
+      return net.fetch(`file:///${fullPath.replace(/\\/g, '/')}`);
+    } catch (e) {
+      return new Response('Not Found', { status: 404 });
+    }
+  });
+
   setupIPC();
   createTray();
 

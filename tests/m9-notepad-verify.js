@@ -21,7 +21,7 @@ const checks = [
   ['05', '← 返回按钮', html.includes('btn-notepad-back') && html.includes('←')],
   ['06', '无文件名标题', !html.match(/notepad-toolbar[^<]*<[^>]*title/i)],
   ['07', '编辑区样式', css.includes('#notepad-textarea') && css.includes('bg-input')],
-  ['08', '多行 textarea', html.includes('textarea id="notepad-textarea"')],
+  ['08', '多行编辑区', html.includes('contenteditable="true"') && html.includes('notepad-textarea')],
   ['09', '主页→记事本动画', css.includes('350ms ease') && css.includes('transform')],
   ['10', '记事本→主页动画', css.includes('on-notepad') && css.includes('translateX')],
   ['11', '动画后聚焦', js.includes('setTimeout(() => notepadTextarea.focus(), 400)')],

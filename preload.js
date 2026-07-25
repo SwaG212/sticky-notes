@@ -37,6 +37,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   renameNote: (oldName, newName) => ipcRenderer.invoke('rename-note', oldName, newName),
   deleteNote: (filename) => ipcRenderer.invoke('delete-note', filename),
   aiNameNote: (filename, content) => ipcRenderer.invoke('ai-name-note', filename, content),
+  saveNoteImage: (dataUrl) => ipcRenderer.invoke('save-note-image', dataUrl),
+  readNoteImage: (relativePath) => ipcRenderer.invoke('read-note-image', relativePath),
+  openNoteImage: (relativePath) => ipcRenderer.invoke('open-note-image', relativePath),
+  deleteNoteImage: (relativePath) => ipcRenderer.invoke('delete-note-image', relativePath),
 
   // 日报
   generateDailyReport: (tasks) => ipcRenderer.invoke('generate-daily-report', tasks),

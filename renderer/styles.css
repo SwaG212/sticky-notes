@@ -588,13 +588,16 @@ body {
 }
 
 
-.settings-section {
-  margin-bottom: 20px;
+.settings-card {
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 12px;
 }
-.settings-section:last-child { margin-bottom: 0; }
-.settings-section-title {
-  font-size: 12px;
-  font-weight: bold;
+.settings-card:last-child { margin-bottom: 0; }
+.settings-card-title {
+  font-size: 11px;
+  font-weight: 600;
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -602,29 +605,28 @@ body {
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
 }
-
-.settings-section label {
+.settings-card label {
   display: block;
   font-size: 12px;
   color: var(--text-dim);
   margin-bottom: 4px;
   margin-top: 10px;
 }
-.settings-section label:first-of-type { margin-top: 0; }
-.settings-section input[type="text"],
-.settings-section input[type="password"] {
+.settings-card label:first-of-type { margin-top: 0; }
+.settings-card input[type="text"],
+.settings-card input[type="password"] {
   width: 100%;
-  padding: 8px 10px;
+  padding: 7px 10px;
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 5px;
   color: var(--text);
   font-size: 13px;
   font-family: inherit;
   outline: none;
 }
-.settings-section input:focus { border-color: var(--accent); }
-.settings-section input::placeholder { color: var(--text-dim); opacity: 0.4; }
+.settings-card input:focus { border-color: var(--accent); }
+.settings-card input::placeholder { color: var(--text-dim); opacity: 0.4; }
 
 /* 设置页复选框 */
 /* 项目名称标签输入 */
@@ -698,43 +700,59 @@ body {
   cursor: pointer;
 }
 
+.settings-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  opacity: 0.6;
+  margin-top: 6px;
+}
+
 /* 快捷键行 */
 .shortcut-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--bg-secondary);
+  padding: 5px 0;
 }
-.shortcut-row:last-child { border-bottom: none; }
+.shortcut-row + .shortcut-row { border-top: 1px solid var(--bg-secondary); }
 .shortcut-label {
   font-size: 13px;
   color: var(--text);
   flex-shrink: 0;
 }
-.shortcut-input {
-  width: 130px !important;
-  padding: 5px 8px !important;
-  margin: 0 !important;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text);
-  font-size: 12px !important;
-  font-family: inherit;
-  text-align: center;
+.shortcut-kbd {
   cursor: pointer;
-  outline: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--text);
+  user-select: none;
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
   transition: border-color 0.15s, background 0.15s;
+  min-width: 60px;
+  justify-content: center;
 }
-.shortcut-input:hover { border-color: var(--accent); }
-.shortcut-input:focus { border-color: var(--accent); }
-.shortcut-input.capturing {
+.shortcut-kbd:hover { border-color: var(--accent); }
+.shortcut-kbd:focus { border-color: var(--accent); outline: none; }
+.shortcut-kbd.capturing {
   border-color: var(--accent);
   background: #f0f0ff;
   color: var(--accent);
+  font-size: 12px;
 }
-.shortcut-input::placeholder { color: var(--text-dim); opacity: 0.5; }
+.shortcut-kbd kbd {
+  display: inline-block;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--text);
+}
 
 /* ========== 页面容器与滑动动画 ========== */
 .pages-container {
@@ -817,13 +835,36 @@ body {
   font-size: 14px;
   font-family: inherit;
   padding: 8px 14px;
-  resize: none;
   outline: none;
   line-height: 1.6;
   min-height: 0;
+  overflow-y: auto;
 }
 
-#notepad-textarea::placeholder { color: var(--text-dim); opacity: 0.5; }
+#notepad-textarea.is-empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-dim);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+#notepad-textarea img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+  margin: 4px 0;
+  display: block;
+  cursor: pointer;
+}
+
+#notepad-textarea img:hover {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+#notepad-textarea div {
+  min-height: 1.2em;
+}
 
 .notepad-footer {
   display: flex;

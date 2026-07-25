@@ -50,7 +50,7 @@
         <button id="btn-note-list">☰</button>
         <button id="btn-note-new">+</button>
       </div>
-      <textarea id="notepad-textarea" placeholder="记录笔记..."></textarea>
+      <div id="notepad-textarea" contenteditable="true" data-placeholder="记录笔记..."></div>
       <div class="notepad-footer">
         <button id="btn-notepad-back">←</button>
       </div>
@@ -77,21 +77,35 @@
         <button id="btn-settings-confirm">确认</button>
       </div>
       <div class="settings-body">
-        <div class="settings-section">
-          <div class="settings-section-title">API 配置</div>
+        <div class="settings-card">
+          <div class="settings-card-title">API</div>
           <label>API Key</label>
           <input type="password" id="settings-apikey" placeholder="sk-xxxxxxxxxxxxxxxxxxxx">
-          <label>API 地址（可选，默认 DeepSeek）</label>
+          <label>API 地址（默认 DeepSeek）</label>
           <input type="text" id="settings-baseurl" placeholder="https://api.deepseek.com">
+        </div>
+        <div class="settings-card">
+          <div class="settings-card-title">个人化</div>
           <label>日报姓名</label>
           <input type="text" id="settings-reportname" placeholder="输入姓名，用于日报">
-          <label>文件读取位置（留空使用默认路径）</label>
-          <input type="text" id="settings-notesdir" placeholder="如 D:\我的笔记，留空则使用默认">
           <label>项目名称</label>
           <div id="project-tags-input" class="project-tags-input" tabindex="0">
             <div id="project-tags-list"></div>
             <input type="text" id="project-tags-text" placeholder="输入后按 Enter 添加">
           </div>
+        </div>
+        <div class="settings-card">
+          <div class="settings-card-title">页面</div>
+          <div class="settings-checkbox-row">
+            <label class="checkbox-label">
+              <input type="checkbox" id="settings-tasks-page">
+              <span>任务管理页</span>
+            </label>
+          </div>
+          <div class="settings-hint">关闭后重启生效</div>
+        </div>
+        <div class="settings-card">
+          <div class="settings-card-title">通用</div>
           <div class="settings-checkbox-row">
             <label class="checkbox-label">
               <input type="checkbox" id="settings-autostart">
@@ -104,24 +118,26 @@
               <span>固定到右下角</span>
             </label>
           </div>
+          <label>文件存储位置（留空使用默认）</label>
+          <input type="text" id="settings-notesdir" placeholder="如 D:\我的笔记">
         </div>
-        <div class="settings-section">
-          <div class="settings-section-title">快捷键设置</div>
+        <div class="settings-card">
+          <div class="settings-card-title">快捷键</div>
           <div class="shortcut-row">
             <span class="shortcut-label">唤出/隐藏</span>
-            <input type="text" class="shortcut-input" id="shortcut-toggle" readonly placeholder="点击设置快捷键">
+            <span class="shortcut-kbd" id="shortcut-toggle" tabindex="0"></span>
           </div>
           <div class="shortcut-row">
             <span class="shortcut-label">整理</span>
-            <input type="text" class="shortcut-input" id="shortcut-organize" readonly placeholder="点击设置快捷键">
+            <span class="shortcut-kbd" id="shortcut-organize" tabindex="0"></span>
           </div>
           <div class="shortcut-row">
-            <span class="shortcut-label">切换任务页面</span>
-            <input type="text" class="shortcut-input" id="shortcut-switchTask" readonly placeholder="点击设置快捷键">
+            <span class="shortcut-label">切换任务页</span>
+            <span class="shortcut-kbd" id="shortcut-switchTask" tabindex="0"></span>
           </div>
           <div class="shortcut-row">
-            <span class="shortcut-label">切换笔记页面</span>
-            <input type="text" class="shortcut-input" id="shortcut-switchNotepad" readonly placeholder="点击设置快捷键">
+            <span class="shortcut-label">切换笔记页</span>
+            <span class="shortcut-kbd" id="shortcut-switchNotepad" tabindex="0"></span>
           </div>
         </div>
       </div>

@@ -13,6 +13,7 @@ const state = {
   searchMode: 'filename',
   shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' },
   projectNames: [],
+  pagesEnabled: { tasks: true },
 };
 
 // ========== DOM 引用 ==========
@@ -39,10 +40,16 @@ const dailyReportHint = $('#daily-report-hint');
 
 // ========== 初始化 ==========
 async function init() {
-  await loadTasks();
   await loadShortcutsFromConfig();
-  renderTasks();
+  if (state.pagesEnabled.tasks) {
+    await loadTasks();
+    renderTasks();
+  } else {
+    state.currentPage = 'notepad';
+    pagesContainer.classList.add('on-notepad');
+  }
   updateOrganizeButton();
+  updateTasksPageVisibility();
 
   textInput.addEventListener('input', updateOrganizeButton);
   textInput.addEventListener('paste', handlePaste);
@@ -61,10 +68,17 @@ async function init() {
   btnDailyReport.addEventListener('click', generateDailyReport);
   notepadTextarea.addEventListener('input', onNotepadInput);
   notepadTextarea.addEventListener('paste', handleNotepadPaste);
+  notepadTextarea.addEventListener('dblclick', handleNotepadDblClick);
+  notepadTextarea.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+      e.preventDefault();
+      saveCurrentNote();
+    }
+  });
 
   // 快捷键捕获相关
-  document.querySelectorAll('.shortcut-input').forEach(input => {
-    input.addEventListener('click', () => startShortcutCapture(input));
+  document.querySelectorAll('.shortcut-kbd').forEach(el => {
+    el.addEventListener('click', () => startShortcutCapture(el));
   });
 
   // 项目名称标签输入
@@ -82,33 +96,41 @@ async function init() {
     }
   });
 
-  // 搜索模式切换
-  $('#search-mode-toggle').addEventListener('click', () => {
+  // 文档级 copy 事件，确保能捕获 contenteditable 内的复制
+  document.addEventListener('copy', handleNotepadCopy);
+
+  // 搜索模式切换 — 点哪个切到哪个
+  const setSearchMode = (mode) => {
+    if (state.searchMode === mode) return;
+    state.searchMode = mode;
     const toggle = $('#search-mode-toggle');
-    if (state.searchMode === 'filename') {
-      state.searchMode = 'content';
+    if (mode === 'content') {
       toggle.classList.add('content');
       toggle.querySelector('.toggle-filename').classList.remove('active');
       toggle.querySelector('.toggle-content').classList.add('active');
       $('#note-list-search').placeholder = '搜索文件内容...';
     } else {
-      state.searchMode = 'filename';
       toggle.classList.remove('content');
       toggle.querySelector('.toggle-filename').classList.add('active');
       toggle.querySelector('.toggle-content').classList.remove('active');
       $('#note-list-search').placeholder = '搜索文件名...';
     }
-    // 如果当前有搜索词，立即重新搜索
-    if (state.noteSearchQuery) {
-      renderNoteList();
-    }
+    if (state.noteSearchQuery) renderNoteList();
+  };
+  $('#search-mode-toggle').querySelector('.toggle-filename').addEventListener('click', (e) => {
+    e.stopPropagation();
+    setSearchMode('filename');
+  });
+  $('#search-mode-toggle').querySelector('.toggle-content').addEventListener('click', (e) => {
+    e.stopPropagation();
+    setSearchMode('content');
   });
 
   document.addEventListener('keydown', (e) => {
     const sc = state.shortcuts;
-    if (matchShortcut(e, sc.switchTask)) { e.preventDefault(); switchToMain(); }
+    if (matchShortcut(e, sc.switchTask) && state.pagesEnabled.tasks) { e.preventDefault(); switchToMain(); }
     if (matchShortcut(e, sc.switchNotepad)) { e.preventDefault(); switchToNotepad(); }
-    if (matchShortcut(e, sc.organize) && state.currentPage === 'main') {
+    if (matchShortcut(e, sc.organize) && state.currentPage === 'main' && state.pagesEnabled.tasks) {
       e.preventDefault();
       if (!state.organizing) organize();
     }
@@ -121,7 +143,7 @@ async function init() {
       app.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 350, easing: 'ease', fill: 'forwards' });
       if (state.currentPage === 'notepad') {
         notepadTextarea.focus();
-      } else {
+      } else if (state.pagesEnabled.tasks) {
         // 每次窗口显示时重新加载任务，确保跨天后已完成任务被清除
         await loadTasks();
         renderTasks();
@@ -133,7 +155,7 @@ async function init() {
       anim.finished.then(() => { /* 动画完成，元素停在 opacity:0 */ });
       if (state.currentPage === 'notepad') {
         saveCurrentNote();
-      } else if (hasContent() && !state.organizing) {
+      } else if (state.pagesEnabled.tasks && hasContent() && !state.organizing) {
         setTimeout(() => { organize(); }, 50);
       }
     });
@@ -772,11 +794,96 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, c => map[c]);
 }
 
+// ========== Markdown ↔ HTML 转换 ==========
+  // 图片数据缓存（用于复制到外部应用时替换 note-image:// 为 base64）
+const imageDataCache = new Map(); // relativePath → base64 data URL
+
+function loadMarkdown(md) {
+  if (!md) return '';
+  const lines = md.split('\n');
+  return lines.map(line => {
+    if (!line.trim()) return '<div><br></div>';
+    const parts = line.split(/(!\[[^\]]*\]\([^)]+\))/g);
+    return '<div>' + parts.map(part => {
+      const m = part.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+      if (m) return `<img src="note-image://${m[2]}" alt="${escapeHtml(m[1] || '')}">`;
+      return escapeHtml(part);
+    }).join('') + '</div>';
+  }).join('');
+}
+
+function htmlToMarkdown(html) {
+  if (!html) return '';
+  const div = document.createElement('div');
+  div.innerHTML = html;
+  // 清理 br 标签
+  div.querySelectorAll('br').forEach(br => br.remove());
+  // 图片 → markdown
+  div.querySelectorAll('img').forEach(img => {
+    const src = img.getAttribute('src') || '';
+    if (src.startsWith('note-image://')) {
+      img.replaceWith(document.createTextNode(`![](${src.replace('note-image://', '')})`));
+    }
+  });
+  const divs = div.querySelectorAll('div');
+  if (divs.length > 0) return Array.from(divs).map(d => (d.textContent || '').trim()).join('\n');
+  return (div.textContent || '').trim();
+}
+
+function insertImageAtCursor(relativePath, dataUrl) {
+  const img = document.createElement('img');
+  img.src = `note-image://${relativePath}`;
+  img.setAttribute('data-b64', dataUrl);
+  const sel = window.getSelection();
+  if (sel.rangeCount > 0) {
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    range.insertNode(img);
+    range.setStartAfter(img);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } else {
+    notepadTextarea.appendChild(img);
+  }
+  onNotepadInput();
+}
+
+function extractImagePaths(md) {
+  if (!md) return new Set();
+  const re = /!\[[^\]]*\]\(([^)]+)\)/g;
+  const paths = new Set();
+  let m;
+  while ((m = re.exec(md)) !== null) paths.add(m[1]);
+  return paths;
+}
+
+async function populateImageCache() {
+  if (!window.electronAPI) return;
+  const imgs = notepadTextarea.querySelectorAll('img[src^="note-image://"]');
+  for (const img of imgs) {
+    const url = img.getAttribute('src');
+    const relativePath = url.replace('note-image://', '');
+    if (!imageDataCache.has(relativePath)) {
+      try {
+        const dataUrl = await window.electronAPI.readNoteImage(relativePath);
+        if (dataUrl) {
+          imageDataCache.set(relativePath, dataUrl);
+          img.setAttribute('data-b64', dataUrl);
+        }
+      } catch (e) { /* ignore */ }
+    }
+  }
+}
+
 async function loadShortcutsFromConfig() {
   if (window.electronAPI) {
     const cfg = await window.electronAPI.getConfig();
     if (cfg.shortcuts) {
       state.shortcuts = { ...state.shortcuts, ...cfg.shortcuts };
+    }
+    if (cfg.pagesEnabled) {
+      state.pagesEnabled = { ...state.pagesEnabled, ...cfg.pagesEnabled };
     }
     app.classList.toggle('win-fixed', cfg.winFixed !== false);
   }
@@ -793,6 +900,7 @@ async function openSettings() {
       $('#settings-autostart').checked = await window.electronAPI.getLoginSettings();
     }
     $('#settings-winfixed').checked = cfg.winFixed !== false;
+    $('#settings-tasks-page').checked = cfg.pagesEnabled?.tasks !== false;
     if (cfg.shortcuts) {
       state.shortcuts = { ...state.shortcuts, ...cfg.shortcuts };
     }
@@ -804,18 +912,26 @@ async function openSettings() {
   $('#settings-apikey').focus();
 }
 
-function renderShortcutInputs() {
-  $('#shortcut-toggle').value = formatShortcutDisplay(state.shortcuts.toggle);
-  $('#shortcut-organize').value = formatShortcutDisplay(state.shortcuts.organize);
-  $('#shortcut-switchTask').value = formatShortcutDisplay(state.shortcuts.switchTask);
-  $('#shortcut-switchNotepad').value = formatShortcutDisplay(state.shortcuts.switchNotepad);
-  // 清除上次捕获的临时数据
-  document.querySelectorAll('.shortcut-input').forEach(el => delete el.dataset.accel);
+function setKbdDisplay(el, accel) {
+  el.innerHTML = '';
+  el.dataset.accel = accel;
+  const parts = accel.split('+');
+  parts.forEach((part, i) => {
+    const kbd = document.createElement('kbd');
+    kbd.textContent = part.trim();
+    el.appendChild(kbd);
+    if (i < parts.length - 1) {
+      el.appendChild(document.createTextNode(' + '));
+    }
+  });
 }
 
-function formatShortcutDisplay(accel) {
-  // "Alt+`" → "Alt + `"
-  return accel.replace(/\+/g, ' + ');
+function renderShortcutInputs() {
+  setKbdDisplay($('#shortcut-toggle'), state.shortcuts.toggle);
+  setKbdDisplay($('#shortcut-organize'), state.shortcuts.organize);
+  setKbdDisplay($('#shortcut-switchTask'), state.shortcuts.switchTask);
+  setKbdDisplay($('#shortcut-switchNotepad'), state.shortcuts.switchNotepad);
+  document.querySelectorAll('.shortcut-kbd').forEach(el => delete el.dataset.accel);
 }
 
 async function confirmSettings() {
@@ -830,7 +946,9 @@ async function confirmSettings() {
 
   collectShortcutsFromInputs();
   const winFixed = $('#settings-winfixed').checked;
-  const cfg = { apiKey, baseUrl, reportName, notesDir, projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed };
+  const tasksEnabled = $('#settings-tasks-page').checked;
+  const pagesEnabled = { tasks: tasksEnabled };
+  const cfg = { apiKey, baseUrl, reportName, notesDir, projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, pagesEnabled };
 
   if (window.electronAPI) {
     await window.electronAPI.saveConfig(cfg);
@@ -839,6 +957,14 @@ async function confirmSettings() {
     app.classList.toggle('win-fixed', winFixed);
   } else {
     localStorage.setItem('sticky_config', JSON.stringify(cfg));
+  }
+
+  // 页面开关变更
+  const tasksWasEnabled = state.pagesEnabled.tasks;
+  state.pagesEnabled = pagesEnabled;
+  updateTasksPageVisibility();
+  if (!tasksEnabled && tasksWasEnabled && state.currentPage === 'main') {
+    switchToNotepad();
   }
 
   // 文件位置变更后，刷新笔记列表
@@ -853,7 +979,9 @@ async function confirmSettings() {
         state.currentNoteFile = state.notes[0].filename;
         state.noteContent = await window.electronAPI.readNote(state.notes[0].filename);
         state.noteOriginalContent = state.noteContent;
-        notepadTextarea.value = state.noteContent;
+        notepadTextarea.innerHTML = loadMarkdown(state.noteContent);
+        notepadTextarea.classList.toggle('is-empty', !state.noteContent);
+        populateImageCache();
       }
     }
   }
@@ -874,22 +1002,21 @@ function cancelSettings() {
 }
 
 // ========== 快捷键捕获 ==========
-function startShortcutCapture(input) {
-  const oldValue = input.value;
-  input.value = '按下快捷键...';
-  input.classList.add('capturing');
+function startShortcutCapture(el) {
+  const oldAccel = el.dataset.accel || el.textContent.replace(/\s*\+\s*/g, '+');
+  el.textContent = '按下快捷键...';
+  el.classList.add('capturing');
 
   function onKeyDown(e) {
     e.preventDefault();
     e.stopPropagation();
 
     if (e.key === 'Escape') {
-      input.value = oldValue;
+      setKbdDisplay(el, oldAccel);
       finish();
       return;
     }
 
-    // 忽略纯修饰键
     if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return;
 
     const parts = [];
@@ -902,32 +1029,33 @@ function startShortcutCapture(input) {
     else if (keyName.length === 1) keyName = keyName.toUpperCase();
 
     parts.push(keyName);
-    input.value = parts.join(' + ');
-    input.dataset.accel = parts.join('+');
+    setKbdDisplay(el, parts.join('+'));
     finish();
   }
 
   function finish() {
-    input.classList.remove('capturing');
-    input.removeEventListener('keydown', onKeyDown);
-    input.removeEventListener('blur', onBlur);
+    el.classList.remove('capturing');
+    el.removeEventListener('keydown', onKeyDown);
+    el.removeEventListener('blur', onBlur);
   }
 
   function onBlur() {
-    input.value = oldValue;
+    if (el.classList.contains('capturing')) {
+      setKbdDisplay(el, oldAccel);
+    }
     finish();
   }
 
-  input.addEventListener('keydown', onKeyDown);
-  input.addEventListener('blur', onBlur);
-  input.focus();
+  el.addEventListener('keydown', onKeyDown);
+  el.addEventListener('blur', onBlur);
+  el.focus();
 }
 
 // 读取快捷键输入值，同步到 state.shortcuts
 function collectShortcutsFromInputs() {
   const getVal = (id) => {
-    const input = document.getElementById(id);
-    return input.dataset.accel || state.shortcuts[id.replace('shortcut-', '')] || input.value.replace(/\s*\+\s*/g, '+');
+    const el = document.getElementById(id);
+    return el.dataset.accel || state.shortcuts[id.replace('shortcut-', '')] || el.textContent.replace(/\s*\+\s*/g, '+');
   };
   state.shortcuts.toggle = getVal('shortcut-toggle');
   state.shortcuts.organize = getVal('shortcut-organize');
@@ -978,6 +1106,12 @@ function showProcessing(show, text = '') {
 }
 
 // ========== 页面切换 ==========
+function updateTasksPageVisibility() {
+  const enabled = state.pagesEnabled.tasks;
+  btnSwitchNotepad.style.display = enabled ? '' : 'none';
+  btnNotepadBack.style.display = enabled ? '' : 'none';
+}
+
 async function switchToNotepad() {
   if (state.currentPage === 'notepad') return;
   state.currentPage = 'notepad';
@@ -999,12 +1133,15 @@ async function switchToNotepad() {
     }
   }
   pagesContainer.classList.add('on-notepad');
-  notepadTextarea.value = state.noteContent;
+  notepadTextarea.innerHTML = loadMarkdown(state.noteContent);
+  notepadTextarea.classList.toggle('is-empty', !state.noteContent);
+  populateImageCache();
   setTimeout(() => notepadTextarea.focus(), 400);
 }
 
 async function switchToMain() {
   if (state.currentPage === 'main') return;
+  if (!state.pagesEnabled.tasks) return;
   // 保存当前笔记
   saveCurrentNote();
   state.currentPage = 'main';
@@ -1015,18 +1152,71 @@ async function switchToMain() {
 
 // ========== 笔记管理 ==========
 function onNotepadInput() {
-  state.noteContent = notepadTextarea.value;
+  state.noteContent = htmlToMarkdown(notepadTextarea.innerHTML);
+  const isEmpty = !notepadTextarea.textContent?.trim() && notepadTextarea.querySelectorAll('img').length === 0;
+  notepadTextarea.classList.toggle('is-empty', isEmpty);
 }
 
-function handleNotepadPaste(e) {
+async function handleNotepadPaste(e) {
   const items = e.clipboardData?.items;
   if (!items) return;
   for (const item of items) {
     if (item.type.startsWith('image/')) {
       e.preventDefault();
-      return;
+      const blob = item.getAsFile();
+      if (!blob || blob.size > 10 * 1024 * 1024) continue;
+      try {
+        const dataUrl = await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.readAsDataURL(blob);
+        });
+        if (window.electronAPI) {
+          const result = await window.electronAPI.saveNoteImage(dataUrl);
+          if (result.filename) {
+            imageDataCache.set(result.filename, dataUrl);
+            insertImageAtCursor(result.filename, dataUrl);
+          }
+        }
+      } catch (e) { /* ignore */ }
     }
   }
+}
+
+function handleNotepadCopy(e) {
+  // 只处理来自记事本编辑区的复制
+  if (!notepadTextarea.contains(window.getSelection()?.anchorNode)) return;
+
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return;
+  const range = sel.getRangeAt(0);
+  if (range.collapsed) return;
+
+  const fragment = range.cloneContents();
+  const container = document.createElement('div');
+  container.appendChild(fragment);
+
+  container.querySelectorAll('img[src^="note-image://"]').forEach(img => {
+    const url = img.getAttribute('src');
+    const relativePath = url.replace('note-image://', '');
+    const b64 = imageDataCache.get(relativePath) || img.getAttribute('data-b64');
+    if (b64) {
+      img.src = b64;
+      img.removeAttribute('data-b64');
+    }
+  });
+
+  const html = container.innerHTML;
+  e.preventDefault();
+  e.clipboardData.setData('text/html', html);
+  e.clipboardData.setData('text/plain', htmlToMarkdown(html));
+}
+
+function handleNotepadDblClick(e) {
+  const img = e.target.closest('img[src^="note-image://"]');
+  if (!img) return;
+  const relativePath = img.getAttribute('src').replace('note-image://', '');
+  if (window.electronAPI) window.electronAPI.openNoteImage(relativePath);
 }
 
 async function loadNotesList() {
@@ -1044,7 +1234,9 @@ async function openNote(filename) {
   if (!window.electronAPI) return;
   state.noteContent = await window.electronAPI.readNote(filename);
   state.noteOriginalContent = state.noteContent;
-  notepadTextarea.value = state.noteContent;
+  notepadTextarea.innerHTML = loadMarkdown(state.noteContent);
+  notepadTextarea.classList.toggle('is-empty', !state.noteContent);
+  populateImageCache();
   closeNoteList();
   if (prevFile) persistPreviousNote(prevFile, prevContent, prevOriginal);
 }
@@ -1067,10 +1259,22 @@ async function persistPreviousNote(prevFile, prevContent, prevOriginal) {
 
 async function saveCurrentNote() {
   if (!window.electronAPI || !state.currentNoteFile) return;
-  const content = state.noteContent;
+  // 从 DOM 直接取当前内容，而不是用 state.noteContent
+  // 因为删除 img 元素时 contenteditable 可能不触发 input 事件
+  const content = htmlToMarkdown(notepadTextarea.innerHTML);
   if (content !== state.noteOriginalContent) {
     await window.electronAPI.saveNote(state.currentNoteFile, content);
+    // 清理已删除的图片文件
+    const oldPaths = extractImagePaths(state.noteOriginalContent);
+    const newPaths = extractImagePaths(content);
+    for (const p of oldPaths) {
+      if (!newPaths.has(p)) {
+        window.electronAPI.deleteNoteImage(p);
+        imageDataCache.delete(p);
+      }
+    }
     state.noteOriginalContent = content;
+    state.noteContent = content;
     state.notes = await window.electronAPI.listNotes();
   }
 
@@ -1095,7 +1299,8 @@ async function createNote() {
   state.currentNoteFile = filename;
   state.noteContent = '';
   state.noteOriginalContent = '';
-  notepadTextarea.value = '';
+  notepadTextarea.innerHTML = '';
+  notepadTextarea.classList.add('is-empty');
   state.notes = await window.electronAPI.listNotes();
   // 如果文件列表打开着，刷新显示
   if (!noteListOverlay.classList.contains('hidden')) renderNoteList();
@@ -1111,7 +1316,9 @@ async function deleteNoteHandler(filename) {
     state.noteContent = state.currentNoteFile
       ? await window.electronAPI.readNote(state.currentNoteFile)
       : '';
-    notepadTextarea.value = state.noteContent;
+    notepadTextarea.innerHTML = loadMarkdown(state.noteContent);
+    notepadTextarea.classList.toggle('is-empty', !state.noteContent);
+    populateImageCache();
   }
   renderNoteList();
 }
