@@ -14,6 +14,7 @@ const state = {
   shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' },
   projectNames: [],
   pagesEnabled: { tasks: true },
+  hoveredImage: null,
 };
 
 // ========== DOM 引用 ==========
@@ -108,6 +109,18 @@ async function init() {
       e.preventDefault();
       saveCurrentNote();
     }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && state.hoveredImage) {
+      e.preventDefault();
+      deleteHoveredImage();
+    }
+  });
+  notepadTextarea.addEventListener('mouseover', (e) => {
+    const img = e.target.closest('img');
+    state.hoveredImage = img || null;
+  });
+  notepadTextarea.addEventListener('mouseout', (e) => {
+    const img = e.target.closest('img');
+    if (img && state.hoveredImage === img) state.hoveredImage = null;
   });
 
   // 快捷键捕获相关
@@ -880,6 +893,23 @@ function insertImageAtCursor(relativePath, dataUrl) {
   } else {
     notepadTextarea.appendChild(img);
   }
+  onNotepadInput();
+}
+
+async function deleteHoveredImage() {
+  const img = state.hoveredImage;
+  if (!img) return;
+  const src = img.getAttribute('src') || '';
+  if (!src.startsWith('note-image://')) return;
+  // 用浏览器原生删除操作（可被 Ctrl+Z 撤销），磁盘文件在保存时由孤儿清理逻辑删除
+  notepadTextarea.focus();
+  const range = document.createRange();
+  range.selectNode(img);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  document.execCommand('delete');
+  state.hoveredImage = null;
   onNotepadInput();
 }
 
