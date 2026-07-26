@@ -582,7 +582,7 @@ function openTimePicker(anchorEl, taskIdx) {
 
   const picker = document.createElement('div');
   picker.className = 'time-picker';
-  picker.innerHTML = `<button class="tp-clear">清除</button><div class="tp-cols"><div class="tp-col" id="tp-hour"></div><div class="tp-col" id="tp-min"></div></div>`;
+  picker.innerHTML = `<div class="tp-actions"><button class="tp-save">保存</button><button class="tp-clear">清除</button></div><div class="tp-cols"><div class="tp-col" id="tp-hour"></div><div class="tp-col" id="tp-min"></div></div>`;
   app.appendChild(picker);
 
   // 填充小时 00-23
@@ -594,9 +594,8 @@ function openTimePicker(anchorEl, taskIdx) {
     opt.addEventListener('click', () => {
       const m = state.tasks[taskIdx].alarmTime ? state.tasks[taskIdx].alarmTime.slice(3, 5) : '00';
       state.tasks[taskIdx].alarmTime = `${opt.textContent}:${m}`;
-      saveTasks();
-      closeActivePicker();
-      renderTasks();
+      colH.querySelector('.tp-opt.active')?.classList.remove('active');
+      opt.classList.add('active');
     });
     colH.appendChild(opt);
   }
@@ -610,12 +609,18 @@ function openTimePicker(anchorEl, taskIdx) {
     opt.addEventListener('click', () => {
       const h = state.tasks[taskIdx].alarmTime ? state.tasks[taskIdx].alarmTime.slice(0, 2) : '00';
       state.tasks[taskIdx].alarmTime = `${h}:${opt.textContent}`;
-      saveTasks();
-      closeActivePicker();
-      renderTasks();
+      colM.querySelector('.tp-opt.active')?.classList.remove('active');
+      opt.classList.add('active');
     });
     colM.appendChild(opt);
   }
+
+  // 保存按钮
+  picker.querySelector('.tp-save').addEventListener('click', () => {
+    saveTasks();
+    closeActivePicker();
+    renderTasks();
+  });
 
   // 清除按钮
   picker.querySelector('.tp-clear').addEventListener('click', () => {

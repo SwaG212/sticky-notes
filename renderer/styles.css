@@ -192,7 +192,7 @@ body {
 /* 悬停操作栏：绝对定位在行右侧 */
 .hover-bar {
   position: absolute;
-  right: 36px;
+  right: 28px;
   top: 50%;
   transform: translateY(-50%);
   display: flex;
@@ -211,7 +211,7 @@ body {
   right: 4px;
   top: 50%;
   transform: translateY(-50%);
-  width: 24px;
+  width: 18px;
   height: 24px;
   display: flex;
   align-items: center;
@@ -285,27 +285,35 @@ body {
   padding: 6px;
   width: 120px;
 }
-.tp-clear {
-  display: block;
-  width: 100%;
+.tp-actions {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.tp-save, .tp-clear {
+  flex: 1;
   padding: 5px 0;
   background: transparent;
   border: none;
-  border-bottom: 1px solid var(--border);
   color: var(--text-dim);
   font-size: 12px;
   font-family: inherit;
   cursor: pointer;
-  margin-bottom: 4px;
+  border-radius: 4px;
 }
+.tp-save:hover { background: var(--accent); color: #fff; }
 .tp-clear:hover { color: var(--danger); }
 .tp-cols {
   display: flex;
   gap: 2px;
+  mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
 }
 .tp-col {
   flex: 1;
-  max-height: 170px;
+  max-height: 119px;
   overflow-y: auto;
 }
 
