@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 配置
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (cfg) => ipcRenderer.invoke('save-config', cfg),
+  setSettingsOpen: (open) => ipcRenderer.invoke('set-settings-open', open),
   getLoginSettings: () => ipcRenderer.invoke('get-login-settings'),
   setLoginSettings: (enabled) => ipcRenderer.invoke('set-login-settings', enabled),
 

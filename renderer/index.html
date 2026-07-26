@@ -78,11 +78,25 @@
       </div>
       <div class="settings-body">
         <div class="settings-card">
-          <div class="settings-card-title">API</div>
-          <label>API Key</label>
-          <input type="password" id="settings-apikey" placeholder="sk-xxxxxxxxxxxxxxxxxxxx">
-          <label>API 地址（默认 DeepSeek）</label>
-          <input type="text" id="settings-baseurl" placeholder="https://api.deepseek.com">
+          <div class="settings-card-title">通用</div>
+          <div class="settings-checkbox-row">
+            <label class="checkbox-label">
+              <input type="checkbox" id="settings-autostart">
+              <span>开机自启</span>
+            </label>
+          </div>
+          <div class="settings-checkbox-row">
+            <label class="checkbox-label">
+              <input type="checkbox" id="settings-winfixed">
+              <span>固定到右下角</span>
+            </label>
+          </div>
+          <label>文件存储位置</label>
+          <div class="notesdir-combo">
+            <input type="text" id="settings-notesdir" placeholder="如 D:\我的笔记">
+            <button type="button" id="notesdir-dropdown-btn" class="combo-arrow" tabindex="-1">&#9660;</button>
+            <div class="combo-dropdown hidden" id="notesdir-dropdown"></div>
+          </div>
         </div>
         <div class="settings-card">
           <div class="settings-card-title">个人化</div>
@@ -105,21 +119,11 @@
           <div class="settings-hint">关闭后重启生效</div>
         </div>
         <div class="settings-card">
-          <div class="settings-card-title">通用</div>
-          <div class="settings-checkbox-row">
-            <label class="checkbox-label">
-              <input type="checkbox" id="settings-autostart">
-              <span>开机自启</span>
-            </label>
-          </div>
-          <div class="settings-checkbox-row">
-            <label class="checkbox-label">
-              <input type="checkbox" id="settings-winfixed">
-              <span>固定到右下角</span>
-            </label>
-          </div>
-          <label>文件存储位置（留空使用默认）</label>
-          <input type="text" id="settings-notesdir" placeholder="如 D:\我的笔记">
+          <div class="settings-card-title">API</div>
+          <label>API Key</label>
+          <input type="password" id="settings-apikey" placeholder="sk-xxxxxxxxxxxxxxxxxxxx">
+          <label>API 地址（默认 DeepSeek）</label>
+          <input type="text" id="settings-baseurl" placeholder="https://api.deepseek.com">
         </div>
         <div class="settings-card">
           <div class="settings-card-title">快捷键</div>

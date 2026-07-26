@@ -61,6 +61,40 @@ async function init() {
   $('#btn-settings-confirm').addEventListener('click', confirmSettings);
   $('#btn-settings-back').addEventListener('click', cancelSettings);
   $('#btn-settings').addEventListener('click', openSettings);
+  // 文件路径下拉按钮
+  $('#notesdir-dropdown-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const menu = $('#notesdir-dropdown');
+    const btn = $('#notesdir-dropdown-btn');
+    const isOpen = !menu.classList.contains('hidden');
+    if (isOpen) {
+      menu.classList.add('hidden');
+      btn.innerHTML = '&#9660;';
+    } else {
+      menu.classList.remove('hidden');
+      btn.innerHTML = '&#9650;';
+    }
+  });
+  // 点击菜单外部关闭
+  document.addEventListener('click', (e) => {
+    const menu = $('#notesdir-dropdown');
+    const btn = $('#notesdir-dropdown-btn');
+    if (!menu.classList.contains('hidden') && !e.target.closest('.notesdir-combo')) {
+      menu.classList.add('hidden');
+      btn.innerHTML = '&#9660;';
+    }
+  });
+  // Esc 关闭下拉菜单
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      const menu = $('#notesdir-dropdown');
+      const btn = $('#notesdir-dropdown-btn');
+      if (!menu.classList.contains('hidden')) {
+        menu.classList.add('hidden');
+        btn.innerHTML = '&#9660;';
+      }
+    }
+  });
   btnSwitchNotepad.addEventListener('click', switchToNotepad);
   btnNotepadBack.addEventListener('click', switchToMain);
   btnNoteList.addEventListener('click', toggleNoteList);
@@ -891,11 +925,41 @@ async function loadShortcutsFromConfig() {
 
 async function openSettings() {
   if (window.electronAPI) {
+    window.electronAPI.setSettingsOpen(true);
     const cfg = await window.electronAPI.getConfig();
     $('#settings-apikey').value = cfg.apiKey || '';
     $('#settings-baseurl').value = cfg.baseUrl || 'https://api.deepseek.com';
     $('#settings-reportname').value = cfg.reportName || '';
-    $('#settings-notesdir').value = cfg.notesDir || '';
+
+    // 填充文件路径下拉菜单
+    const currentDir = cfg.notesDir || '';
+    $('#settings-notesdir').value = currentDir;
+    const menu = $('#notesdir-dropdown');
+    menu.innerHTML = '';
+    // 默认位置选项
+    const defaultItem = document.createElement('div');
+    defaultItem.className = 'combo-dropdown-item default-item';
+    defaultItem.textContent = '默认位置 (AppData)';
+    defaultItem.addEventListener('click', () => {
+      $('#settings-notesdir').value = '';
+      menu.classList.add('hidden');
+      $('#notesdir-dropdown-btn').innerHTML = '&#9660;';
+    });
+    menu.appendChild(defaultItem);
+    // 历史路径
+    const history = cfg.notesDirHistory || [];
+    history.forEach(dir => {
+      const item = document.createElement('div');
+      item.className = 'combo-dropdown-item';
+      item.textContent = dir;
+      item.addEventListener('click', () => {
+        $('#settings-notesdir').value = dir;
+        menu.classList.add('hidden');
+        $('#notesdir-dropdown-btn').innerHTML = '&#9660;';
+      });
+      menu.appendChild(item);
+    });
+
     if (window.electronAPI) {
       $('#settings-autostart').checked = await window.electronAPI.getLoginSettings();
     }
@@ -948,7 +1012,7 @@ async function confirmSettings() {
   const winFixed = $('#settings-winfixed').checked;
   const tasksEnabled = $('#settings-tasks-page').checked;
   const pagesEnabled = { tasks: tasksEnabled };
-  const cfg = { apiKey, baseUrl, reportName, notesDir, projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, pagesEnabled };
+  const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, pagesEnabled };
 
   if (window.electronAPI) {
     await window.electronAPI.saveConfig(cfg);
@@ -986,6 +1050,7 @@ async function confirmSettings() {
     }
   }
 
+  if (window.electronAPI) window.electronAPI.setSettingsOpen(false);
   settingsOverlay.classList.add('hidden');
 }
 
@@ -997,6 +1062,7 @@ function cancelSettings() {
         state.shortcuts = { ...state.shortcuts, ...cfg.shortcuts };
       }
     });
+    window.electronAPI.setSettingsOpen(false);
   }
   settingsOverlay.classList.add('hidden');
 }

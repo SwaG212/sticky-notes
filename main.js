@@ -29,6 +29,7 @@ let alarmWin = null;
 let animating = false;
 let alarmTimer = null;
 let currentPage = 'main';
+let settingsOpen = false;
 let winFixed = true;
 let savedWinX = null;
 let savedWinY = null;
@@ -67,14 +68,26 @@ function loadConfig() {
       const decrypted = safeStorage.decryptString(encrypted);
       cachedConfig = JSON.parse(decrypted);
       if (!cachedConfig.projectNames) cachedConfig.projectNames = [];
+      if (!cachedConfig.notesDirHistory) cachedConfig.notesDirHistory = [];
+      // 迁移：把当前 notesDir 加入历史（修复旧版本遗留数据）
+      if (cachedConfig.notesDir && cachedConfig.notesDir.trim() && !cachedConfig.notesDirHistory.includes(cachedConfig.notesDir.trim())) {
+        cachedConfig.notesDirHistory = [cachedConfig.notesDir.trim(), ...cachedConfig.notesDirHistory].slice(0, 5);
+      }
       return cachedConfig;
     }
   } catch (e) { /* ignore */ }
-  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', projectNames: [], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' }, pagesEnabled: { tasks: true } };
+  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', notesDirHistory: [], projectNames: [], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' }, pagesEnabled: { tasks: true } };
   return cachedConfig;
 }
 
 function saveConfig(cfg) {
+  // 维护文件路径历史（最多5条，去重，最近使用排最前）
+  if (cfg.notesDir && cfg.notesDir.trim()) {
+    const dir = cfg.notesDir.trim();
+    const history = cfg.notesDirHistory || [];
+    const filtered = history.filter(d => d !== dir);
+    cfg.notesDirHistory = [dir, ...filtered].slice(0, 5);
+  }
   cachedConfig = cfg;
   const json = JSON.stringify(cfg);
   const encrypted = safeStorage.encryptString(json);
@@ -537,6 +550,7 @@ function setupIPC() {
   });
 
   ipcMain.handle('get-config', () => loadConfig());
+  ipcMain.handle('set-settings-open', (_e, open) => { settingsOpen = open; });
   ipcMain.handle('save-config', (_event, cfg) => { saveConfig(cfg); return { success: true }; });
   ipcMain.handle('get-login-settings', () => app.getLoginItemSettings().openAtLogin);
   ipcMain.handle('set-login-settings', (_e, enabled) => app.setLoginItemSettings({ openAtLogin: enabled }));
@@ -669,7 +683,7 @@ function createWindow() {
   });
 
   win.on('blur', () => {
-    if (win && !win.isDestroyed() && !animating && currentPage === 'main') {
+    if (win && !win.isDestroyed() && !animating && currentPage === 'main' && !settingsOpen) {
       hideWindow();
     }
   });

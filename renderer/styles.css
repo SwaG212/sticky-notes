@@ -539,6 +539,7 @@ body {
   flex-direction: column;
   z-index: 20;
   border-radius: 12px;
+  -webkit-app-region: no-drag;
 }
 #settings-overlay.hidden { display: none; }
 
@@ -627,6 +628,67 @@ body {
 }
 .settings-card input:focus { border-color: var(--accent); }
 .settings-card input::placeholder { color: var(--text-dim); opacity: 0.4; }
+/* 文件路径 combobox */
+.notesdir-combo {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.notesdir-combo input {
+  flex: 1;
+  padding-right: 30px;
+}
+.combo-arrow {
+  position: absolute;
+  right: 1px;
+  top: 1px;
+  bottom: 1px;
+  width: 26px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 8px;
+  cursor: pointer;
+  border-radius: 0 4px 4px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.combo-arrow:hover {
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+.combo-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 2px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+.combo-dropdown.hidden { display: none; }
+.combo-dropdown-item {
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.combo-dropdown-item:hover {
+  background: var(--accent);
+  color: #fff;
+}
+.combo-dropdown-item.default-item {
+  color: var(--text-dim);
+  font-style: italic;
+}
 
 /* 设置页复选框 */
 /* 项目名称标签输入 */
