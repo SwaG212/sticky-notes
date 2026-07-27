@@ -1009,6 +1009,8 @@ async function openSettings() {
   renderShortcutInputs();
   settingsOverlay.classList.remove('hidden');
   $('#settings-apikey').focus();
+  // 聚焦后浏览器会自动滚动到输入框位置，重置到顶部
+  $('.settings-body').scrollTop = 0;
 }
 
 function setKbdDisplay(el, accel) {
