@@ -173,6 +173,9 @@ body {
   text-decoration: line-through;
   color: var(--text-done);
 }
+.task-text.due-overdue { color: var(--danger); }
+.task-text.due-today { color: #4a90d9; }
+.task-text.due-tomorrow { color: #e67e22; }
 
 /* 项目徽标 */
 .project-badge {
@@ -205,6 +208,10 @@ body {
   z-index: 2;
 }
 
+/* 项目页签(无拖拽手柄):收窄右 padding,hover 栏贴右侧 */
+.task-item.no-drag { padding-right: 28px; }
+.task-item.no-drag .hover-bar { right: 6px; }
+
 /* 拖拽手柄 */
 .task-drag-handle {
   position: absolute;
@@ -231,6 +238,37 @@ body {
 .task-item:hover .task-drag-handle { opacity: 1; }
 .task-drag-handle:active { cursor: grabbing; opacity: 1; background: var(--bg-secondary); }
 .task-item.completed .task-drag-handle { display: none; }
+
+/* 常驻日期胶囊:仅展示,悬停时隐藏让位给操作栏 */
+.task-date-chip {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--text-dim);
+  background: var(--bg-secondary);
+  padding: 2px 6px;
+  border-radius: 6px;
+  user-select: none;
+  pointer-events: none;
+  z-index: 1;
+}
+.task-item:hover .task-date-chip { display: none; }
+.task-date-chip.due-overdue {
+  background: rgba(217, 61, 61, 0.12);
+  color: var(--danger);
+}
+.task-date-chip.due-today {
+  background: rgba(74, 144, 217, 0.12);
+  color: #4a90d9;
+}
+.task-date-chip.due-tomorrow {
+  background: rgba(230, 126, 34, 0.14);
+  color: #e67e22;
+}
 
 /* 拖拽中的浮动克隆 */
 .task-dragging {
@@ -273,6 +311,18 @@ body {
   justify-content: center;
 }
 .task-delete:hover { color: var(--danger); }
+
+/* 到期日胶囊 */
+.task-duedate {
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 2px 3px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.task-duedate:hover { background: var(--bg-secondary); }
+.task-duedate.has-date { color: var(--text); }
 
 /* 时分选择器 */
 .time-picker {
@@ -329,6 +379,97 @@ body {
 .tp-opt:hover { background: var(--bg-secondary); }
 .tp-opt.active { background: var(--accent); color: #fff; }
 
+/* 日期选择器 */
+.date-picker {
+  position: absolute;
+  z-index: 100;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.15);
+  padding: 8px;
+  width: 210px;
+}
+.dp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: bold;
+  color: var(--text);
+}
+.dp-nav {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.dp-nav:hover { background: var(--bg-secondary); color: var(--text); }
+.dp-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  margin-bottom: 4px;
+}
+.dp-weekday {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 2px 0;
+}
+.dp-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.dp-day {
+  padding: 5px 0;
+  font-size: 12px;
+  text-align: center;
+  cursor: pointer;
+  border-radius: 4px;
+  color: var(--text);
+}
+.dp-day:hover { background: var(--bg-secondary); }
+.dp-day.other-month { color: var(--text-dim); opacity: 0.35; pointer-events: none; }
+.dp-day.today { box-shadow: inset 0 0 0 1px var(--accent); }
+.dp-day.selected { background: var(--accent); color: #fff; }
+.dp-actions {
+  display: flex;
+  gap: 3px;
+  margin-top: 6px;
+}
+.dp-actions .dp-action-btn { flex: 1; text-align: center; }
+.dp-clear-row {
+  display: flex;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.dp-clear-row .dp-action-btn { flex: 1; padding: 4px 0; }
+.dp-action-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dp-action-btn:hover { background: var(--bg-secondary); color: var(--text); }
+.dp-action-btn.clear-btn:hover { color: var(--danger); }
+
 /* 编辑态输入框 */
 .task-edit-input {
   flex: 1;
@@ -348,6 +489,53 @@ body {
   background: var(--border);
   margin: 0 14px;
   flex-shrink: 0;
+}
+
+/* ========== 项目页签栏 ========== */
+#sheet-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px 0;
+  flex-shrink: 0;
+}
+.sheet-fixed {
+  display: flex;
+  flex-shrink: 0;
+}
+.sheet-scroll {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.sheet-scroll::-webkit-scrollbar { display: none; }
+.sheet-tab {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, color 0.15s;
+}
+.sheet-tab:hover { color: var(--text); }
+.sheet-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.sheet-tab .sheet-count {
+  margin-left: 3px;
+  font-size: 10px;
+  opacity: 0.7;
 }
 
 /* ========== 输入区 ========== */
@@ -406,11 +594,11 @@ body {
   color: var(--text);
   font-size: 14px;
   font-family: inherit;
-  padding: 10px 12px;
+  padding: 6px 12px;
   resize: none;
   outline: none;
   line-height: 1.6;
-  min-height: 80px;
+  height: 80px;
 }
 #text-input:focus { border-color: var(--accent); }
 #text-input::placeholder { color: var(--text-dim); opacity: 0.5; }
@@ -957,6 +1145,55 @@ body {
   transition: background 0.15s;
 }
 #btn-notepad-back:hover { background: var(--border); }
+
+/* 笔记页搜索栏 */
+#note-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+#note-search-bar.hidden { display: none; }
+#note-search-input {
+  width: 180px;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  outline: none;
+}
+#note-search-input:focus { border-color: var(--accent); }
+/* 无匹配警告图标:圆角渐变三角 + 白色叹号,始终占位,保证输入框位置不变 */
+#note-search-status {
+  flex-shrink: 0;
+  width: 16px;
+  height: 14px;
+  visibility: hidden;
+}
+#note-search-status.noresult {
+  visibility: visible;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 14'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%23ff6b5e'/%3E%3Cstop offset='1' stop-color='%23e53835'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M8 1 L15 12.7 H1 Z' fill='url(%23g)' stroke='url(%23g)' stroke-width='2' stroke-linejoin='round'/%3E%3Crect x='7.15' y='4.3' width='1.7' height='4.5' rx='0.85' fill='%23fff'/%3E%3Ccircle cx='8' cy='11' r='1' fill='%23fff'/%3E%3C/svg%3E");
+  background-size: 100% 100%;
+  filter: drop-shadow(0 1px 2px rgba(220, 60, 50, 0.35));
+  animation: search-warn-pop 0.25s ease-out;
+}
+@keyframes search-warn-pop {
+  0% { transform: scale(0.4); opacity: 0; }
+  60% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.page-notepad mark {
+  background: #fff176;
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.page-notepad mark.active {
+  background: #ffb74d;
+}
 
 /* ========== 文件列表面板 ========== */
 #note-list-overlay {

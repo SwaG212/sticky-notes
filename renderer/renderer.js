@@ -15,12 +15,15 @@ const state = {
   projectNames: [],
   pagesEnabled: { tasks: true },
   hoveredImage: null,
+  activeSheet: 'all',
+  noteSearch: null,
 };
 
 // ========== DOM 引用 ==========
 const $ = (sel) => document.querySelector(sel);
 const taskItems = $('#task-items');
 const taskEmpty = $('#task-empty');
+const sheetBar = $('#sheet-bar');
 const textInput = $('#text-input');
 const imagePreviews = $('#image-previews');
 const btnOrganize = $('#btn-organize');
@@ -38,6 +41,9 @@ const noteListOverlay = $('#note-list-overlay');
 const noteListItems = $('#note-list-items');
 const btnDailyReport = $('#btn-daily-report');
 const dailyReportHint = $('#daily-report-hint');
+const noteSearchBar = $('#note-search-bar');
+const noteSearchInput = $('#note-search-input');
+const noteSearchStatus = $('#note-search-status');
 
 // ========== 初始化 ==========
 async function init() {
@@ -101,6 +107,13 @@ async function init() {
   btnNoteList.addEventListener('click', toggleNoteList);
   btnNoteNew.addEventListener('click', createNote);
   btnDailyReport.addEventListener('click', generateDailyReport);
+  // 页签栏滚轮横向滚动(仅当有横向溢出时拦截,否则放行给任务列表)
+  sheetBar.addEventListener('wheel', (e) => {
+    const scroller = sheetBar.querySelector('.sheet-scroll');
+    if (!scroller || scroller.scrollWidth <= scroller.clientWidth) return;
+    e.preventDefault();
+    scroller.scrollLeft += e.deltaY;
+  }, { passive: false });
   notepadTextarea.addEventListener('input', onNotepadInput);
   notepadTextarea.addEventListener('paste', handleNotepadPaste);
   notepadTextarea.addEventListener('dblclick', handleNotepadDblClick);
@@ -121,6 +134,12 @@ async function init() {
   notepadTextarea.addEventListener('mouseout', (e) => {
     const img = e.target.closest('img');
     if (img && state.hoveredImage === img) state.hoveredImage = null;
+  });
+  // 笔记页搜索框
+  noteSearchInput.addEventListener('input', doNoteSearch);
+  noteSearchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); nextNoteMatch(); }
+    if (e.key === 'Escape') { e.preventDefault(); closeNoteSearch(); }
   });
 
   // 快捷键捕获相关
@@ -181,6 +200,20 @@ async function init() {
       e.preventDefault();
       if (!state.organizing) organize();
     }
+    // 笔记页 Ctrl+F 打开/关闭搜索;文件列表面板打开时聚焦文件搜索框
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && state.currentPage === 'notepad') {
+      e.preventDefault();
+      if (noteListOverlay.classList.contains('hidden')) {
+        toggleNoteSearch();
+      } else {
+        $('#note-list-search').focus();
+      }
+      return;
+    }
+    // Esc 关闭笔记搜索
+    if (e.key === 'Escape' && !noteSearchBar.classList.contains('hidden')) {
+      closeNoteSearch();
+    }
   });
 
   if (window.electronAPI) {
@@ -215,8 +248,9 @@ async function loadTasks() {
     state.tasks = await window.electronAPI.loadTasks();
   } else {
     const today = getToday();
+    let raw = null;
     try {
-      const raw = localStorage.getItem(`tasks_${today}`);
+      raw = localStorage.getItem(`tasks_${today}`);
       state.tasks = raw ? JSON.parse(raw) : [];
     } catch (e) { state.tasks = []; }
     let changed = false;
@@ -248,6 +282,11 @@ async function loadTasks() {
     if (t.sortOrder === undefined) { t.sortOrder = i; needsSave = true; }
   });
   if (needsSave) saveTasks();
+  // 清除过期已完成任务
+  const todayStr = getToday();
+  const before = state.tasks.length;
+  state.tasks = state.tasks.filter(t => !(t.completed && t.dueDate && t.dueDate < todayStr));
+  if (state.tasks.length !== before) saveTasks();
   sortTasks();
 }
 
@@ -268,20 +307,87 @@ function snapshotPositions() {
   return map;
 }
 
+// ========== 项目页签栏 ==========
+function renderSheetBar() {
+  if (!sheetBar) return;
+  const projects = [];
+  for (const t of state.tasks) {
+    if (t.project && !projects.includes(t.project)) projects.push(t.project);
+  }
+  // 当前页签的项目已不存在(如 organize 后任务被改/删)→ 回退到全部
+  if (state.activeSheet !== 'all' && !projects.includes(state.activeSheet)) {
+    state.activeSheet = 'all';
+  }
+
+  const makeTab = (key, label, count) => {
+    const cls = 'sheet-tab' + (state.activeSheet === key ? ' active' : '');
+    const div = document.createElement('div');
+    div.className = cls;
+    div.dataset.sheet = key;
+    const name = document.createElement('span');
+    name.textContent = label;
+    const cnt = document.createElement('span');
+    cnt.className = 'sheet-count';
+    cnt.textContent = count;
+    div.append(name, cnt);
+    div.addEventListener('click', () => {
+      state.activeSheet = key;
+      renderTasks();
+    });
+    return div;
+  };
+
+  // 「任务汇总」固定在左侧,项目页签在右侧可横向滚动
+  sheetBar.innerHTML = '';
+  const fixed = document.createElement('div');
+  fixed.className = 'sheet-fixed';
+  fixed.appendChild(makeTab('all', '任务汇总', state.tasks.length));
+  const scroller = document.createElement('div');
+  scroller.className = 'sheet-scroll';
+  projects.forEach(p => scroller.appendChild(makeTab(p, p, state.tasks.filter(t => t.project === p).length)));
+  sheetBar.append(fixed, scroller);
+}
+
 function renderTasks(shouldAnimate = false) {
+  renderSheetBar();
   // FLIP 动画第一步：记录旧位置
   const oldPos = shouldAnimate ? snapshotPositions() : null;
 
+  let visible = state.activeSheet === 'all'
+    ? state.tasks
+    : state.tasks.filter(t => t.project === state.activeSheet);
+
+  // 项目页签内按日期单独排序:有日期的按日期升序(最早在上),无日期的沉底保持原相对顺序
+  // 拷贝排序,不改 state.tasks,汇总页顺序与拖拽排序不受影响
+  if (state.activeSheet !== 'all') {
+    visible = [...visible].sort((a, b) => {
+      if (a.dueDate && b.dueDate) return a.dueDate < b.dueDate ? -1 : a.dueDate > b.dueDate ? 1 : 0;
+      if (a.dueDate) return -1;
+      if (b.dueDate) return 1;
+      return 0;
+    });
+  }
+
   taskItems.innerHTML = '';
-  if (state.tasks.length === 0) {
+  if (visible.length === 0) {
+    const title = taskEmpty.querySelector('.empty-title');
+    const desc = taskEmpty.querySelector('.empty-desc');
+    if (state.activeSheet !== 'all' && state.tasks.length > 0) {
+      title.textContent = '该项目暂无任务';
+      desc.textContent = '切回「任务汇总」查看所有任务';
+    } else {
+      title.textContent = '还没有任务';
+      desc.textContent = '在下方输入想做的事，然后点击「整理」';
+    }
     taskEmpty.classList.remove('hidden');
     return;
   }
   taskEmpty.classList.add('hidden');
 
-  state.tasks.forEach((task, idx) => {
+  visible.forEach((task) => {
+    const idx = state.tasks.indexOf(task);
     const row = document.createElement('div');
-    row.className = 'task-item';
+    row.className = 'task-item' + (state.activeSheet !== 'all' ? ' no-drag' : '');
     if (task.completed) row.classList.add('completed');
     row.dataset.id = task.id;
 
@@ -301,6 +407,17 @@ function renderTasks(shouldAnimate = false) {
     }
     text.appendChild(document.createTextNode(task.task));
 
+    // 到期日颜色反馈（仅未完成任务）
+    let dueClass = null;
+    if (!task.completed && task.dueDate) {
+      const today = getToday();
+      const tomorrow = getTomorrowStr();
+      if (task.dueDate < today) dueClass = 'due-overdue';
+      else if (task.dueDate === today) dueClass = 'due-today';
+      else if (task.dueDate === tomorrow) dueClass = 'due-tomorrow';
+    }
+    if (dueClass) text.classList.add(dueClass);
+
     text.title = task.task.length > 50 ? task.task : '';
 
     const alarm = document.createElement('span');
@@ -311,6 +428,28 @@ function renderTasks(shouldAnimate = false) {
       openTimePicker(alarm, idx);
     });
 
+    // 到期日胶囊
+    const ddate = document.createElement('span');
+    ddate.className = 'task-duedate' + (task.dueDate ? ' has-date' : '');
+    if (task.dueDate) {
+      ddate.textContent = task.dueDate.slice(5);
+    } else {
+      ddate.textContent = '📅';
+    }
+    ddate.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openDatePicker(ddate, idx);
+    });
+
+    // 常驻日期胶囊:仅展示,悬停时 CSS 隐藏;修改日期仍走 hover 栏 📅
+    let dateChip = null;
+    if (task.dueDate) {
+      dateChip = document.createElement('span');
+      dateChip.className = 'task-date-chip';
+      dateChip.textContent = task.dueDate.slice(5);
+      if (dueClass) dateChip.classList.add(dueClass);
+    }
+
     const del = document.createElement('button');
     del.className = 'task-delete';
     del.textContent = '✕';
@@ -319,13 +458,13 @@ function renderTasks(shouldAnimate = false) {
     const hoverBar = document.createElement('div');
     hoverBar.className = 'hover-bar';
     hoverBar.style.display = 'none';
-    hoverBar.append(alarm, del);
+    hoverBar.append(alarm, ddate, del);
 
     row.addEventListener('mouseenter', () => { hoverBar.style.display = 'flex'; row.style.background = '#f3f3f8'; });
     row.addEventListener('mouseleave', () => { hoverBar.style.display = 'none'; row.style.background = ''; });
 
-    // 拖拽手柄（仅未完成任务）
-    if (!task.completed) {
+    // 拖拽手柄:仅未完成任务,且仅在汇总页可用(项目页签按日期排序,禁拖)
+    if (!task.completed && state.activeSheet === 'all') {
       const dragHandle = document.createElement('div');
       dragHandle.className = 'task-drag-handle';
       dragHandle.textContent = '⋮⋮';
@@ -334,10 +473,12 @@ function renderTasks(shouldAnimate = false) {
     } else {
       row.append(cb, text, hoverBar);
     }
+    // 注意:append 不能传 null(WebIDL 会把 null 转成 "null" 文本),空值用 appendChild 跳过
+    if (dateChip) row.appendChild(dateChip);
 
     let clickTimer = null;
     row.addEventListener('click', (e) => {
-      if (e.target === del || e.target === alarm) return;
+      if (e.target === del || e.target === alarm || e.target === ddate) return;
       if (clickTimer) {
         clearTimeout(clickTimer);
         clickTimer = null;
@@ -347,7 +488,6 @@ function renderTasks(shouldAnimate = false) {
       }
     });
 
-    row.append(cb, text, hoverBar);
     taskItems.appendChild(row);
   });
 
@@ -545,7 +685,7 @@ function addTasks(newTasks) {
   const maxOrder = state.tasks.reduce((max, t) => Math.max(max, t.sortOrder ?? 0), -1);
   const items = unique.map((t, i) => ({
     id: genId(), task: t.task, project: t.project || null, completed: false, createdAt: now, completedAt: null,
-    alarmTime: null, sortOrder: maxOrder + 1 + i,
+    alarmTime: null, dueDate: null, sortOrder: maxOrder + 1 + i,
   }));
   state.tasks = [...items, ...state.tasks];
 
@@ -650,6 +790,154 @@ function openTimePicker(anchorEl, taskIdx) {
       }
     };
     app.addEventListener('click', closePk, true);
+  }, 0);
+
+  activePicker = picker;
+}
+
+// ========== 到期日选择器 ==========
+function openDatePicker(anchorEl, taskIdx) {
+  closeActivePicker();
+
+  const current = state.tasks[taskIdx].dueDate || '';
+  let viewYear, viewMonth;
+
+  if (current) {
+    viewYear = parseInt(current.slice(0, 4), 10);
+    viewMonth = parseInt(current.slice(5, 7), 10) - 1;
+  } else {
+    const now = new Date();
+    viewYear = now.getFullYear();
+    viewMonth = now.getMonth();
+  }
+
+  const picker = document.createElement('div');
+  picker.className = 'date-picker';
+
+  function renderCalendar() {
+    const today = getToday();
+    const todayParts = today.split('-');
+    const todayY = parseInt(todayParts[0], 10);
+    const todayM = parseInt(todayParts[1], 10);
+    const todayD = parseInt(todayParts[2], 10);
+
+    const firstDay = new Date(viewYear, viewMonth, 1).getDay();
+    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+    const daysInPrevMonth = new Date(viewYear, viewMonth, 0).getDate();
+
+    const monthLabel = `${viewYear}年${viewMonth + 1}月`;
+
+    let html = `<div class="dp-header">
+      <button class="dp-nav dp-prev">&lt;</button>
+      <span class="dp-month">${monthLabel}</span>
+      <button class="dp-nav dp-next">&gt;</button>
+    </div>`;
+
+    html += '<div class="dp-weekdays">';
+    ['日','一','二','三','四','五','六'].forEach(w => {
+      html += `<div class="dp-weekday">${w}</div>`;
+    });
+    html += '</div>';
+
+    html += '<div class="dp-grid">';
+    for (let i = firstDay - 1; i >= 0; i--) {
+      const d = daysInPrevMonth - i;
+      html += `<div class="dp-day other-month">${d}</div>`;
+    }
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateStr = formatDateStr(viewYear, viewMonth + 1, d);
+      let cls = 'dp-day';
+      if (dateStr === today) cls += ' today';
+      if (dateStr === current) cls += ' selected';
+      html += `<div class="${cls}" data-date="${dateStr}">${d}</div>`;
+    }
+    const totalCells = firstDay + daysInMonth;
+    const remaining = totalCells % 7 === 0 ? 0 : 7 - (totalCells % 7);
+    for (let d = 1; d <= remaining; d++) {
+      html += `<div class="dp-day other-month">${d}</div>`;
+    }
+    html += '</div>';
+
+    html += '<div class="dp-actions">';
+    html += '<button class="dp-action-btn" data-action="mon">周一</button>';
+    html += '<button class="dp-action-btn" data-action="tue">周二</button>';
+    html += '<button class="dp-action-btn" data-action="wed">周三</button>';
+    html += '<button class="dp-action-btn" data-action="thu">周四</button>';
+    html += '<button class="dp-action-btn" data-action="fri">周五</button>';
+    html += '</div>';
+    html += '<div class="dp-clear-row">';
+    html += '<button class="dp-action-btn clear-btn" data-action="clear">清除</button>';
+    html += '</div>';
+
+    picker.innerHTML = html;
+
+    picker.querySelector('.dp-prev').addEventListener('click', () => {
+      viewMonth--;
+      if (viewMonth < 0) { viewMonth = 11; viewYear--; }
+      renderCalendar();
+    });
+    picker.querySelector('.dp-next').addEventListener('click', () => {
+      viewMonth++;
+      if (viewMonth > 11) { viewMonth = 0; viewYear++; }
+      renderCalendar();
+    });
+
+    picker.querySelectorAll('.dp-day:not(.other-month)').forEach(dayEl => {
+      dayEl.addEventListener('click', () => {
+        state.tasks[taskIdx].dueDate = dayEl.dataset.date;
+        saveTasks();
+        closeActivePicker();
+        renderTasks();
+      });
+    });
+
+    picker.querySelectorAll('.dp-action-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const action = btn.dataset.action;
+        let dateStr = null;
+        if (action === 'mon' || action === 'tue' || action === 'wed' || action === 'thu' || action === 'fri') {
+          const dowMap = { mon: 1, tue: 2, wed: 3, thu: 4, fri: 5 };
+          const now = new Date();
+          let todayDow = now.getDay();
+          if (todayDow === 0) todayDow = 7; // 周日=7
+          let offset = dowMap[action] - todayDow;
+          if (offset < 0) offset += 7; // 本周已过 → 下周
+          const d = new Date(now);
+          d.setDate(now.getDate() + offset);
+          dateStr = formatDateStr(d.getFullYear(), d.getMonth() + 1, d.getDate());
+        } else if (action === 'clear') {
+          state.tasks[taskIdx].dueDate = null;
+        }
+        if (dateStr !== undefined) {
+          if (dateStr !== null) state.tasks[taskIdx].dueDate = dateStr;
+          saveTasks();
+          closeActivePicker();
+          renderTasks();
+        }
+      });
+    });
+  }
+
+  renderCalendar();
+  app.appendChild(picker);
+
+  const appRect = app.getBoundingClientRect();
+  const anchorRect = anchorEl.getBoundingClientRect();
+  picker.style.left = Math.max(8, Math.min(appRect.width - 218, anchorRect.left - appRect.left - 50)) + 'px';
+  picker.style.top = Math.max(4, anchorRect.top - appRect.top - 260) + 'px';
+
+  setTimeout(() => {
+    function closeDp(e) {
+      const isEsc = e.key === 'Escape';
+      if (isEsc || (!picker.contains(e.target) && e.target !== anchorEl)) {
+        picker.remove();
+        if (activePicker === picker) activePicker = null;
+        document.removeEventListener('keydown', closeDp, true);
+        app.removeEventListener('click', closeDp, true);
+      }
+    }
+    document.addEventListener('keydown', closeDp, true);
+    app.addEventListener('click', closeDp, true);
   }, 0);
 
   activePicker = picker;
@@ -877,9 +1165,27 @@ function htmlToMarkdown(html) {
       img.replaceWith(document.createTextNode(`![](${src.replace('note-image://', '')})`));
     }
   });
-  const divs = div.querySelectorAll('div');
-  if (divs.length > 0) return Array.from(divs).map(d => (d.textContent || '').trim()).join('\n');
-  return (div.textContent || '').trim();
+  // 按块级元素分行(兼容 div/p/li 混合),空块保留为空行
+  const lines = [];
+  const BLOCK_TAGS = new Set(['DIV', 'P', 'LI', 'BLOCKQUOTE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'TR', 'UL', 'OL', 'DL', 'SECTION']);
+  function walk(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const t = node.textContent.trim();
+      if (t) lines.push(t);
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const kids = Array.from(node.childNodes);
+    const hasBlockChild = kids.some(k => k.nodeType === Node.ELEMENT_NODE && BLOCK_TAGS.has(k.tagName));
+    if (hasBlockChild) {
+      kids.forEach(walk);
+    } else {
+      lines.push((node.textContent || '').trim());
+    }
+  }
+  walk(div);
+  while (lines.length && lines[lines.length - 1] === '') lines.pop();
+  return lines.join('\n');
 }
 
 function insertImageAtCursor(relativePath, dataUrl) {
@@ -1201,6 +1507,16 @@ function getToday() {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
+function getTomorrowStr() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function formatDateStr(year, month, day) {
+  return `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+}
+
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function showProcessing(show, text = '') {
@@ -1212,7 +1528,8 @@ function showProcessing(show, text = '') {
 function updateTasksPageVisibility() {
   const enabled = state.pagesEnabled.tasks;
   btnSwitchNotepad.style.display = enabled ? '' : 'none';
-  btnNotepadBack.style.display = enabled ? '' : 'none';
+  // 用 visibility 隐藏而非 display:none,保留占位,否则页脚栏会塌陷成细条
+  btnNotepadBack.style.visibility = enabled ? '' : 'hidden';
 }
 
 async function switchToNotepad() {
@@ -1236,6 +1553,7 @@ async function switchToNotepad() {
     }
   }
   pagesContainer.classList.add('on-notepad');
+  closeNoteSearch();
   notepadTextarea.innerHTML = loadMarkdown(state.noteContent);
   notepadTextarea.classList.toggle('is-empty', !state.noteContent);
   populateImageCache();
@@ -1258,6 +1576,83 @@ function onNotepadInput() {
   state.noteContent = htmlToMarkdown(notepadTextarea.innerHTML);
   const isEmpty = !notepadTextarea.textContent?.trim() && notepadTextarea.querySelectorAll('img').length === 0;
   notepadTextarea.classList.toggle('is-empty', isEmpty);
+  // 搜索打开时,输入内容会破坏 mark 结构,重建高亮
+  if (!noteSearchBar.classList.contains('hidden')) doNoteSearch();
+}
+
+// ========== 笔记页搜索 ==========
+function toggleNoteSearch() {
+  if (noteSearchBar.classList.contains('hidden')) openNoteSearch();
+  else closeNoteSearch();
+}
+
+function openNoteSearch() {
+  noteSearchBar.classList.remove('hidden');
+  noteSearchInput.value = '';
+  noteSearchStatus.textContent = '';
+  noteSearchStatus.classList.remove('noresult');
+  state.noteSearch = null;
+  noteSearchInput.focus();
+}
+
+function closeNoteSearch() {
+  if (noteSearchBar.classList.contains('hidden')) return;
+  noteSearchBar.classList.add('hidden');
+  clearNoteSearchMarks();
+  state.noteSearch = null;
+}
+
+function clearNoteSearchMarks() {
+  notepadTextarea.querySelectorAll('mark').forEach(m => m.replaceWith(document.createTextNode(m.textContent)));
+}
+
+function doNoteSearch() {
+  const query = noteSearchInput.value.trim().toLowerCase();
+  clearNoteSearchMarks();
+  noteSearchStatus.textContent = '';
+  noteSearchStatus.classList.remove('noresult');
+  if (!query) { state.noteSearch = null; return; }
+  // 先收集文本节点,处理时替换节点不影响遍历
+  const textNodes = [];
+  const walker = document.createTreeWalker(notepadTextarea, NodeFilter.SHOW_TEXT);
+  let n;
+  while ((n = walker.nextNode())) textNodes.push(n);
+  const matches = [];
+  for (const node of textNodes) {
+    const text = node.textContent;
+    const lower = text.toLowerCase();
+    let idx = lower.indexOf(query);
+    if (idx === -1) continue;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    while (idx !== -1) {
+      if (idx > last) frag.appendChild(document.createTextNode(text.slice(last, idx)));
+      const mark = document.createElement('mark');
+      mark.textContent = text.slice(idx, idx + query.length);
+      frag.appendChild(mark);
+      matches.push(mark);
+      last = idx + query.length;
+      idx = lower.indexOf(query, last);
+    }
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    node.parentNode.replaceChild(frag, node);
+  }
+  state.noteSearch = { query, matches, index: -1 };
+  if (!matches.length) {
+    noteSearchStatus.classList.add('noresult');
+  } else {
+    nextNoteMatch();
+  }
+}
+
+function nextNoteMatch() {
+  const s = state.noteSearch;
+  if (!s || !s.matches.length) return;
+  if (s.index >= 0) s.matches[s.index].classList.remove('active');
+  s.index = (s.index + 1) % s.matches.length;
+  const m = s.matches[s.index];
+  m.classList.add('active');
+  m.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
 async function handleNotepadPaste(e) {
@@ -1334,6 +1729,7 @@ async function openNote(filename) {
   const prevContent = state.noteContent;
   const prevOriginal = state.noteOriginalContent;
   state.currentNoteFile = filename;
+  closeNoteSearch();
   if (!window.electronAPI) return;
   state.noteContent = await window.electronAPI.readNote(filename);
   state.noteOriginalContent = state.noteContent;
@@ -1397,6 +1793,7 @@ async function saveCurrentNote() {
 
 async function createNote() {
   await saveCurrentNote();
+  closeNoteSearch();
   if (!window.electronAPI) return;
   const filename = await window.electronAPI.createNote();
   state.currentNoteFile = filename;

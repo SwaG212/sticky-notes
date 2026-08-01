@@ -25,10 +25,13 @@
       <!-- 分隔线 -->
       <div class="divider"></div>
 
+      <!-- 项目页签栏 -->
+      <div id="sheet-bar"></div>
+
       <!-- 输入区 -->
       <div id="input-area">
         <div id="image-previews"></div>
-        <textarea id="text-input" placeholder="记录想做的事..." rows="4"></textarea>
+        <textarea id="text-input" placeholder="记录想做的事..." rows="1"></textarea>
         <div id="input-actions">
           <span class="daily-report-group">
             <button id="btn-daily-report">日报</button>
@@ -53,6 +56,10 @@
       <div id="notepad-textarea" contenteditable="true" data-placeholder="记录笔记..."></div>
       <div class="notepad-footer">
         <button id="btn-notepad-back">←</button>
+        <div id="note-search-bar" class="hidden">
+          <span id="note-search-status"></span>
+          <input type="text" id="note-search-input" placeholder="搜索笔记...">
+        </div>
       </div>
       <div id="note-list-overlay" class="hidden">
         <div id="note-list-search-box">

@@ -290,7 +290,13 @@ function loadTasksFromFile() {
 
   let changed = false;
   if (isNewDay) {
-    tasks.forEach(t => { if (t.alarmTime) { t.alarmTime = null; changed = true; } });
+    tasks.forEach(t => { if (t.alarmTime) { t.alarmTime = null; changed = true; } if (t.dueDate) { t.dueDate = null; changed = true; } });
+
+    // 清除过期已完成任务
+    const todayStr = getToday();
+    const before = tasks.length;
+    tasks = tasks.filter(t => !(t.completed && t.dueDate && t.dueDate < todayStr));
+    if (tasks.length !== before) changed = true;
 
     // 迁移最近未完成任务——扫描过去14天，找到最近有未完成任务的那天进行迁移
     for (let daysBack = 1; daysBack <= 14; daysBack++) {
@@ -309,6 +315,7 @@ function loadTasksFromFile() {
           t.createdAt = new Date().toISOString();
           t.id = 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
           t.alarmTime = null;
+          t.dueDate = null;
           t.sortOrder = i;
         });
         // 今天已有任务 sortOrder 顺延
