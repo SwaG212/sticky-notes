@@ -76,7 +76,7 @@ function loadConfig() {
       return cachedConfig;
     }
   } catch (e) { /* ignore */ }
-  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', notesDirHistory: [], projectNames: [], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' }, pagesEnabled: { tasks: true } };
+  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', notesDirHistory: [], projectNames: [], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2', switchTools: 'Alt+3' }, pagesEnabled: { tasks: true, tools: true } };
   return cachedConfig;
 }
 
@@ -203,6 +203,59 @@ async function callDeepSeek(messages, apiKey, baseUrl) {
   }
 
   return res.json();
+}
+
+// ========== 翻译模块 ==========
+function detectLang(text) {
+  // 含中文字符(基本区)即判定为中文,否则英文
+  return /[一-鿿]/.test(text) ? '中文' : '英文';
+}
+
+function buildTranslatePrompt(text, targetLang) {
+  return `你是一个中英互译助手。
+
+请将以下文本翻译成${targetLang}。
+- 保持原文语气和格式
+- 只输出译文，不要输出其他内容
+
+用户输入：
+${text}`;
+}
+
+async function translateText(text, imageDataUrls) {
+  const cfg = loadConfig();
+  if (!cfg.apiKey) throw new Error('NO_API_KEY');
+
+  // 1. OCR 处理所有图片
+  let ocrResults = [];
+  for (const dataUrl of imageDataUrls) {
+    try {
+      const text = await ocrImage(dataUrl);
+      if (text) ocrResults.push(text);
+    } catch (e) {
+      ocrResults.push('[图片OCR失败]');
+    }
+  }
+
+  // 2. 组装输入
+  let combinedInput = text || '';
+  if (ocrResults.length > 0) {
+    combinedInput += '\n\n[以下为截图OCR识别内容]\n' + ocrResults.join('\n---\n');
+  }
+  if (!combinedInput.trim()) throw new Error('EMPTY_INPUT');
+
+  // 3. 解析文字语言:中文→英文,英文→中文
+  const sourceLang = detectLang(combinedInput);
+  const targetLang = sourceLang === '中文' ? '英文' : '中文';
+
+  // 4. 调用 DeepSeek
+  const response = await callDeepSeek(
+    [{ role: 'user', content: buildTranslatePrompt(combinedInput, targetLang) }],
+    cfg.apiKey,
+    cfg.baseUrl
+  );
+  const translated = (response.choices?.[0]?.message?.content || '').trim();
+  return { translated, sourceLang, targetLang };
 }
 
 async function organizeText(userText, imageDataUrls, project) {
@@ -635,6 +688,22 @@ function setupIPC() {
     });
     clipboard.writeText(report);
     return { report };
+  });
+
+  ipcMain.handle('translate', async (_event, { text, images }) => {
+    try {
+      const res = await translateText(text || '', images || []);
+      return { success: true, translated: res.translated, sourceLang: res.sourceLang, targetLang: res.targetLang };
+    } catch (e) {
+      const errMap = {
+        'NO_API_KEY': '请先配置 API Key',
+        'AUTH_FAILED': 'API Key 无效，请重新配置',
+        'INSUFFICIENT_FUNDS': 'API 余额不足，请充值后重试',
+        'EMPTY_INPUT': '请输入内容',
+      };
+      const msg = errMap[e.message] || `翻译服务异常：${e.message}`;
+      return { success: false, error: msg };
+    }
   });
 }
 

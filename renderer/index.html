@@ -60,6 +60,7 @@
           <span id="note-search-status"></span>
           <input type="text" id="note-search-input" placeholder="搜索笔记...">
         </div>
+        <button id="btn-notepad-forward" title="工具箱">→</button>
       </div>
       <div id="note-list-overlay" class="hidden">
         <div id="note-list-search-box">
@@ -71,6 +72,15 @@
           </div>
         </div>
         <div id="note-list-items"></div>
+      </div>
+    </div>
+
+    <!-- 工具箱页面（第三页） -->
+    <div class="page page-tools">
+      <div class="drag-handle"></div>
+      <div id="tools-cards"></div>
+      <div class="notepad-footer">
+        <button id="btn-tools-back">←</button>
       </div>
     </div>
   </div>
@@ -123,6 +133,12 @@
               <span>任务管理页</span>
             </label>
           </div>
+          <div class="settings-checkbox-row">
+            <label class="checkbox-label">
+              <input type="checkbox" id="settings-tools-page">
+              <span>工具箱页</span>
+            </label>
+          </div>
           <div class="settings-hint">关闭后重启生效</div>
         </div>
         <div class="settings-card">
@@ -149,6 +165,10 @@
           <div class="shortcut-row">
             <span class="shortcut-label">切换笔记页</span>
             <span class="shortcut-kbd" id="shortcut-switchNotepad" tabindex="0"></span>
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-label">切换工具箱页</span>
+            <span class="shortcut-kbd" id="shortcut-switchTools" tabindex="0"></span>
           </div>
         </div>
       </div>

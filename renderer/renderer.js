@@ -11,9 +11,10 @@ const state = {
   pinnedNotes: [],
   noteSearchQuery: '',
   searchMode: 'filename',
-  shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2' },
+  shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2', switchTools: 'Alt+3' },
   projectNames: [],
-  pagesEnabled: { tasks: true },
+  pagesEnabled: { tasks: true, tools: true },
+  toolsEnabled: { translate: true },
   hoveredImage: null,
   activeSheet: 'all',
   noteSearch: null,
@@ -36,6 +37,9 @@ const btnSwitchNotepad = $('#btn-switch-notepad');
 const btnNoteList = $('#btn-note-list');
 const btnNoteNew = $('#btn-note-new');
 const btnNotepadBack = $('#btn-notepad-back');
+const btnNotepadForward = $('#btn-notepad-forward');
+const btnToolsBack = $('#btn-tools-back');
+const toolsCards = $('#tools-cards');
 const notepadTextarea = $('#notepad-textarea');
 const noteListOverlay = $('#note-list-overlay');
 const noteListItems = $('#note-list-items');
@@ -57,6 +61,7 @@ async function init() {
   }
   updateOrganizeButton();
   updateTasksPageVisibility();
+  updateToolsPageVisibility();
 
   textInput.addEventListener('input', updateOrganizeButton);
   textInput.addEventListener('paste', handlePaste);
@@ -104,6 +109,8 @@ async function init() {
   });
   btnSwitchNotepad.addEventListener('click', switchToNotepad);
   btnNotepadBack.addEventListener('click', switchToMain);
+  btnNotepadForward.addEventListener('click', switchToTools);
+  btnToolsBack.addEventListener('click', switchToMain);
   btnNoteList.addEventListener('click', toggleNoteList);
   btnNoteNew.addEventListener('click', createNote);
   btnDailyReport.addEventListener('click', generateDailyReport);
@@ -196,6 +203,7 @@ async function init() {
     const sc = state.shortcuts;
     if (matchShortcut(e, sc.switchTask) && state.pagesEnabled.tasks) { e.preventDefault(); switchToMain(); }
     if (matchShortcut(e, sc.switchNotepad)) { e.preventDefault(); switchToNotepad(); }
+    if (matchShortcut(e, sc.switchTools) && state.pagesEnabled.tools) { e.preventDefault(); switchToTools(); }
     if (matchShortcut(e, sc.organize) && state.currentPage === 'main' && state.pagesEnabled.tasks) {
       e.preventDefault();
       if (!state.organizing) organize();
@@ -223,6 +231,9 @@ async function init() {
       app.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 350, easing: 'ease', fill: 'forwards' });
       if (state.currentPage === 'notepad') {
         notepadTextarea.focus();
+      } else if (state.currentPage === 'tools') {
+        const input = toolsCards.querySelector('.tool-card-input');
+        if (input) input.focus();
       } else if (state.pagesEnabled.tasks) {
         // 每次窗口显示时重新加载任务，确保跨天后已完成任务被清除
         await loadTasks();
@@ -1306,6 +1317,7 @@ async function openSettings() {
     }
     $('#settings-winfixed').checked = cfg.winFixed !== false;
     $('#settings-tasks-page').checked = cfg.pagesEnabled?.tasks !== false;
+    $('#settings-tools-page').checked = cfg.pagesEnabled?.tools !== false;
     if (cfg.shortcuts) {
       state.shortcuts = { ...state.shortcuts, ...cfg.shortcuts };
     }
@@ -1338,6 +1350,7 @@ function renderShortcutInputs() {
   setKbdDisplay($('#shortcut-organize'), state.shortcuts.organize);
   setKbdDisplay($('#shortcut-switchTask'), state.shortcuts.switchTask);
   setKbdDisplay($('#shortcut-switchNotepad'), state.shortcuts.switchNotepad);
+  setKbdDisplay($('#shortcut-switchTools'), state.shortcuts.switchTools);
   document.querySelectorAll('.shortcut-kbd').forEach(el => delete el.dataset.accel);
 }
 
@@ -1354,7 +1367,8 @@ async function confirmSettings() {
   collectShortcutsFromInputs();
   const winFixed = $('#settings-winfixed').checked;
   const tasksEnabled = $('#settings-tasks-page').checked;
-  const pagesEnabled = { tasks: tasksEnabled };
+  const toolsEnabled = $('#settings-tools-page').checked;
+  const pagesEnabled = { tasks: tasksEnabled, tools: toolsEnabled };
   const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, pagesEnabled };
 
   if (window.electronAPI) {
@@ -1370,8 +1384,12 @@ async function confirmSettings() {
   const tasksWasEnabled = state.pagesEnabled.tasks;
   state.pagesEnabled = pagesEnabled;
   updateTasksPageVisibility();
+  updateToolsPageVisibility();
   if (!tasksEnabled && tasksWasEnabled && state.currentPage === 'main') {
     switchToNotepad();
+  }
+  if (!toolsEnabled && state.currentPage === 'tools') {
+    switchToMain();
   }
 
   // 文件位置变更后，刷新笔记列表
@@ -1470,6 +1488,7 @@ function collectShortcutsFromInputs() {
   state.shortcuts.organize = getVal('shortcut-organize');
   state.shortcuts.switchTask = getVal('shortcut-switchTask');
   state.shortcuts.switchNotepad = getVal('shortcut-switchNotepad');
+  state.shortcuts.switchTools = getVal('shortcut-switchTools');
 }
 
 // ========== 快捷键匹配 ==========
@@ -1532,6 +1551,137 @@ function updateTasksPageVisibility() {
   btnNotepadBack.style.visibility = enabled ? '' : 'hidden';
 }
 
+function updateToolsPageVisibility() {
+  const enabled = state.pagesEnabled.tools;
+  // 工具箱页本身通过设置开关控制;页脚栏右滑按钮在工具箱关闭时隐藏
+  btnNotepadForward.style.visibility = enabled ? 'visible' : 'hidden';
+}
+
+function isToolsPageEnabled() {
+  return state.pagesEnabled.tools && Object.values(state.toolsEnabled).some(v => v);
+}
+
+function renderToolsPage() {
+  toolsCards.innerHTML = '';
+  // 只渲染启用的功能卡;未启用不创建 DOM、不绑定事件
+  if (state.toolsEnabled.translate) renderTranslateCard();
+}
+
+// ========== 工具箱:翻译卡 ==========
+let translateDebounce = null;
+let translateReqSeq = 0;
+
+function renderTranslateCard() {
+  const card = document.createElement('div');
+  card.className = 'tool-card';
+  card.dataset.tool = 'translate';
+
+  const title = document.createElement('div');
+  title.className = 'tool-card-title';
+  title.textContent = '翻译';
+
+  const input = document.createElement('div');
+  input.className = 'tool-card-input';
+  input.dataset.placeholder = '粘贴或输入文字/截图...';
+  input.classList.add('is-empty');
+  input.contentEditable = 'true';
+
+  const status = document.createElement('div');
+  status.className = 'tool-card-status';
+
+  const result = document.createElement('div');
+  result.className = 'tool-card-result';
+
+  card.append(title, input, result, status);
+  toolsCards.appendChild(card);
+
+  const isEmpty = () => !input.textContent.trim() && input.querySelectorAll('img').length === 0;
+  const updateEmpty = () => input.classList.toggle('is-empty', isEmpty());
+
+  // 输入防抖翻译
+  input.addEventListener('input', () => {
+    updateEmpty();
+    clearTimeout(translateDebounce);
+    const content = collectTranslateInput(input);
+    if (!content.text && content.images.length === 0) {
+      // 清空输入:作废旧请求,防止旧结果覆盖
+      ++translateReqSeq;
+      result.textContent = '';
+      status.textContent = '';
+      return;
+    }
+    status.textContent = '翻译中...';
+    translateDebounce = setTimeout(() => doTranslate(content), 300);
+  });
+
+  // 粘贴图片 → OCR → 翻译
+  input.addEventListener('paste', (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const blob = item.getAsFile();
+        if (!blob || blob.size > 10 * 1024 * 1024) { status.textContent = '图片过大，单张不超过 10MB'; return; }
+        const reader = new FileReader();
+        reader.onload = async (ev) => {
+          const dataUrl = ev.target.result;
+          // 在输入框尾部显示图片
+          const img = document.createElement('img');
+          img.src = dataUrl;
+          img.style.cssText = 'max-width:100%;border-radius:4px;margin:4px 0;display:block;';
+          input.appendChild(img);
+          updateEmpty();
+          status.textContent = '识别图片中...';
+          const content = { text: '', images: [dataUrl] };
+          doTranslate(content);
+        };
+        reader.readAsDataURL(blob);
+      }
+    }
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); input.blur(); }
+  });
+}
+
+function collectTranslateInput(input) {
+  // 收集文本(排除图片)
+  const clone = input.cloneNode(true);
+  clone.querySelectorAll('img').forEach(img => img.remove());
+  return { text: clone.textContent.trim(), images: [] };
+}
+
+async function doTranslate(content) {
+  if (!content.text && content.images.length === 0) return;
+  const card = toolsCards.querySelector('[data-tool="translate"]');
+  if (!card) return;
+  const result = card.querySelector('.tool-card-result');
+  const status = card.querySelector('.tool-card-status');
+  const seq = ++translateReqSeq;
+  try {
+    let translated, langHint = '';
+    if (window.electronAPI) {
+      const res = await window.electronAPI.translateRequest(content);
+      if (res.success) {
+        translated = res.translated;
+        if (res.sourceLang && res.targetLang) langHint = `${res.sourceLang} → ${res.targetLang}`;
+      }
+      else { if (seq === translateReqSeq) { status.textContent = res.error; status.classList.add('error'); } return; }
+    } else {
+      // 浏览器调试模式:模拟翻译
+      translated = `[翻译结果] ${content.text || '图片内容'}`;
+    }
+    if (seq !== translateReqSeq) return;
+    result.textContent = translated;
+    status.textContent = langHint;
+    status.classList.remove('error');
+  } catch (e) {
+    if (seq === translateReqSeq) { status.textContent = '翻译失败：' + e.message; status.classList.add('error'); }
+  }
+}
+
 async function switchToNotepad() {
   if (state.currentPage === 'notepad') return;
   state.currentPage = 'notepad';
@@ -1552,6 +1702,7 @@ async function switchToNotepad() {
       state.noteOriginalContent = state.noteContent;
     }
   }
+  pagesContainer.classList.remove('on-tools');
   pagesContainer.classList.add('on-notepad');
   closeNoteSearch();
   notepadTextarea.innerHTML = loadMarkdown(state.noteContent);
@@ -1567,8 +1718,24 @@ async function switchToMain() {
   saveCurrentNote();
   state.currentPage = 'main';
   if (window.electronAPI) window.electronAPI.setPage('main');
-  pagesContainer.classList.remove('on-notepad');
+  pagesContainer.classList.remove('on-notepad', 'on-tools');
   setTimeout(() => textInput.focus(), 400);
+}
+
+async function switchToTools() {
+  if (state.currentPage === 'tools') return;
+  if (!isToolsPageEnabled()) return;
+  // 保存当前笔记
+  saveCurrentNote();
+  state.currentPage = 'tools';
+  if (window.electronAPI) window.electronAPI.setPage('tools');
+  renderToolsPage();
+  pagesContainer.classList.remove('on-notepad');
+  pagesContainer.classList.add('on-tools');
+  setTimeout(() => {
+    const input = toolsCards.querySelector('.tool-card-input');
+    if (input) input.focus();
+  }, 400);
 }
 
 // ========== 笔记管理 ==========

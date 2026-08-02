@@ -1015,15 +1015,18 @@ body {
 /* ========== 页面容器与滑动动画 ========== */
 .pages-container {
   display: flex;
-  width: 200%;
+  width: 300%;
   height: 100%;
   transition: transform 350ms ease;
 }
 .pages-container.on-notepad {
-  transform: translateX(-50%);
+  transform: translateX(-33.3333%);
+}
+.pages-container.on-tools {
+  transform: translateX(-66.6667%);
 }
 .page {
-  width: 50%;
+  width: 33.3333%;
   height: 100%;
 }
 .page-main {
@@ -1126,10 +1129,14 @@ body {
 
 .notepad-footer {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 6px 10px;
   flex-shrink: 0;
 }
-#btn-notepad-back {
+#btn-notepad-back,
+#btn-notepad-forward {
   width: 30px;
   height: 30px;
   padding: 0;
@@ -1143,15 +1150,19 @@ body {
   align-items: center;
   justify-content: center;
   transition: background 0.15s;
+  flex-shrink: 0;
 }
-#btn-notepad-back:hover { background: var(--border); }
+#btn-notepad-back:hover,
+#btn-notepad-forward:hover { background: var(--border); }
+#btn-notepad-forward { visibility: hidden; }
 
 /* 笔记页搜索栏 */
 #note-search-bar {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-left: auto;
+  /* 页脚栏三元素: ← 搜索框 → 搜索框居中 */
+  flex: 1;
 }
 #note-search-bar.hidden { display: none; }
 #note-search-input {
@@ -1164,11 +1175,16 @@ body {
   border-radius: 6px;
   color: var(--text);
   outline: none;
+  /* 输入框真正居中,不被左侧图标挤偏 */
+  margin: 0 auto;
 }
 #note-search-input:focus { border-color: var(--accent); }
-/* 无匹配警告图标:圆角渐变三角 + 白色叹号,始终占位,保证输入框位置不变 */
+/* 无匹配警告图标:绝对定位在输入框左侧(输入框宽180/2 + 间距8 + 图标宽16),不参与布局,输入框始终居中 */
 #note-search-status {
-  flex-shrink: 0;
+  position: absolute;
+  left: calc(50% - 114px);
+  top: 50%;
+  margin-top: -7px;
   width: 16px;
   height: 14px;
   visibility: hidden;
@@ -1355,3 +1371,100 @@ body {
   color: var(--text);
   outline: none;
 }
+
+/* ========== 工具箱页面 ========== */
+.page-tools {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  padding-top: 35px;
+}
+#btn-tools-back {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: var(--bg-secondary);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+#btn-tools-back:hover { background: var(--border); }
+
+#tools-cards {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+/* 功能卡 */
+.tool-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tool-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.tool-card-input {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 55px; /* 约两行文字(2×19.5 行高 + 16 上下 padding) */
+  max-height: 120px;
+  overflow-y: auto;
+  outline: none;
+}
+.tool-card-input:focus { border-color: var(--accent); }
+.tool-card-input.is-empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-dim);
+  opacity: 0.5;
+  pointer-events: none;
+}
+.tool-card-result {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 55px; /* 约两行文字,与输入框一致 */
+  white-space: pre-wrap;
+  word-break: break-word;
+  position: relative;
+}
+.tool-card-result:empty::before {
+  content: '翻译结果';
+  color: var(--text-dim);
+  opacity: 0.5;
+}
+.tool-card-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  min-height: 14px;
+}
+.tool-card-status.error { color: var(--danger); }

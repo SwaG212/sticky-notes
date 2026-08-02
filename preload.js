@@ -45,4 +45,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 日报
   generateDailyReport: (tasks) => ipcRenderer.invoke('generate-daily-report', tasks),
+
+  // 翻译
+  translateRequest: (payload) => ipcRenderer.invoke('translate', payload),
 });
