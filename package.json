@@ -1,6 +1,6 @@
 {
   "name": "sticky-notes",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "便利贴 - 桌面随手记 + AI 整理任务清单",
   "main": "main.js",
   "scripts": {
