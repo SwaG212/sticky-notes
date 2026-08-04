@@ -23,6 +23,7 @@ const state = {
 // ========== DOM 引用 ==========
 const $ = (sel) => document.querySelector(sel);
 const taskItems = $('#task-items');
+const taskList = $('#task-list');
 const taskEmpty = $('#task-empty');
 const sheetBar = $('#sheet-bar');
 const textInput = $('#text-input');
@@ -110,7 +111,7 @@ async function init() {
   btnSwitchNotepad.addEventListener('click', switchToNotepad);
   btnNotepadBack.addEventListener('click', switchToMain);
   btnNotepadForward.addEventListener('click', switchToTools);
-  btnToolsBack.addEventListener('click', switchToMain);
+  btnToolsBack.addEventListener('click', switchToNotepad);
   btnNoteList.addEventListener('click', toggleNoteList);
   btnNoteNew.addEventListener('click', createNote);
   btnDailyReport.addEventListener('click', generateDailyReport);
@@ -147,6 +148,11 @@ async function init() {
   noteSearchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); nextNoteMatch(); }
     if (e.key === 'Escape') { e.preventDefault(); closeNoteSearch(); }
+  });
+  // 单击笔记页底部搜索区域(两个按钮除外)直接进入搜索模式,同 Ctrl+F 打开
+  document.querySelector('.page-notepad .notepad-footer').addEventListener('click', (e) => {
+    if (e.target.closest('#btn-notepad-back, #btn-notepad-forward')) return;
+    if (noteSearchBar.classList.contains('hidden')) openNoteSearch();
   });
 
   // 快捷键捕获相关
@@ -321,6 +327,8 @@ function snapshotPositions() {
 // ========== 项目页签栏 ==========
 function renderSheetBar() {
   if (!sheetBar) return;
+  // 记住页签栏横向滚动位置,重建后保持(滚轮横向滚动页签的场景)
+  const prevScrollLeft = sheetBar.querySelector('.sheet-scroll')?.scrollLeft ?? 0;
   const projects = [];
   for (const t of state.tasks) {
     if (t.project && !projects.includes(t.project)) projects.push(t.project);
@@ -352,14 +360,19 @@ function renderSheetBar() {
   sheetBar.innerHTML = '';
   const fixed = document.createElement('div');
   fixed.className = 'sheet-fixed';
-  fixed.appendChild(makeTab('all', '任务汇总', state.tasks.length));
+  fixed.appendChild(makeTab('all', '任务汇总', state.tasks.filter(t => !t.completed).length));
   const scroller = document.createElement('div');
   scroller.className = 'sheet-scroll';
-  projects.forEach(p => scroller.appendChild(makeTab(p, p, state.tasks.filter(t => t.project === p).length)));
+  projects.forEach(p => scroller.appendChild(makeTab(p, p, state.tasks.filter(t => t.project === p && !t.completed).length)));
   sheetBar.append(fixed, scroller);
+  scroller.scrollLeft = prevScrollLeft;
 }
 
 function renderTasks(shouldAnimate = false) {
+  // 列表重建后旧行元素失效,清除选择器行引用
+  if (activePickerRow) activePickerRow = null;
+  // 记住滚动位置,切换页签重建列表后保持当前位置
+  const prevScrollTop = taskList.scrollTop;
   renderSheetBar();
   // FLIP 动画第一步：记录旧位置
   const oldPos = shouldAnimate ? snapshotPositions() : null;
@@ -372,6 +385,8 @@ function renderTasks(shouldAnimate = false) {
   // 拷贝排序,不改 state.tasks,汇总页顺序与拖拽排序不受影响
   if (state.activeSheet !== 'all') {
     visible = [...visible].sort((a, b) => {
+      // 已完成的任务沉底
+      if (a.completed !== b.completed) return a.completed ? 1 : -1;
       if (a.dueDate && b.dueDate) return a.dueDate < b.dueDate ? -1 : a.dueDate > b.dueDate ? 1 : 0;
       if (a.dueDate) return -1;
       if (b.dueDate) return 1;
@@ -398,7 +413,7 @@ function renderTasks(shouldAnimate = false) {
   visible.forEach((task) => {
     const idx = state.tasks.indexOf(task);
     const row = document.createElement('div');
-    row.className = 'task-item' + (state.activeSheet !== 'all' ? ' no-drag' : '');
+    row.className = 'task-item';
     if (task.completed) row.classList.add('completed');
     row.dataset.id = task.id;
 
@@ -468,24 +483,61 @@ function renderTasks(shouldAnimate = false) {
 
     const hoverBar = document.createElement('div');
     hoverBar.className = 'hover-bar';
-    hoverBar.style.display = 'none';
     hoverBar.append(alarm, ddate, del);
 
-    row.addEventListener('mouseenter', () => { hoverBar.style.display = 'flex'; row.style.background = '#f3f3f8'; });
-    row.addEventListener('mouseleave', () => { hoverBar.style.display = 'none'; row.style.background = ''; });
+    let barTimer = null;
+    row.addEventListener('mouseenter', () => {
+      // 选择器展开期间:其他行不显示操作栏(选择器行已钉住,不受影响)
+      if (activePickerRow && row !== activePickerRow) return;
+      row.style.background = '#f3f3f8'; // 整行悬停背景;操作栏由右缘热区 mousemove 触发
+    });
+    row.addEventListener('mousemove', (e) => {
+      if (activePickerRow) return; // 选择器展开:选择器行钉住显示,其他行不显示
+      // 右缘 15px 热区触发显示;保持范围:行右缘 115px 内(覆盖操作栏按钮),移出即隐藏
+      const rect = row.getBoundingClientRect();
+      if (e.clientX >= rect.right - 15) {
+        hoverBar.classList.add('visible');
+      } else if (e.clientX < rect.right - 115) {
+        hoverBar.classList.remove('visible');
+      }
+    });
+    row.addEventListener('mouseleave', () => {
+      if (row === activePickerRow) return; // 选择器行固定显示,离开不收起
+      clearTimeout(barTimer);
+      hoverBar.classList.remove('visible');
+      row.style.background = '';
+    });
 
-    // 拖拽手柄:仅未完成任务,且仅在汇总页可用(项目页签按日期排序,禁拖)
-    if (!task.completed && state.activeSheet === 'all') {
-      const dragHandle = document.createElement('div');
-      dragHandle.className = 'task-drag-handle';
-      dragHandle.textContent = '⋮⋮';
-      dragHandle.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); startDrag(e, idx); });
-      row.append(cb, text, hoverBar, dragHandle);
-    } else {
-      row.append(cb, text, hoverBar);
-    }
+    row.append(cb, text, hoverBar);
     // 注意:append 不能传 null(WebIDL 会把 null 转成 "null" 文本),空值用 appendChild 跳过
     if (dateChip) row.appendChild(dateChip);
+    // 热区提示条:悬停行时右侧灰色竖条提示热区位置;操作栏浮现时由 CSS 淡出
+    const zoneHint = document.createElement('span');
+    zoneHint.className = 'hotzone-hint';
+    row.appendChild(zoneHint);
+
+    // 整行拖拽排序:仅未完成任务,且仅在汇总页可用(项目页签按日期排序,禁拖)
+    if (!task.completed && state.activeSheet === 'all') {
+      row.addEventListener('mousedown', (e) => {
+        // 勾选框/操作栏/编辑输入框上的点击不触发拖拽
+        if (e.target.closest('.task-checkbox, .hover-bar, .task-edit-input')) return;
+        // 阻止文本选择;移动未超过阈值时视为普通点击,双击编辑不受影响
+        e.preventDefault();
+        const startX = e.clientX, startY = e.clientY;
+        const onMove = (ev) => {
+          if (Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY) < 4) return;
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          startDrag(ev, idx, row);
+        };
+        const onUp = () => {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+    }
 
     let clickTimer = null;
     row.addEventListener('click', (e) => {
@@ -517,6 +569,9 @@ function renderTasks(shouldAnimate = false) {
       }
     });
   }
+
+  // 恢复滚动位置(列表变短时浏览器自动收紧到最大可滚范围)
+  taskList.scrollTop = prevScrollTop;
 }
 
 // ========== 任务操作 ==========
@@ -536,8 +591,10 @@ function reassignSortOrders() {
 // ========== 拖拽排序 ==========
 let dragState = null;
 
-function startDrag(e, taskIdx) {
-  const row = e.currentTarget.closest('.task-item');
+function startDrag(e, taskIdx, rowEl) {
+  const row = rowEl || e.currentTarget.closest('.task-item');
+  // 拖拽时解除选择器行的固定显示
+  if (activePickerRow === row) activePickerRow = null;
   const rect = row.getBoundingClientRect();
 
   // 创建浮动克隆
@@ -664,6 +721,8 @@ function deleteTask(idx) {
 }
 
 function enterEditMode(row, idx) {
+  closeActivePicker(); // 编辑中操作栏隐藏,先收起可能展开的选择器
+  row.classList.add('editing'); // 编辑中隐藏悬停操作栏(CSS 规则)
   const span = row.querySelector('.task-text');
   const oldText = state.tasks[idx].task;
   const input = document.createElement('input');
@@ -719,13 +778,30 @@ function addTasks(newTasks) {
 
 // ========== 定时提醒 ==========
 let activePicker = null;
+let activePickerRow = null; // 选择器所在任务行,展开期间固定显示其操作栏
 
 function closeActivePicker() {
   if (activePicker) { activePicker.remove(); activePicker = null; }
+  if (activePickerRow) {
+    const row = activePickerRow;
+    activePickerRow = null;
+    // 解除钉住:鼠标不在该行上,操作栏立即消失(在行上则按普通悬停逻辑保持)
+    if (!row.matches(':hover')) {
+      const bar = row.querySelector('.hover-bar');
+      if (bar) bar.classList.remove('visible');
+      row.style.background = '';
+    }
+  }
 }
 
 function openTimePicker(anchorEl, taskIdx) {
   closeActivePicker();
+  activePickerRow = anchorEl.closest('.task-item');
+  if (activePickerRow) {
+    const bar = activePickerRow.querySelector('.hover-bar');
+    if (bar) bar.classList.add('visible'); // 选择器展开即钉住操作栏
+    activePickerRow.style.background = '#f3f3f8';
+  }
 
   const current = state.tasks[taskIdx].alarmTime || '';
   const curH = current.slice(0, 2) || '';
@@ -795,8 +871,7 @@ function openTimePicker(anchorEl, taskIdx) {
   setTimeout(() => {
     const closePk = (e) => {
       if (!picker.contains(e.target) && e.target !== anchorEl) {
-        picker.remove();
-        if (activePicker === picker) activePicker = null;
+        if (activePicker === picker) closeActivePicker();
         app.removeEventListener('click', closePk);
       }
     };
@@ -809,6 +884,12 @@ function openTimePicker(anchorEl, taskIdx) {
 // ========== 到期日选择器 ==========
 function openDatePicker(anchorEl, taskIdx) {
   closeActivePicker();
+  activePickerRow = anchorEl.closest('.task-item');
+  if (activePickerRow) {
+    const bar = activePickerRow.querySelector('.hover-bar');
+    if (bar) bar.classList.add('visible'); // 选择器展开即钉住操作栏
+    activePickerRow.style.background = '#f3f3f8';
+  }
 
   const current = state.tasks[taskIdx].dueDate || '';
   let viewYear, viewMonth;
@@ -941,8 +1022,7 @@ function openDatePicker(anchorEl, taskIdx) {
     function closeDp(e) {
       const isEsc = e.key === 'Escape';
       if (isEsc || (!picker.contains(e.target) && e.target !== anchorEl)) {
-        picker.remove();
-        if (activePicker === picker) activePicker = null;
+        if (activePicker === picker) closeActivePicker();
         document.removeEventListener('keydown', closeDp, true);
         app.removeEventListener('click', closeDp, true);
       }
@@ -1318,6 +1398,10 @@ async function openSettings() {
     $('#settings-winfixed').checked = cfg.winFixed !== false;
     $('#settings-tasks-page').checked = cfg.pagesEnabled?.tasks !== false;
     $('#settings-tools-page').checked = cfg.pagesEnabled?.tools !== false;
+    const blurHide = cfg.blurHide || { tasks: true, notepad: true, tools: true };
+    $('#settings-blurhide-tasks').checked = blurHide.tasks !== false;
+    $('#settings-blurhide-notepad').checked = blurHide.notepad !== false;
+    $('#settings-blurhide-tools').checked = blurHide.tools !== false;
     if (cfg.shortcuts) {
       state.shortcuts = { ...state.shortcuts, ...cfg.shortcuts };
     }
@@ -1369,7 +1453,12 @@ async function confirmSettings() {
   const tasksEnabled = $('#settings-tasks-page').checked;
   const toolsEnabled = $('#settings-tools-page').checked;
   const pagesEnabled = { tasks: tasksEnabled, tools: toolsEnabled };
-  const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, pagesEnabled };
+  const blurHide = {
+    tasks: $('#settings-blurhide-tasks').checked,
+    notepad: $('#settings-blurhide-notepad').checked,
+    tools: $('#settings-blurhide-tools').checked,
+  };
+  const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, pagesEnabled, blurHide };
 
   if (window.electronAPI) {
     await window.electronAPI.saveConfig(cfg);

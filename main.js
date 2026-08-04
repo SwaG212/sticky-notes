@@ -69,6 +69,7 @@ function loadConfig() {
       cachedConfig = JSON.parse(decrypted);
       if (!cachedConfig.projectNames) cachedConfig.projectNames = [];
       if (!cachedConfig.notesDirHistory) cachedConfig.notesDirHistory = [];
+      if (!cachedConfig.blurHide) cachedConfig.blurHide = { tasks: true, notepad: true, tools: true };
       // 迁移：把当前 notesDir 加入历史（修复旧版本遗留数据）
       if (cachedConfig.notesDir && cachedConfig.notesDir.trim() && !cachedConfig.notesDirHistory.includes(cachedConfig.notesDir.trim())) {
         cachedConfig.notesDirHistory = [cachedConfig.notesDir.trim(), ...cachedConfig.notesDirHistory].slice(0, 5);
@@ -76,7 +77,7 @@ function loadConfig() {
       return cachedConfig;
     }
   } catch (e) { /* ignore */ }
-  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', notesDirHistory: [], projectNames: [], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2', switchTools: 'Alt+3' }, pagesEnabled: { tasks: true, tools: true } };
+  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', notesDirHistory: [], projectNames: [], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2', switchTools: 'Alt+3' }, pagesEnabled: { tasks: true, tools: true }, blurHide: { tasks: true, notepad: true, tools: true } };
   return cachedConfig;
 }
 
@@ -759,8 +760,12 @@ function createWindow() {
   });
 
   win.on('blur', () => {
-    if (win && !win.isDestroyed() && !animating && currentPage === 'main' && !settingsOpen) {
-      hideWindow();
+    if (win && !win.isDestroyed() && !animating && !settingsOpen) {
+      // 按当前页查失焦隐藏开关；main 页对应配置里的 tasks
+      const cfg = loadConfig();
+      const blurHide = cfg.blurHide || { tasks: true, notepad: true, tools: true };
+      const pageKey = currentPage === 'notepad' ? 'notepad' : currentPage === 'tools' ? 'tools' : 'tasks';
+      if (blurHide[pageKey] !== false) hideWindow();
     }
   });
 

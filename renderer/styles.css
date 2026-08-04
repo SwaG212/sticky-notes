@@ -129,7 +129,7 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 56px 8px 6px;
+  padding: 8px 28px 8px 6px;
   border-radius: 6px;
   position: relative;
   background: rgba(255, 255, 255, 0.01);
@@ -164,6 +164,8 @@ body {
 /* 任务文字 */
 .task-text {
   flex: 1;
+  /* 右侧留出常驻日期胶囊的空间,避免文字延伸到胶囊下方 */
+  margin-right: 24px;
   word-break: break-word;
   line-height: 1.5;
   cursor: default;
@@ -192,12 +194,11 @@ body {
 }
 
 /* 定时提醒时间 */
-/* 悬停操作栏：绝对定位在行右侧 */
+/* 悬停操作栏：绝对定位在行右侧;默认隐藏,加 .visible 时从右侧滑入+渐显 */
 .hover-bar {
   position: absolute;
-  right: 28px;
+  right: 6px;
   top: 50%;
-  transform: translateY(-50%);
   display: flex;
   align-items: center;
   gap: 4px;
@@ -206,40 +207,19 @@ body {
   padding: 2px 4px 2px 8px;
   border-radius: 6px;
   z-index: 2;
-}
-
-/* 项目页签(无拖拽手柄):收窄右 padding,hover 栏贴右侧 */
-.task-item.no-drag { padding-right: 28px; }
-.task-item.no-drag .hover-bar { right: 6px; }
-
-/* 拖拽手柄 */
-.task-drag-handle {
-  position: absolute;
-  right: 4px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 18px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: grab;
-  color: var(--text-dim);
-  font-size: 14px;
-  letter-spacing: -2px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 0 0 1px var(--border), 0 1px 4px rgba(0,0,0,0.06);
-  border-radius: 4px;
-  z-index: 2;
-  user-select: none;
   opacity: 0;
-  transition: opacity 0.15s;
+  visibility: hidden;
+  transform: translate(14px, -50%);
+  transition: opacity 0.18s ease, transform 0.18s ease, visibility 0s linear 0.18s;
 }
-.task-item:hover .task-drag-handle { opacity: 1; }
-.task-drag-handle:active { cursor: grabbing; opacity: 1; background: var(--bg-secondary); }
-.task-item.completed .task-drag-handle { display: none; }
+.hover-bar.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(0, -50%);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
 
-/* 常驻日期胶囊:仅展示,悬停时隐藏让位给操作栏 */
+/* 常驻日期胶囊:仅展示;悬停行时保持常显,鼠标移入右缘热区(操作栏浮现)时快速淡出让位 */
 .task-date-chip {
   position: absolute;
   right: 10px;
@@ -255,8 +235,16 @@ body {
   user-select: none;
   pointer-events: none;
   z-index: 1;
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.15s ease;
 }
-.task-item:hover .task-date-chip { display: none; }
+/* 操作栏浮现(热区触发/选择器钉住)时胶囊快速淡出;编辑、拖拽中操作栏被强制隐藏,排除以免胶囊误淡出 */
+.task-item:not(.editing):not(.task-dragging) .hover-bar.visible ~ .task-date-chip {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease, visibility 0s linear 0.12s;
+}
 .task-date-chip.due-overdue {
   background: rgba(217, 61, 61, 0.12);
   color: var(--danger);
@@ -270,6 +258,36 @@ body {
   color: #e67e22;
 }
 
+/* 热区提示条:悬停行时右缘显示灰色竖条提示热区位置;操作栏浮现(热区触发/选择器钉住)时淡出让位 */
+.hotzone-hint {
+  position: absolute;
+  right: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 16px;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.14);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s ease, visibility 0s linear 0.15s;
+  pointer-events: none;
+  z-index: 1;
+}
+.task-item:hover .hotzone-hint {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.15s ease;
+}
+/* 操作栏浮现时提示条快速淡出;编辑/拖拽中操作栏被强制隐藏,提示条一并隐藏 */
+.task-item:not(.editing):not(.task-dragging) .hover-bar.visible ~ .hotzone-hint,
+.task-item.editing .hotzone-hint,
+.task-item.task-dragging .hotzone-hint {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease, visibility 0s linear 0.12s;
+}
+
 /* 拖拽中的浮动克隆 */
 .task-dragging {
   opacity: 0.92 !important;
@@ -277,6 +295,20 @@ body {
   box-shadow: 0 6px 20px rgba(0,0,0,0.18) !important;
   border-radius: 6px;
   z-index: 1000;
+}
+/* 拖拽克隆不显示悬停操作栏(即使拖拽前已处于悬停显示态);日期胶囊保留 */
+.task-dragging .hover-bar {
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+/* 双击编辑中隐藏悬停操作栏;日期胶囊始终显示(覆盖普通悬停隐藏规则) */
+.task-item.editing .hover-bar {
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+.task-item.editing .task-date-chip,
+.task-item.editing:hover .task-date-chip {
+  display: block !important;
 }
 
 /* 拖拽占位 */
@@ -473,6 +505,8 @@ body {
 /* 编辑态输入框 */
 .task-edit-input {
   flex: 1;
+  /* 与任务文字一致:右侧让位给日期胶囊 */
+  margin-right: 24px;
   background: var(--bg-input);
   border: 1px solid var(--accent);
   border-radius: 4px;
@@ -964,6 +998,47 @@ body {
   opacity: 0.6;
   margin-top: 6px;
 }
+
+/* 页面行：每页一行，右侧启用/隐藏两个开关 */
+.page-row-head,
+.page-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.page-row-head { padding-bottom: 6px; }
+.page-row { padding: 7px 0; }
+.page-row-head + .page-row,
+.page-row + .page-row { border-top: 1px solid var(--border); }
+.page-row-head span {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+/* 表头文字左移到与下方复选框同一左缘位置（复选框在 48px 列居中，左缘 16px） */
+.page-row-head .page-col {
+  justify-content: flex-start;
+  padding-left: 0;
+  margin-left: -1px;
+}
+.page-row-name {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.page-col {
+  width: 48px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+.page-col input[type="checkbox"]:disabled {
+  opacity: 1;
+  cursor: not-allowed;
+}
+.page-row .checkbox-label { margin: 0; }
 
 /* 快捷键行 */
 .shortcut-row {

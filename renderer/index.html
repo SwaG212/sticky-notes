@@ -127,19 +127,26 @@
         </div>
         <div class="settings-card">
           <div class="settings-card-title">页面</div>
-          <div class="settings-checkbox-row">
-            <label class="checkbox-label">
-              <input type="checkbox" id="settings-tasks-page">
-              <span>任务管理页</span>
-            </label>
+          <div class="page-row-head">
+            <span class="page-row-name"></span>
+            <span class="page-col">启用</span>
+            <span class="page-col">隐藏</span>
           </div>
-          <div class="settings-checkbox-row">
-            <label class="checkbox-label">
-              <input type="checkbox" id="settings-tools-page">
-              <span>工具箱页</span>
-            </label>
+          <div class="page-row">
+            <span class="page-row-name">任务管理页</span>
+            <label class="checkbox-label page-col"><input type="checkbox" id="settings-tasks-page"></label>
+            <label class="checkbox-label page-col"><input type="checkbox" id="settings-blurhide-tasks" checked></label>
           </div>
-          <div class="settings-hint">关闭后重启生效</div>
+          <div class="page-row">
+            <span class="page-row-name">笔记页</span>
+            <label class="checkbox-label page-col"><input type="checkbox" id="settings-notepad-page" checked disabled title="笔记页为默认页，不可关闭"></label>
+            <label class="checkbox-label page-col"><input type="checkbox" id="settings-blurhide-notepad" checked></label>
+          </div>
+          <div class="page-row">
+            <span class="page-row-name">工具箱页</span>
+            <label class="checkbox-label page-col"><input type="checkbox" id="settings-tools-page"></label>
+            <label class="checkbox-label page-col"><input type="checkbox" id="settings-blurhide-tools" checked></label>
+          </div>
         </div>
         <div class="settings-card">
           <div class="settings-card-title">API</div>
