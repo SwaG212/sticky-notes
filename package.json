@@ -39,11 +39,13 @@
       "!node_modules/tesseract.js-core/tesseract-core-simd-lstm.js"
     ],
     "asarUnpack": [
-      "node_modules/tesseract.js-core/tesseract-core-simd-lstm.wasm"
+      "node_modules/tesseract.js-core/tesseract-core-simd-lstm.wasm",
+      "assets/ocr/**/*"
     ],
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.png"
+      "icon": "assets/icon.png",
+      "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,

@@ -115,9 +115,11 @@ const OCR_IDLE_TIMEOUT = 5 * 60 * 1000;
 async function initOCR() {
   if (ocrWorker) return;
   const { createWorker } = require('tesseract.js');
-  const corePath = path.join(
-    __dirname, 'node_modules', 'tesseract.js-core', 'tesseract-core-simd-lstm.wasm'
-  );
+  // 定位核心 wasm:开发环境在顶层 node_modules,打包后可能被扁平化为 tesseract.js 的嵌套依赖
+  let corePath = path.join(__dirname, 'node_modules', 'tesseract.js-core', 'tesseract-core-simd-lstm.wasm');
+  if (!fs.existsSync(corePath)) {
+    corePath = path.join(__dirname, 'node_modules', 'tesseract.js', 'node_modules', 'tesseract.js-core', 'tesseract-core-simd-lstm.wasm');
+  }
   // 中文语言包本地化:assets/ocr/chi_sim.traineddata.gz,离线可用,不依赖 CDN
   const langPath = path.join(__dirname, 'assets', 'ocr');
   ocrWorker = await createWorker('chi_sim', 1, { corePath, langPath });
