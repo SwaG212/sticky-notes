@@ -118,7 +118,9 @@ async function initOCR() {
   const corePath = path.join(
     __dirname, 'node_modules', 'tesseract.js-core', 'tesseract-core-simd-lstm.wasm'
   );
-  ocrWorker = await createWorker('chi_sim', 1, { corePath });
+  // 中文语言包本地化:assets/ocr/chi_sim.traineddata.gz,离线可用,不依赖 CDN
+  const langPath = path.join(__dirname, 'assets', 'ocr');
+  ocrWorker = await createWorker('chi_sim', 1, { corePath, langPath });
 }
 
 function resetOcrIdleTimer() {
@@ -344,7 +346,7 @@ function loadTasksFromFile() {
 
   let changed = false;
   if (isNewDay) {
-    tasks.forEach(t => { if (t.alarmTime) { t.alarmTime = null; changed = true; } if (t.dueDate) { t.dueDate = null; changed = true; } });
+    tasks.forEach(t => { if (t.alarmTime) { t.alarmTime = null; changed = true; } }); // 跨天仅清闹钟提醒，截止日期原样保留
 
     // 清除过期已完成任务
     const todayStr = getToday();
@@ -368,8 +370,7 @@ function loadTasksFromFile() {
         unique.forEach((t, i) => {
           t.createdAt = new Date().toISOString();
           t.id = 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
-          t.alarmTime = null;
-          t.dueDate = null;
+          t.alarmTime = null; // 截止日期原样保留，仅清闹钟提醒
           t.sortOrder = i;
         });
         // 今天已有任务 sortOrder 顺延

@@ -70,7 +70,7 @@ async function init() {
     if (matchShortcut(e, state.shortcuts.organize)) { e.preventDefault(); e.stopPropagation(); organize(); }
   });
 
-  btnOrganize.addEventListener('click', organize);
+  btnOrganize.addEventListener('click', rearrangeTasks);
   $('#btn-settings-confirm').addEventListener('click', confirmSettings);
   $('#btn-settings-back').addEventListener('click', cancelSettings);
   $('#btn-settings').addEventListener('click', openSettings);
@@ -150,9 +150,15 @@ async function init() {
     if (e.key === 'Escape') { e.preventDefault(); closeNoteSearch(); }
   });
   // 单击笔记页底部搜索区域(两个按钮除外)直接进入搜索模式,同 Ctrl+F 打开
+  // 点击区域 = 搜索框实际大小(占位 rect),不是整个底部栏
   document.querySelector('.page-notepad .notepad-footer').addEventListener('click', (e) => {
     if (e.target.closest('#btn-notepad-back, #btn-notepad-forward')) return;
-    if (noteSearchBar.classList.contains('hidden')) openNoteSearch();
+    if (noteSearchBar.classList.contains('hidden')) {
+      const r = noteSearchInput.getBoundingClientRect();
+      if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+        openNoteSearch();
+      }
+    }
   });
 
   // 快捷键捕获相关
@@ -333,6 +339,28 @@ function renderSheetBar() {
   for (const t of state.tasks) {
     if (t.project && !projects.includes(t.project)) projects.push(t.project);
   }
+  // 页签排序：完成时间优先（项目内未完成任务的最早截止日期，升序，无日期的沉底），
+  // 其次未完成数量（降序），最后项目名兜底保证稳定
+  const tabScores = new Map(); // project -> { minDue, count }
+  for (const t of state.tasks) {
+    if (!t.project) continue;
+    let s = tabScores.get(t.project);
+    if (!s) { s = { minDue: null, count: 0 }; tabScores.set(t.project, s); }
+    if (!t.completed) {
+      s.count++;
+      if (t.dueDate && (!s.minDue || t.dueDate < s.minDue)) s.minDue = t.dueDate;
+    }
+  }
+  projects.sort((a, b) => {
+    const sa = tabScores.get(a), sb = tabScores.get(b);
+    if (sa.minDue !== sb.minDue) {
+      if (sa.minDue === null) return 1;
+      if (sb.minDue === null) return -1;
+      return sa.minDue < sb.minDue ? -1 : 1;
+    }
+    if (sa.count !== sb.count) return sb.count - sa.count;
+    return a.localeCompare(b, 'zh');
+  });
   // 当前页签的项目已不存在(如 organize 后任务被改/删)→ 回退到全部
   if (state.activeSheet !== 'all' && !projects.includes(state.activeSheet)) {
     state.activeSheet = 'all';
@@ -366,6 +394,7 @@ function renderSheetBar() {
   projects.forEach(p => scroller.appendChild(makeTab(p, p, state.tasks.filter(t => t.project === p && !t.completed).length)));
   sheetBar.append(fixed, scroller);
   scroller.scrollLeft = prevScrollLeft;
+  updateOrganizeButton(); // 切页签后刷新重排按钮可用状态
 }
 
 function renderTasks(shouldAnimate = false) {
@@ -416,10 +445,11 @@ function renderTasks(shouldAnimate = false) {
     row.className = 'task-item';
     if (task.completed) row.classList.add('completed');
     row.dataset.id = task.id;
+    row.dataset.idx = idx; // 事件回调从 dataset 读索引,拖拽重排后无需重建 DOM
 
     const cb = document.createElement('div');
     cb.className = `task-checkbox${task.completed ? ' checked' : ''}`;
-    cb.addEventListener('click', (e) => { e.stopPropagation(); toggleTask(idx); });
+    cb.addEventListener('click', (e) => { e.stopPropagation(); toggleTask(+row.dataset.idx); });
 
     const text = document.createElement('span');
     text.className = `task-text${task.completed ? ' done' : ''}`;
@@ -451,7 +481,7 @@ function renderTasks(shouldAnimate = false) {
     alarm.textContent = task.alarmTime || '--:--';
     alarm.addEventListener('click', (e) => {
       e.stopPropagation();
-      openTimePicker(alarm, idx);
+      openTimePicker(alarm, +row.dataset.idx);
     });
 
     // 到期日胶囊
@@ -464,7 +494,7 @@ function renderTasks(shouldAnimate = false) {
     }
     ddate.addEventListener('click', (e) => {
       e.stopPropagation();
-      openDatePicker(ddate, idx);
+      openDatePicker(ddate, +row.dataset.idx);
     });
 
     // 常驻日期胶囊:仅展示,悬停时 CSS 隐藏;修改日期仍走 hover 栏 📅
@@ -476,14 +506,9 @@ function renderTasks(shouldAnimate = false) {
       if (dueClass) dateChip.classList.add(dueClass);
     }
 
-    const del = document.createElement('button');
-    del.className = 'task-delete';
-    del.textContent = '✕';
-    del.addEventListener('click', (e) => { e.stopPropagation(); deleteTask(idx); });
-
     const hoverBar = document.createElement('div');
     hoverBar.className = 'hover-bar';
-    hoverBar.append(alarm, ddate, del);
+    hoverBar.append(alarm, ddate);
 
     let barTimer = null;
     row.addEventListener('mouseenter', () => {
@@ -493,6 +518,7 @@ function renderTasks(shouldAnimate = false) {
     });
     row.addEventListener('mousemove', (e) => {
       if (activePickerRow) return; // 选择器展开:选择器行钉住显示,其他行不显示
+      if (delHold) return; // 长按删除进行中,不弹操作栏
       // 右缘 15px 热区触发显示;保持范围:行右缘 115px 内(覆盖操作栏按钮),移出即隐藏
       const rect = row.getBoundingClientRect();
       if (e.clientX >= rect.right - 15) {
@@ -508,6 +534,28 @@ function renderTasks(shouldAnimate = false) {
       row.style.background = '';
     });
 
+    // 右键长按删除:按住右键 → 红色进度条 1 秒填满 → 粒子消散 → 删除(仅未完成任务)
+    row.addEventListener('mousedown', (e) => {
+      if (e.button !== 2) return;
+      const rIdx = +row.dataset.idx;
+      if (state.tasks[rIdx].completed) return; // 已完成任务不可删除
+      const taskId = state.tasks[rIdx].id;
+      startDeleteHold(e, row, {
+        textEl: text,
+        text: state.tasks[rIdx].task,
+        // 粒子散尽后按 id 删除,避免动画期间列表变化导致索引错位
+        onComplete: () => {
+          const i = state.tasks.findIndex(t => t.id === taskId);
+          if (i !== -1) deleteTask(i);
+        }
+      });
+    });
+    row.addEventListener('mouseup', cancelDeleteHold);
+    row.addEventListener('mouseleave', cancelDeleteHold);
+    row.addEventListener('contextmenu', (e) => {
+      if (!e.target.closest('.task-edit-input')) e.preventDefault();
+    });
+
     row.append(cb, text, hoverBar);
     // 注意:append 不能传 null(WebIDL 会把 null 转成 "null" 文本),空值用 appendChild 跳过
     if (dateChip) row.appendChild(dateChip);
@@ -519,6 +567,7 @@ function renderTasks(shouldAnimate = false) {
     // 整行拖拽排序:仅未完成任务,且仅在汇总页可用(项目页签按日期排序,禁拖)
     if (!task.completed && state.activeSheet === 'all') {
       row.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return; // 仅左键拖拽;右键用于长按删除
         // 勾选框/操作栏/编辑输入框上的点击不触发拖拽
         if (e.target.closest('.task-checkbox, .hover-bar, .task-edit-input')) return;
         // 阻止文本选择;移动未超过阈值时视为普通点击,双击编辑不受影响
@@ -528,7 +577,7 @@ function renderTasks(shouldAnimate = false) {
           if (Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY) < 4) return;
           document.removeEventListener('mousemove', onMove);
           document.removeEventListener('mouseup', onUp);
-          startDrag(ev, idx, row);
+          startDrag(ev, +row.dataset.idx, row);
         };
         const onUp = () => {
           document.removeEventListener('mousemove', onMove);
@@ -541,11 +590,11 @@ function renderTasks(shouldAnimate = false) {
 
     let clickTimer = null;
     row.addEventListener('click', (e) => {
-      if (e.target === del || e.target === alarm || e.target === ddate) return;
+      if (e.target === alarm || e.target === ddate) return;
       if (clickTimer) {
         clearTimeout(clickTimer);
         clickTimer = null;
-        enterEditMode(row, idx);
+        enterEditMode(row, +row.dataset.idx);
       } else {
         clickTimer = setTimeout(() => { clickTimer = null; }, 400);
       }
@@ -703,7 +752,10 @@ function onDragEnd() {
   document.removeEventListener('mouseup', onDragEnd);
   dragState = null;
 
-  renderTasks();
+  // 行索引与数组顺序对齐(不重建 DOM,避免列表刷新闪烁)
+  [...taskItems.children].forEach((el, i) => {
+    if (el.classList.contains('task-item')) el.dataset.idx = i;
+  });
 }
 
 function toggleTask(idx) {
@@ -713,6 +765,116 @@ function toggleTask(idx) {
   saveTasks();
   renderTasks(true);
 }
+
+// ========== 右键长按删除:红色进度条 + 粒子消散 ==========
+const DELETE_HOLD_MS = 1000;      // 任务页删除进度填满时长
+const DELETE_HOLD_MS_NOTE = 2000; // 笔记页(文件)删除进度填满时长
+const PARTICLE_MS = 450;    // 粒子消散动画时长
+let delHold = null;         // { row, taskId, overlay, rafId }
+
+function startDeleteHold(e, row, opts) {
+  if (delHold) return; // 全局单实例
+  // 编辑框内放行默认右键(复制粘贴);笔记置顶按钮区域不触发删除
+  if (e.target.closest('.task-edit-input, .note-list-item-edit')) return;
+  if (e.target.closest('.note-list-pin')) return;
+  e.preventDefault();
+  // 长按开始时收起该行操作栏(任务行有,笔记行无,容错)
+  const bar = row.querySelector('.hover-bar');
+  if (bar) bar.classList.remove('visible');
+
+  const textEl = opts.textEl || row.querySelector('.task-text');
+  const progressEl = opts.progressEl || textEl; // 红线容器(默认与粒子容器一致)
+  if (!progressEl) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'del-progress';
+  progressEl.appendChild(overlay);
+
+  const start = performance.now();
+  const holdMs = opts.holdMs || DELETE_HOLD_MS; // 页面级时长覆盖(任务1s/笔记2s)
+  const tick = (now) => {
+    const p = Math.min(1, (now - start) / holdMs);
+    overlay.style.transform = `scaleX(${p})`;
+    if (p >= 1) { finishDeleteHold(row, opts); return; }
+    delHold.rafId = requestAnimationFrame(tick);
+  };
+  delHold = { row, opts, overlay, rafId: requestAnimationFrame(tick) };
+}
+
+function cancelDeleteHold() {
+  if (!delHold) return;
+  cancelAnimationFrame(delHold.rafId);
+  delHold.overlay.remove();
+  delHold = null;
+}
+
+function finishDeleteHold(row, opts) {
+  cancelAnimationFrame(delHold.rafId);
+  delHold.overlay.remove();
+  delHold = null;
+  spawnParticles(row, opts);
+  // 粒子散尽后执行删除回调(任务页/笔记页各自注入)
+  setTimeout(opts.onComplete, PARTICLE_MS);
+}
+
+function spawnParticles(row, opts) {
+  const textEl = opts.textEl || row.querySelector('.task-text');
+  if (!textEl) return;
+  row.classList.add('deleting'); // 复选框/徽标/胶囊/原文字淡出
+  row.style.background = ''; // 清除悬停灰色框(inline 优先级高于 CSS),让粒子独立呈现
+
+  const rect = textEl.getBoundingClientRect();
+  const rowRect = row.getBoundingClientRect();
+  // 项目徽标占位:粒子只覆盖任务名区域(笔记行无徽标,自动为 0)
+  let badgeW = 0;
+  const badge = textEl.querySelector('.project-badge');
+  if (badge) badgeW = badge.getBoundingClientRect().width;
+  const chars = [...(opts.text || '')];
+  if (chars.length === 0) return;
+  const layer = document.createElement('div');
+  layer.className = 'del-particle-layer';
+  layer.style.left = (rect.left - rowRect.left + badgeW) + 'px';
+  layer.style.top = (rect.top - rowRect.top) + 'px';
+  layer.style.width = Math.max(1, rect.width - badgeW) + 'px';
+  layer.style.height = rect.height + 'px';
+  row.appendChild(layer);
+
+  // 任务文字崩解为黑白小圆点:按 8px 间距网格铺设,带随机抖动
+  const w = Math.max(1, rect.width - badgeW);
+  const h = Math.max(1, rect.height);
+  const spacing = 8;
+  const cols = Math.max(1, Math.round(w / spacing));
+  const rows = Math.max(1, Math.round(h / spacing));
+  const dotSize = 2.5;
+  for (let c = 0; c < cols; c++) {
+    for (let r = 0; r < rows; r++) {
+      const dot = document.createElement('span');
+      dot.className = 'del-particle';
+      dot.style.left = (c * spacing + Math.random() * 4 - 2) + 'px';
+      dot.style.top = (r * spacing + Math.random() * 4 - 2) + 'px';
+      dot.style.width = dotSize + 'px';
+      dot.style.height = dotSize + 'px';
+      dot.style.background = Math.random() < 0.2 ? '#ffffff' : '#1f2328'; // 黑白混合,少量白点
+      layer.appendChild(dot);
+      // 小范围扩散 + 淡出:位移 12~37px,无旋转
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 12 + Math.random() * 25;
+      const dx = Math.cos(angle) * dist;
+      const dy = Math.sin(angle) * dist;
+      dot.animate([
+        { transform: 'translate(0,0)', opacity: 1 },
+        { transform: `translate(${dx}px, ${dy}px)`, opacity: 0 }
+      ], {
+        duration: 250 + Math.random() * 100,
+        delay: Math.random() * 40,
+        easing: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)',
+        fill: 'forwards'
+      });
+    }
+  }
+}
+
+// Esc 全局取消长按删除
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') cancelDeleteHold(); });
 
 function deleteTask(idx) {
   state.tasks.splice(idx, 1);
@@ -755,9 +917,27 @@ function addTasks(newTasks) {
   const maxOrder = state.tasks.reduce((max, t) => Math.max(max, t.sortOrder ?? 0), -1);
   const items = unique.map((t, i) => ({
     id: genId(), task: t.task, project: t.project || null, completed: false, createdAt: now, completedAt: null,
-    alarmTime: null, dueDate: null, sortOrder: maxOrder + 1 + i,
+    alarmTime: null, dueDate: t.dueDate || null, sortOrder: maxOrder + 1 + i,
   }));
-  state.tasks = [...items, ...state.tasks];
+
+  // 无日期新任务归位：插入到该项目「无日期分组」末尾（与重排后的结构保持一致）；
+  // 有日期的新任务保持追加到未完成任务末尾，下次点「重排」时归位
+  const plainNew = items.filter(t => !t.dueDate);
+  const withDueNew = items.filter(t => t.dueDate);
+  const ordered = state.tasks.filter(t => !t.completed)
+    .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+  for (const item of plainNew) {
+    // 优先插到同项目无日期分组末尾；没有同项目组则插到无日期段末尾(新建一组)；都没有则追加到末尾
+    let lastPlain = -1, lastSame = -1;
+    for (let i = 0; i < ordered.length; i++) {
+      if (ordered[i].dueDate) continue;
+      lastPlain = i;
+      if ((ordered[i].project || '') === (item.project || '')) lastSame = i;
+    }
+    const pos = lastSame !== -1 ? lastSame + 1 : (lastPlain !== -1 ? lastPlain + 1 : ordered.length);
+    ordered.splice(pos, 0, item);
+  }
+  state.tasks = [...ordered, ...withDueNew, ...state.tasks.filter(t => t.completed)];
 
   // 数量上限保护：最多保留 500 条，超出部分从末尾（最旧的已完成任务）删除
   if (state.tasks.length > 500) {
@@ -771,7 +951,7 @@ function addTasks(newTasks) {
     }
   }
 
-  sortTasks();
+  reassignSortOrders();
   saveTasks();
   renderTasks();
 }
@@ -1040,7 +1220,9 @@ function hasContent() {
 }
 
 function updateOrganizeButton() {
-  btnOrganize.disabled = !hasContent() || state.organizing;
+  // 重排仅对任务汇总页生效：汇总页且有未完成任务时可点击
+  const hasPending = state.tasks.some(t => !t.completed);
+  btnOrganize.disabled = state.activeSheet !== 'all' || !hasPending || state.organizing;
 }
 
 function handlePaste(e) {
@@ -1083,6 +1265,37 @@ function renderImages() {
     c.append(img, btn);
     imagePreviews.appendChild(c);
   });
+}
+
+// ========== 任务重排（汇总页整理按钮） ==========
+function rearrangeTasks() {
+  if (state.activeSheet !== 'all' || state.organizing) return;
+  if (state.tasks.every(t => t.completed)) return;
+
+  const undone = state.tasks.filter(t => !t.completed);
+  const done = state.tasks.filter(t => t.completed);
+  const withDue = undone.filter(t => t.dueDate);
+  const withoutDue = undone.filter(t => !t.dueDate);
+
+  // 有日期段：(日期升序, 项目名) —— 日期相同且项目相同的任务必然聚在一起
+  withDue.sort((a, b) =>
+    a.dueDate.localeCompare(b.dueDate) || (a.project || '').localeCompare(b.project || '', 'zh') || 0
+  );
+
+  // 无日期段：按项目首次出现顺序分组，组内保持原有相对顺序
+  const groupOrder = [];
+  const groups = [];
+  for (const t of withoutDue) {
+    const p = t.project || '';
+    let gi = groupOrder.indexOf(p);
+    if (gi === -1) { groupOrder.push(p); groups.push([]); gi = groups.length - 1; }
+    groups[gi].push(t);
+  }
+
+  state.tasks = [...withDue, ...groups.flat(), ...done];
+  reassignSortOrders();
+  saveTasks();
+  renderTasks(true);
 }
 
 // ========== AI 整理 ==========
@@ -2149,6 +2362,7 @@ async function renderNoteList() {
     if (note.filename === state.currentNoteFile) row.classList.add('active');
 
     const nameSpan = document.createElement('span');
+    nameSpan.className = 'note-list-name'; // 定位参照:进度条/粒子层
     nameSpan.textContent = note.filename.replace(/\.md$/, '');
     nameSpan.style.overflow = 'hidden';
     nameSpan.style.textOverflow = 'ellipsis';
@@ -2161,8 +2375,9 @@ async function renderNoteList() {
     timeSpan.textContent = note.mtime.slice(0, 10);
 
     const pinBtn = document.createElement('button');
-    pinBtn.className = 'note-list-pin';
-    pinBtn.textContent = pinnedSet.has(note.filename) ? '📌' : '📍';
+    pinBtn.className = 'note-list-pin' + (pinnedSet.has(note.filename) ? ' pinned' : '');
+    // 内联 SVG 图钉:已置顶=主题色实心,未置顶=淡灰(不依赖 emoji 字体渲染)
+    pinBtn.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"/></svg>';
     pinBtn.title = pinnedSet.has(note.filename) ? '取消置顶' : '置顶';
     pinBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2184,17 +2399,22 @@ async function renderNoteList() {
       if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
       enterNoteRename(row, note.filename);
     });
-    let rightTimer = null;
+    // 右键长按删除笔记文件(与任务页一致:红色进度条 1 秒填满 → 粒子消散 → 删除)
+    row.addEventListener('mousedown', (e) => {
+      if (e.button !== 2) return;
+      if (state.notes.length <= 1) return; // 最后一条笔记不可删除
+      startDeleteHold(e, row, {
+        textEl: nameSpan,
+        progressEl: row, // 红线固定覆盖整行宽(终止于右侧日期),不随文件名长度变化
+        holdMs: DELETE_HOLD_MS_NOTE, // 文件删除 2 秒,任务删除保持 1 秒
+        text: note.filename.replace(/\.md$/, ''),
+        onComplete: () => deleteNoteHandler(note.filename)
+      });
+    });
+    row.addEventListener('mouseup', cancelDeleteHold);
+    row.addEventListener('mouseleave', cancelDeleteHold);
     row.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
-      if (rightTimer) {
-        clearTimeout(rightTimer);
-        rightTimer = null;
-        deleteNoteHandler(note.filename);
-      } else {
-        rightTimer = setTimeout(() => { rightTimer = null; }, 400);
-      }
+      if (!e.target.closest('.note-list-item-edit')) e.preventDefault();
     });
 
     noteListItems.appendChild(row);

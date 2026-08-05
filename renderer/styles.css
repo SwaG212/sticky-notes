@@ -135,6 +135,9 @@ body {
   background: rgba(255, 255, 255, 0.01);
 }
 .task-item:hover { background: var(--bg-secondary); }
+/* 粒子消散开始时取消灰色悬停框,让粒子动画独立呈现 */
+.task-item.deleting,
+.task-item.deleting:hover { background: transparent; }
 
 /* 自定义勾选框 */
 .task-checkbox {
@@ -163,6 +166,7 @@ body {
 
 /* 任务文字 */
 .task-text {
+  position: relative; /* 支撑右键长按删除的进度条/粒子定位 */
   flex: 1;
   /* 右侧留出常驻日期胶囊的空间,避免文字延伸到胶囊下方 */
   margin-right: 24px;
@@ -170,6 +174,55 @@ body {
   line-height: 1.5;
   cursor: default;
   user-select: text;
+}
+
+/* 右键长按删除:文字中部细线进度条,由浅到深 */
+.del-progress {
+  position: absolute;
+  left: 0;
+  top: calc(50% - 1.5px); /* 垂直居中 3px 细线 */
+  width: 100%;
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(to right, rgba(217, 61, 61, 0.15), #d61f1f);
+  box-shadow: 0 0 6px rgba(217, 61, 61, 0.35);
+  transform-origin: left;
+  transform: scaleX(0);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* 删除粒子:任务文字崩解为黑白小圆点 */
+.del-particle {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  will-change: transform, opacity;
+  z-index: 2;
+}
+
+/* 粒子层:覆盖在任务文字原位置 */
+.del-particle-layer {
+  position: absolute;
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* 删除进行中:行内其他元素淡出让位 */
+.task-item.deleting .task-checkbox,
+.task-item.deleting .task-alarm,
+.task-item.deleting .task-duedate,
+.task-item.deleting .project-badge,
+.task-item.deleting .task-date-chip,
+.task-item.deleting .hotzone-hint {
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+/* 任务文字:粒子开始时瞬间消失,由粒子直接接管原位 */
+.task-item.deleting .task-text {
+  opacity: 0;
+  transition: none;
 }
 .task-text.done {
   text-decoration: line-through;
@@ -327,22 +380,6 @@ body {
   white-space: nowrap;
 }
 .task-alarm:hover { background: var(--bg-secondary); }
-
-.task-delete {
-  width: 22px;
-  height: 22px;
-  border: none;
-  background: transparent;
-  color: var(--text-dim);
-  cursor: pointer;
-  border-radius: 4px;
-  font-size: 14px;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.task-delete:hover { color: var(--danger); }
 
 /* 到期日胶囊 */
 .task-duedate {
@@ -1239,7 +1276,11 @@ body {
   /* 页脚栏三元素: ← 搜索框 → 搜索框居中 */
   flex: 1;
 }
-#note-search-bar.hidden { display: none; }
+/* 隐藏时保留占位:点击区域 = 搜索框实际大小,且布局不重排 */
+#note-search-bar.hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
 #note-search-input {
   width: 180px;
   height: 26px;
@@ -1314,11 +1355,15 @@ body {
 }
 
 #note-list-search-box {
+  position: sticky; /* 固定展示,不随列表滚动 */
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 6px 8px 4px;
   flex-shrink: 0;
+  background: var(--bg); /* 覆盖滚动内容 */
 }
 #note-list-search {
   flex: 1;
@@ -1384,6 +1429,7 @@ body {
   flex-direction: column;
 }
 .note-list-item {
+  position: relative; /* 支撑右键长按删除的粒子层定位 */
   padding: 6px 12px;
   font-size: 13px;
   cursor: pointer;
@@ -1400,14 +1446,31 @@ body {
   justify-content: space-between;
 }
 .note-list-item:hover { background: var(--bg-secondary); }
+.note-list-name { position: relative; }
 .note-list-item.active { background: var(--bg-input); font-weight: bold; }
 .note-list-item.pinned { background: #f0f0f4; }
 .note-list-item.pinned:hover { background: #e8e8ee; }
+/* 粒子消散开始时清除行背景(hover/active/pinned 全覆盖),让粒子独立呈现 */
+.note-list-item.deleting,
+.note-list-item.deleting:hover,
+.note-list-item.deleting.active,
+.note-list-item.deleting.pinned,
+.note-list-item.deleting.pinned:hover { background: transparent; }
+/* 删除动画时时间戳/置顶按钮/色条淡出让位 */
+.note-list-item.deleting .note-list-mtime,
+.note-list-item.deleting .note-list-pin,
+.note-list-item.deleting::before {
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
 .note-list-mtime {
   font-size: 11px;
   color: var(--text-dim);
   flex-shrink: 0;
-  display: none;
+  display: inline; /* 常驻占位:避免 hover 显隐引起布局跳动 */
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s, visibility 0s linear 0.15s;
 }
 .note-list-right {
   display: flex;
@@ -1416,7 +1479,11 @@ body {
   flex-shrink: 0;
   margin-left: 4px;
 }
-.note-list-item:hover .note-list-mtime { display: inline; }
+.note-list-item:hover .note-list-mtime {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.15s;
+}
 .note-list-pin {
   width: 22px;
   height: 22px;
@@ -1426,15 +1493,37 @@ body {
   cursor: pointer;
   border-radius: 4px;
   font-size: 14px;
-  display: none;
+  display: flex; /* 常驻占位:避免 hover 显隐引起布局跳动 */
   align-items: center;
   justify-content: center;
   line-height: 1;
-  opacity: 0.6;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s, visibility 0s linear 0.15s;
+}
+.note-list-item:hover .note-list-pin {
+  opacity: 1;
+  visibility: visible;
   transition: opacity 0.15s;
 }
-.note-list-item:hover .note-list-pin { display: flex; }
 .note-list-pin:hover { opacity: 1; background: var(--bg-secondary); }
+/* 图钉图标状态配色:未置顶=淡灰,悬停加深;已置顶=主题紫实心 */
+.note-list-pin svg { display: block; }
+.note-list-pin svg path { fill: #b9b9c6; transition: fill 0.15s; }
+.note-list-pin:hover svg path { fill: #7c7c8c; }
+.note-list-pin.pinned svg path { fill: var(--accent); }
+.note-list-pin.pinned:hover svg path { fill: var(--accent-hover); }
+/* 置顶行左侧主题色竖条:置顶状态一眼可辨 */
+.note-list-item.pinned::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 3px;
+  bottom: 3px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent);
+}
 .note-list-item-edit {
   margin: 2px 8px;
   padding: 3px 6px;
