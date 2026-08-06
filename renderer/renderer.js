@@ -1334,6 +1334,10 @@ async function organize() {
         }
       }
     }
+    // 兜底：当前处于项目页签且文本中未识别出项目 → 默认归属当前页签的项目
+    if (!project && state.activeSheet !== 'all') {
+      project = state.activeSheet;
+    }
 
     if (window.electronAPI) {
       // 生产模式：通过 IPC 调用主进程（OCR + DeepSeek）
@@ -1366,7 +1370,7 @@ async function organize() {
 
 function fallbackOrganize(text, imgs, projectNames, preMatchedProject) {
   const tasks = [];
-  if (imgs.length > 0) tasks.push({ task: '【截图识别】请编辑此任务补充详情' });
+  if (imgs.length > 0) tasks.push({ task: '【截图识别】请编辑此任务补充详情', project: project || undefined });
   if (text) {
     // 使用前端已匹配的项目名，或重新匹配
     let project = preMatchedProject || null;
@@ -1880,7 +1884,11 @@ function renderTranslateCard() {
 
   const title = document.createElement('div');
   title.className = 'tool-card-title';
-  title.textContent = '翻译';
+  title.appendChild(document.createTextNode('翻译'));
+  const titleEn = document.createElement('span');
+  titleEn.className = 'tool-card-title-en';
+  titleEn.textContent = 'Translation';
+  title.appendChild(titleEn);
 
   const input = document.createElement('div');
   input.className = 'tool-card-input';
@@ -1894,6 +1902,18 @@ function renderTranslateCard() {
   const result = document.createElement('div');
   result.className = 'tool-card-result';
 
+  // 注意：译文赋值不能直接写 result.textContent——textContent 会清空子节点，
+  // 灰线/反向译文等兄弟元素会被销毁。译文只写入 forwardText，兄弟节点不受影响。
+  const forwardText = document.createElement('div');
+  forwardText.className = 'tool-card-result-text';
+
+  // 灰线分割 + 反向译文：验证后显示在同一个框内
+  const backSep = document.createElement('div');
+  backSep.className = 'tool-card-back-sep hidden';
+  const backText = document.createElement('div');
+  backText.className = 'tool-card-back-text hidden';
+
+  result.append(forwardText, backSep, backText);
   card.append(title, input, result, status);
   toolsCards.appendChild(card);
 
@@ -1908,7 +1928,9 @@ function renderTranslateCard() {
     if (!content.text && content.images.length === 0) {
       // 清空输入:作废旧请求,防止旧结果覆盖
       ++translateReqSeq;
-      result.textContent = '';
+      const forwardText = card.querySelector('.tool-card-result-text');
+      if (forwardText) forwardText.textContent = '';
+      hideBackResult(card);
       status.textContent = '';
       return;
     }
@@ -1969,6 +1991,7 @@ async function doTranslate(content) {
       if (res.success) {
         translated = res.translated;
         if (res.sourceLang && res.targetLang) langHint = `${res.sourceLang} → ${res.targetLang}`;
+        if (res.ocrFailed) langHint += ` · ${res.ocrFailed}张图片识别失败`;
       }
       else { if (seq === translateReqSeq) { status.textContent = res.error; status.classList.add('error'); } return; }
     } else {
@@ -1976,11 +1999,60 @@ async function doTranslate(content) {
       translated = `[翻译结果] ${content.text || '图片内容'}`;
     }
     if (seq !== translateReqSeq) return;
-    result.textContent = translated;
+    const forwardText = card.querySelector('.tool-card-result-text');
+    if (forwardText) forwardText.textContent = translated;
+    // 新译文产生，隐藏旧的验证结果（灰线 + 反向译文）
+    hideBackResult(card);
     status.textContent = langHint;
     status.classList.remove('error');
+    // 自动反向翻译验证
+    autoVerify(card, seq);
   } catch (e) {
     if (seq === translateReqSeq) { status.textContent = '翻译失败：' + e.message; status.classList.add('error'); }
+  }
+}
+
+// ========== 翻译验证：自动反向翻译 ==========
+function hideBackResult(card) {
+  const sep = card.querySelector('.tool-card-back-sep');
+  const backText = card.querySelector('.tool-card-back-text');
+  if (sep) sep.classList.add('hidden');
+  if (backText) { backText.classList.add('hidden'); backText.textContent = ''; }
+}
+
+// 翻译成功后自动调用：把译文反向翻译一次，灰线 + 反向译文展示在译文下方供核对
+async function autoVerify(card, seq) {
+  const forwardText = card.querySelector('.tool-card-result-text');
+  const status = card.querySelector('.tool-card-status');
+  const backSep = card.querySelector('.tool-card-back-sep');
+  const backText = card.querySelector('.tool-card-back-text');
+  const text = forwardText.textContent.trim();
+  if (!text) return;
+
+  try {
+    let backValue, langHint = '';
+    if (window.electronAPI) {
+      // 复用翻译通道：自动检测译文语言并翻回原语言
+      const res = await window.electronAPI.translateRequest({ text, images: [] });
+      if (res.success) {
+        backValue = res.translated;
+        if (res.sourceLang && res.targetLang) langHint = `↩ ${res.sourceLang} → ${res.targetLang}`;
+      } else {
+        if (seq === translateReqSeq) { status.textContent = res.error; status.classList.add('error'); }
+        return;
+      }
+    } else {
+      backValue = `[反向翻译] ${text}`; // 浏览器调试模式模拟
+    }
+    // 验证期间输入已变化：丢弃过期验证结果
+    if (seq !== translateReqSeq) return;
+    backText.textContent = backValue;
+    backSep.classList.remove('hidden');
+    backText.classList.remove('hidden');
+    status.textContent = langHint || '反向翻译完成';
+    status.classList.remove('error');
+  } catch (e) {
+    if (seq === translateReqSeq) { status.textContent = '反向翻译失败：' + e.message; status.classList.add('error'); }
   }
 }
 

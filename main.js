@@ -212,16 +212,23 @@ async function callDeepSeek(messages, apiKey, baseUrl) {
 
 // ========== 翻译模块 ==========
 function detectLang(text) {
-  // 含中文字符(基本区)即判定为中文,否则英文
-  return /[一-鿿]/.test(text) ? '中文' : '英文';
+  // 按中文字符(基本区)与英文字母的数量比较判定,避免个别字符误判
+  let zh = 0, en = 0;
+  for (const ch of text) {
+    if (/[一-鿿]/.test(ch)) zh++;
+    else if (/[a-zA-Z]/.test(ch)) en++;
+  }
+  return zh > en ? '中文' : '英文';
 }
 
 function buildTranslatePrompt(text, targetLang) {
-  return `你是一个中英互译助手。
+  return `你是一个中英互译助手。请将以下用户输入翻译成${targetLang}。
 
-请将以下文本翻译成${targetLang}。
+硬性要求：
+- 输入为中文时，必须输出英文译文；输入为英文时，必须输出中文译文
+- 输出语言必须与输入语言不同，禁止原样输出用户输入
 - 保持原文语气和格式
-- 只输出译文，不要输出其他内容
+- 只输出译文，不要输出任何解释、备注或其他内容
 
 用户输入：
 ${text}`;
@@ -231,14 +238,16 @@ async function translateText(text, imageDataUrls) {
   const cfg = loadConfig();
   if (!cfg.apiKey) throw new Error('NO_API_KEY');
 
-  // 1. OCR 处理所有图片
+  // 1. OCR 处理所有图片：识别失败的图片不参与翻译，单独计数提示
   let ocrResults = [];
+  let ocrFailed = 0;
   for (const dataUrl of imageDataUrls) {
     try {
-      const text = await ocrImage(dataUrl);
-      if (text) ocrResults.push(text);
+      const t = await ocrImage(dataUrl);
+      if (t) ocrResults.push(t);
+      else ocrFailed++;
     } catch (e) {
-      ocrResults.push('[图片OCR失败]');
+      ocrFailed++;
     }
   }
 
@@ -246,6 +255,10 @@ async function translateText(text, imageDataUrls) {
   let combinedInput = text || '';
   if (ocrResults.length > 0) {
     combinedInput += '\n\n[以下为截图OCR识别内容]\n' + ocrResults.join('\n---\n');
+  }
+  // 只有图片且全部识别失败：直接报错，避免把失败占位符当内容硬翻译
+  if (imageDataUrls.length > 0 && ocrFailed === imageDataUrls.length && !combinedInput.trim()) {
+    throw new Error('OCR_FAILED');
   }
   if (!combinedInput.trim()) throw new Error('EMPTY_INPUT');
 
@@ -260,7 +273,7 @@ async function translateText(text, imageDataUrls) {
     cfg.baseUrl
   );
   const translated = (response.choices?.[0]?.message?.content || '').trim();
-  return { translated, sourceLang, targetLang };
+  return { translated, sourceLang, targetLang, ocrFailed };
 }
 
 async function organizeText(userText, imageDataUrls, project) {
@@ -704,6 +717,7 @@ function setupIPC() {
         'AUTH_FAILED': 'API Key 无效，请重新配置',
         'INSUFFICIENT_FUNDS': 'API 余额不足，请充值后重试',
         'EMPTY_INPUT': '请输入内容',
+        'OCR_FAILED': '图片识别失败，请重试或直接输入文字',
       };
       const msg = errMap[e.message] || `翻译服务异常：${e.message}`;
       return { success: false, error: msg };
