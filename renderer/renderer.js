@@ -14,6 +14,7 @@ const state = {
   shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2', switchTools: 'Alt+3' },
   projectNames: [],
   pagesEnabled: { tasks: true, tools: true },
+  showSheetBar: true, // 项目页签栏显示开关(设置页,默认显示)
   toolsEnabled: { translate: true },
   hoveredImage: null,
   activeSheet: 'all',
@@ -120,7 +121,8 @@ async function init() {
     const scroller = sheetBar.querySelector('.sheet-scroll');
     if (!scroller || scroller.scrollWidth <= scroller.clientWidth) return;
     e.preventDefault();
-    scroller.scrollLeft += e.deltaY;
+    // 与待选项目一致的丝滑滚动:增量累积到目标,rAF 指数缓动逼近,滚轮停止后惯性滑行
+    startExpandScroll(scroller, e.deltaY);
   }, { passive: false });
   notepadTextarea.addEventListener('input', onNotepadInput);
   notepadTextarea.addEventListener('paste', handleNotepadPaste);
@@ -331,6 +333,15 @@ function snapshotPositions() {
 }
 
 // ========== 项目页签栏 ==========
+// 页签栏显示开关:整行隐藏;关闭时若停在项目页签,强制回任务汇总(否则无入口切回)
+function applySheetBarVisibility() {
+  sheetBar.style.display = state.showSheetBar ? '' : 'none';
+  if (!state.showSheetBar && state.activeSheet !== 'all') {
+    state.activeSheet = 'all';
+    renderTasks();
+  }
+}
+
 function renderSheetBar() {
   if (!sheetBar) return;
   // 记住页签栏横向滚动位置,重建后保持(滚轮横向滚动页签的场景)
@@ -400,6 +411,8 @@ function renderSheetBar() {
 function renderTasks(shouldAnimate = false) {
   // 列表重建后旧行元素失效,清除选择器行引用
   if (activePickerRow) activePickerRow = null;
+  expandingRow = null; // 行重建,项目展开态失效
+  clearTimeout(expandCloseTimer);
   // 记住滚动位置,切换页签重建列表后保持当前位置
   const prevScrollTop = taskList.scrollTop;
   renderSheetBar();
@@ -454,14 +467,34 @@ function renderTasks(shouldAnimate = false) {
     const text = document.createElement('span');
     text.className = `task-text${task.completed ? ' done' : ''}`;
 
-    // 项目徽标
+    // 项目徽标:单击行内展开项目选择(仅未完成任务;已完成任务徽标不可点)
     if (task.project) {
       const badge = document.createElement('span');
       badge.className = 'project-badge';
       badge.textContent = task.project;
+      if (!task.completed) {
+        badge.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openProjectExpand(row, +row.dataset.idx);
+        });
+      }
       text.appendChild(badge);
+    } else if (!task.completed) {
+      // 无项目任务:徽标位常驻虚位胶囊,单击行内展开项目选择
+      const ph = document.createElement('span');
+      ph.className = 'project-placeholder';
+      ph.textContent = '+';
+      ph.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openProjectExpand(row, +row.dataset.idx);
+      });
+      text.appendChild(ph);
     }
-    text.appendChild(document.createTextNode(task.task));
+    // 任务文字独立包装:展开态隐藏文字但保留徽标
+    const textContent = document.createElement('span');
+    textContent.className = 'task-text-content';
+    textContent.appendChild(document.createTextNode(task.task));
+    text.appendChild(textContent);
 
     // 到期日颜色反馈（仅未完成任务）
     let dueClass = null;
@@ -472,9 +505,8 @@ function renderTasks(shouldAnimate = false) {
       else if (task.dueDate === today) dueClass = 'due-today';
       else if (task.dueDate === tomorrow) dueClass = 'due-tomorrow';
     }
-    if (dueClass) text.classList.add(dueClass);
 
-    text.title = task.task.length > 50 ? task.task : '';
+    textContent.title = task.task.length > 50 ? task.task : '';
 
     const alarm = document.createElement('span');
     alarm.className = 'task-alarm';
@@ -519,6 +551,7 @@ function renderTasks(shouldAnimate = false) {
     row.addEventListener('mousemove', (e) => {
       if (activePickerRow) return; // 选择器展开:选择器行钉住显示,其他行不显示
       if (delHold) return; // 长按删除进行中,不弹操作栏
+      if (expandingRow === row) return; // 项目展开态:右缘热区不生效
       // 右缘 15px 热区触发显示;保持范围:行右缘 115px 内(覆盖操作栏按钮),移出即隐藏
       const rect = row.getBoundingClientRect();
       if (e.clientX >= rect.right - 15) {
@@ -537,6 +570,7 @@ function renderTasks(shouldAnimate = false) {
     // 右键长按删除:按住右键 → 红色进度条 1 秒填满 → 粒子消散 → 删除(仅未完成任务)
     row.addEventListener('mousedown', (e) => {
       if (e.button !== 2) return;
+      if (e.target.closest('.project-badge, .project-placeholder, .project-expanding')) return; // 项目控件/展开态上的右键不触发删除
       const rIdx = +row.dataset.idx;
       if (state.tasks[rIdx].completed) return; // 已完成任务不可删除
       const taskId = state.tasks[rIdx].id;
@@ -563,13 +597,26 @@ function renderTasks(shouldAnimate = false) {
     const zoneHint = document.createElement('span');
     zoneHint.className = 'hotzone-hint';
     row.appendChild(zoneHint);
+    // 行内项目展开容器:默认隐藏,点击徽标/「+」时填充项目胶囊并显示
+    const projectExpand = document.createElement('div');
+    projectExpand.className = 'project-expand';
+    row.appendChild(projectExpand);
+    // 滚轮横向滚动(仅当内容溢出时拦截垂直滚动):增量累积到目标,平滑动画逼近
+    projectExpand.addEventListener('wheel', (e) => {
+      if (projectExpand.scrollWidth > projectExpand.clientWidth) {
+        e.preventDefault();
+        startExpandScroll(projectExpand, e.deltaY);
+      }
+    }, { passive: false });
+    // 边缘渐隐:滚动位置变化时更新左右渐隐遮罩
+    projectExpand.addEventListener('scroll', () => updateExpandMask(projectExpand));
 
     // 整行拖拽排序:仅未完成任务,且仅在汇总页可用(项目页签按日期排序,禁拖)
     if (!task.completed && state.activeSheet === 'all') {
       row.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return; // 仅左键拖拽;右键用于长按删除
-        // 勾选框/操作栏/编辑输入框上的点击不触发拖拽
-        if (e.target.closest('.task-checkbox, .hover-bar, .task-edit-input')) return;
+        // 勾选框/操作栏/编辑输入框/项目控件/展开态上的点击不触发拖拽
+        if (e.target.closest('.task-checkbox, .hover-bar, .task-edit-input, .project-badge, .project-placeholder, .project-expanding')) return;
         // 阻止文本选择;移动未超过阈值时视为普通点击,双击编辑不受影响
         e.preventDefault();
         const startX = e.clientX, startY = e.clientY;
@@ -590,6 +637,7 @@ function renderTasks(shouldAnimate = false) {
 
     let clickTimer = null;
     row.addEventListener('click', (e) => {
+      if (expandingRow === row) return; // 项目展开态不进入双击编辑
       if (e.target === alarm || e.target === ddate) return;
       if (clickTimer) {
         clearTimeout(clickTimer);
@@ -671,6 +719,7 @@ function startDrag(e, taskIdx, rowEl) {
     taskIdx,
     clone,
     placeholder,
+    row, // 拖拽结束把行插回占位块位置,否则任务行从列表消失
     offsetY: e.clientY - rect.top,
     undoneCount: state.tasks.filter(t => !t.completed).length,
     lastTargetIdx: -1,
@@ -747,7 +796,13 @@ function onDragEnd() {
 
   // 清理
   dragState.clone.remove();
-  dragState.placeholder.remove();
+  // 把任务行插回占位块位置;若拖拽期间列表被重建(placeholder 已不在 DOM),重建列表对齐
+  if (dragState.placeholder.isConnected) {
+    dragState.placeholder.replaceWith(dragState.row);
+  } else {
+    dragState.row.remove();
+    renderTasks();
+  }
   document.removeEventListener('mousemove', onDragMove);
   document.removeEventListener('mouseup', onDragEnd);
   dragState = null;
@@ -873,8 +928,10 @@ function spawnParticles(row, opts) {
   }
 }
 
-// Esc 全局取消长按删除
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') cancelDeleteHold(); });
+// Esc 全局取消长按删除 + 关闭项目展开态
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { cancelDeleteHold(); closeProjectExpand(); }
+});
 
 function deleteTask(idx) {
   state.tasks.splice(idx, 1);
@@ -1214,7 +1271,149 @@ function openDatePicker(anchorEl, taskIdx) {
   activePicker = picker;
 }
 
-// ========== 输入处理 ==========
+// ========== 项目行内展开 ==========
+let expandingRow = null; // 当前处于项目展开态的任务行
+let expandCloseTimer = null; // 回收动画结束后移除行类的计时器
+
+function closeProjectExpand() {
+  if (!expandingRow) return;
+  const row = expandingRow;
+  expandingRow = null;
+  clearTimeout(expandCloseTimer);
+
+  const opts = [...row.querySelectorAll('.pe-opt')];
+  // 反向逐个回收:从右到左依次消失(与出现动画相反)
+  opts.forEach((el, i) => {
+    el.classList.add('pe-out');
+    el.style.setProperty('--i', opts.length - 1 - i);
+  });
+  // 等最长的回收动画结束后移除行类(行还在则正常收起;行已重建则直接清类)
+  const maxDelay = opts.length * 20 + 100;
+  expandCloseTimer = setTimeout(() => {
+    if (row.isConnected) {
+      row.classList.remove('project-expanding');
+      row.style.minHeight = ''; // 与行类同步释放:文字已恢复,行高自然回到原值
+    }
+  }, maxDelay);
+}
+
+// 边缘渐隐:内容滚出可视区的那一侧加 12px 渐变遮罩,到头的方向不遮
+function updateExpandMask(container) {
+  const atStart = container.scrollLeft <= 0;
+  const atEnd = container.scrollLeft + container.clientWidth >= container.scrollWidth - 1;
+  const fades = [];
+  if (!atStart) fades.push('transparent 0, #000 12px');
+  if (!atEnd) fades.push('#000 calc(100% - 12px), transparent 100%');
+  container.style.maskImage = fades.length
+    ? `linear-gradient(to right, ${fades.join(', ')})`
+    : 'none';
+}
+
+// 展开胶囊平滑滚动:滚轮增量累积到目标值,rAF 指数缓动逼近,滚轮停止后惯性滑行到目标
+const expandScrollState = new WeakMap(); // container -> { target, raf }
+function startExpandScroll(container, delta) {
+  let st = expandScrollState.get(container);
+  if (!st) {
+    st = { target: container.scrollLeft, raf: null };
+    expandScrollState.set(container, st);
+  }
+  st.target += delta;
+  const max = container.scrollWidth - container.clientWidth;
+  if (st.target < 0) st.target = 0;
+  else if (st.target > max) st.target = max;
+  if (st.raf) return; // 动画已在跑,只更新目标
+  const step = () => {
+    if (expandScrollState.get(container) !== st) { st.raf = null; return; } // 已重置(重开),停止旧动画
+    const stepPx = (st.target - container.scrollLeft) * 0.2;
+    if (Math.abs(stepPx) < 1) {
+      // scrollLeft 是整数属性,步长不足 1px 会被取整吞掉导致永远差几像素,直接置位
+      container.scrollLeft = st.target;
+      st.raf = null;
+      return;
+    }
+    container.scrollLeft += stepPx;
+    st.raf = requestAnimationFrame(step);
+  };
+  st.raf = requestAnimationFrame(step);
+}
+
+function openProjectExpand(rowEl, taskIdx) {
+  if (expandingRow === rowEl) { closeProjectExpand(); return; } // 再点当前展开行 = 关闭
+  closeProjectExpand();
+  closeActivePicker(); // 展开态操作栏隐藏,先收起可能展开的时间/日期选择器
+
+  // 展开态隐藏任务文字后行高会塌缩到徽标高度:先锁定当前行高,收起时同步释放
+  const keepHeight = rowEl.offsetHeight;
+  expandingRow = rowEl;
+  rowEl.classList.add('project-expanding');
+  if (keepHeight > 0) rowEl.style.minHeight = keepHeight + 'px';
+
+  // 填充项目胶囊列表(白名单 ∪ 历史任务项目,去重,按出现顺序)
+  const container = rowEl.querySelector('.project-expand');
+  container.innerHTML = '';
+  container.scrollLeft = 0;
+  expandScrollState.delete(container); // 重置滚动动画目标,避免旧目标残留
+  const current = state.tasks[taskIdx].project || null;
+
+  const seen = new Set();
+  const options = [];
+  for (const name of state.projectNames) {
+    if (name && !seen.has(name)) { seen.add(name); options.push(name); }
+  }
+  for (const t of state.tasks) {
+    if (t.project && !seen.has(t.project)) { seen.add(t.project); options.push(t.project); }
+  }
+
+  const appendOpt = (name, cls, label) => {
+    const opt = document.createElement('span');
+    opt.className = 'pe-opt' + (cls ? ' ' + cls : '');
+    opt.textContent = label;
+    opt.style.setProperty('--i', container.children.length); // 逐个弹出延迟
+    opt.addEventListener('click', () => {
+      state.tasks[taskIdx].project = name;
+      saveTasks();
+      closeProjectExpand();
+      renderTasks();
+    });
+    container.appendChild(opt);
+  };
+
+  options.forEach(name => {
+    if (name === current) return; // 已选项目从待选列表移除(当前归属由行内徽标展示)
+    appendOpt(name, '', name);
+  });
+
+  // 「无项目」清除归属:末尾,✕ 显示
+  const none = document.createElement('span');
+  none.className = 'pe-opt none' + (current === null ? ' active' : '');
+  none.textContent = '✕';
+  none.title = '清除项目归属';
+  none.style.setProperty('--i', container.children.length);
+  none.addEventListener('click', () => {
+    if (current !== null) {
+      state.tasks[taskIdx].project = null;
+      saveTasks();
+    }
+    closeProjectExpand();
+    renderTasks();
+  });
+  container.appendChild(none);
+
+  // 滚轮横向滚动已在容器构造时绑定;填充完成后更新边缘渐隐
+  updateExpandMask(container);
+
+  // 点击行外或行内非胶囊区域关闭(徽标/「+」除外,它们有自己的 toggle 逻辑)
+  setTimeout(() => {
+    const closeX = (e) => {
+      if (!e.target.closest('.pe-opt, .project-badge, .project-placeholder')) {
+        if (expandingRow === rowEl) closeProjectExpand();
+        document.removeEventListener('click', closeX, true);
+      }
+    };
+    document.addEventListener('click', closeX, true);
+  }, 0);
+}
+
 function hasContent() {
   return textInput.value.trim().length > 0 || state.images.length > 0;
 }
@@ -1424,9 +1623,23 @@ function renderProjectTags() {
     tag.querySelector('button').addEventListener('click', () => {
       state.projectNames = state.projectNames.filter(n => n !== name);
       renderProjectTags();
+      persistProjectNames();
     });
     list.appendChild(tag);
   });
+}
+
+// 项目白名单变更即持久化:录入后不点「保存设置」也生效,重启不丢
+async function persistProjectNames() {
+  if (window.electronAPI) {
+    const cfg = await window.electronAPI.getConfig();
+    cfg.projectNames = [...state.projectNames];
+    await window.electronAPI.saveConfig(cfg);
+  } else {
+    const cfg = JSON.parse(localStorage.getItem('sticky_config') || '{}');
+    cfg.projectNames = [...state.projectNames];
+    localStorage.setItem('sticky_config', JSON.stringify(cfg));
+  }
 }
 
 function addProjectTag(name) {
@@ -1435,6 +1648,7 @@ function addProjectTag(name) {
   state.projectNames.push(trimmed);
   renderProjectTags();
   $('#project-tags-text').value = '';
+  persistProjectNames();
 }
 
 function escapeHtml(s) {
@@ -1568,6 +1782,15 @@ async function loadShortcutsFromConfig() {
     if (cfg.pagesEnabled) {
       state.pagesEnabled = { ...state.pagesEnabled, ...cfg.pagesEnabled };
     }
+    // 项目白名单:启动即加载,弹出胶囊选项 = 白名单 ∪ 任务历史项目
+    if (cfg.projectNames) {
+      state.projectNames = [...cfg.projectNames];
+    }
+    // 页签栏显示开关(默认 true,旧配置无此字段视为显示)
+    if (cfg.showSheetBar !== undefined) {
+      state.showSheetBar = !!cfg.showSheetBar;
+      applySheetBarVisibility();
+    }
     app.classList.toggle('win-fixed', cfg.winFixed !== false);
   }
 }
@@ -1613,6 +1836,7 @@ async function openSettings() {
       $('#settings-autostart').checked = await window.electronAPI.getLoginSettings();
     }
     $('#settings-winfixed').checked = cfg.winFixed !== false;
+    $('#settings-sheetbar').checked = cfg.showSheetBar !== false;
     $('#settings-tasks-page').checked = cfg.pagesEnabled?.tasks !== false;
     $('#settings-tools-page').checked = cfg.pagesEnabled?.tools !== false;
     const blurHide = cfg.blurHide || { tasks: true, notepad: true, tools: true };
@@ -1667,6 +1891,7 @@ async function confirmSettings() {
 
   collectShortcutsFromInputs();
   const winFixed = $('#settings-winfixed').checked;
+  const showSheetBar = $('#settings-sheetbar').checked;
   const tasksEnabled = $('#settings-tasks-page').checked;
   const toolsEnabled = $('#settings-tools-page').checked;
   const pagesEnabled = { tasks: tasksEnabled, tools: toolsEnabled };
@@ -1675,7 +1900,7 @@ async function confirmSettings() {
     notepad: $('#settings-blurhide-notepad').checked,
     tools: $('#settings-blurhide-tools').checked,
   };
-  const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, pagesEnabled, blurHide };
+  const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, showSheetBar, pagesEnabled, blurHide };
 
   if (window.electronAPI) {
     await window.electronAPI.saveConfig(cfg);
@@ -1691,6 +1916,9 @@ async function confirmSettings() {
   state.pagesEnabled = pagesEnabled;
   updateTasksPageVisibility();
   updateToolsPageVisibility();
+  // 页签栏显示开关:整行隐藏;关闭时若停在项目页签,强制回任务汇总(否则无入口切回)
+  state.showSheetBar = showSheetBar;
+  applySheetBarVisibility();
   if (!tasksEnabled && tasksWasEnabled && state.currentPage === 'main') {
     switchToNotepad();
   }

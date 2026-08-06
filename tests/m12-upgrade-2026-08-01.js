@@ -185,11 +185,11 @@ app.whenReady().then(async () => {
   assert(toggled.id === 't2' && toggled.completed === true, 'S5 项目页签内勾选操作索引正确(t2 被勾选)');
   await r(`state.tasks.find(t => t.id === 't2').completed = false; renderTasks();`); // 还原
 
-  // 删除操作索引
+  // 删除操作索引(8-05 起删除改为右键长按,直接调 deleteTask 验证索引)
   const afterDel = await r(`
     (() => {
       const row = document.querySelectorAll('.task-item')[0]; // 排序后第1个 = t1
-      row.querySelector('.task-delete').click();
+      deleteTask(+row.dataset.idx);
       return JSON.stringify({ deleted: !state.tasks.some(t => t.id === 't1'), remaining: state.tasks.length });
     })()
   `);
@@ -481,19 +481,24 @@ app.whenReady().then(async () => {
   assert(cf.closed, 'N7 Esc 关闭搜索');
 
   // N15 单击笔记页底部搜索区域直接进入搜索模式(同 Ctrl+F);按钮不触发;已打开时不重复
+  // 注意:footer 的 click 处理是坐标敏感的(e.clientX/Y 需落在搜索框 rect 内),模拟事件必须传真实坐标
   const footClick = await r(`
     (() => {
       closeNoteSearch();
       const footer = document.querySelector('.page-notepad .notepad-footer');
       const bar = document.querySelector('#note-search-bar');
-      footer.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      // 取搜索框 rect 中心作为点击坐标
+      const rect = noteSearchInput.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      footer.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: cx, clientY: cy }));
       const opened = !bar.classList.contains('hidden') && document.activeElement === noteSearchInput;
       // 打开后再点 footer 不关闭(非 toggle)
-      footer.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      footer.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: cx, clientY: cy }));
       const stillOpen = !bar.classList.contains('hidden');
       // 点 → 按钮不触发搜索栏
       closeNoteSearch();
-      document.querySelector('#btn-notepad-forward').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      document.querySelector('#btn-notepad-forward').dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: cx, clientY: cy }));
       const btnNoOpen = bar.classList.contains('hidden');
       closeNoteSearch();
       return JSON.stringify({ opened, stillOpen, btnNoOpen });

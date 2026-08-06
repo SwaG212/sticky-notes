@@ -168,12 +168,20 @@ body {
 .task-text {
   position: relative; /* 支撑右键长按删除的进度条/粒子定位 */
   flex: 1;
+  display: flex; /* 徽标独占左列:徽标垂直居中于整块文字,换行文字从徽标右侧起排 */
+  align-items: center;
   /* 右侧留出常驻日期胶囊的空间,避免文字延伸到胶囊下方 */
   margin-right: 24px;
   word-break: break-word;
   line-height: 1.5;
   cursor: default;
   user-select: text;
+}
+
+/* 任务文字内容:flex 占满徽标右侧剩余宽度,min-width:0 允许换行 */
+.task-text-content {
+  flex: 1;
+  min-width: 0;
 }
 
 /* 右键长按删除:文字中部细线进度条,由浅到深 */
@@ -228,11 +236,8 @@ body {
   text-decoration: line-through;
   color: var(--text-done);
 }
-.task-text.due-overdue { color: var(--danger); }
-.task-text.due-today { color: #4a90d9; }
-.task-text.due-tomorrow { color: #e67e22; }
 
-/* 项目徽标 */
+/* 项目徽标(可点击:单击弹项目面板) */
 .project-badge {
   display: inline-block;
   background: #e8ecfa;
@@ -242,9 +247,35 @@ body {
   padding: 1px 6px;
   border-radius: 3px;
   margin-right: 5px;
-  vertical-align: middle;
+  flex-shrink: 0; /* flex 布局下不压缩,垂直居中由父级 align-items 保证 */
   white-space: nowrap;
+  cursor: pointer;
 }
+.project-badge:hover { background: #d6e0f7; }
+.task-item.completed .project-badge {
+  cursor: default;
+  pointer-events: none;
+}
+
+/* 无项目任务的补项目入口:徽标位常驻虚位胶囊 */
+.project-placeholder {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--text-dim);
+  border: 1px dashed var(--border);
+  border-radius: 3px;
+  padding: 0 5px;
+  margin-right: 5px;
+  flex-shrink: 0; /* 与徽标一致:flex 布局下不压缩 */
+  cursor: pointer;
+  opacity: 0.7;
+  white-space: nowrap;
+  /* 左右宽度与两字项目徽标(如「国寿」)一致,内容居中 */
+  width: 34px;
+  box-sizing: border-box;
+  text-align: center;
+}
+.project-placeholder:hover { opacity: 1; color: var(--accent); border-color: var(--accent); }
 
 /* 定时提醒时间 */
 /* 悬停操作栏：绝对定位在行右侧;默认隐藏,加 .visible 时从右侧滑入+渐显 */
@@ -538,6 +569,70 @@ body {
 }
 .dp-action-btn:hover { background: var(--bg-secondary); color: var(--text); }
 .dp-action-btn.clear-btn:hover { color: var(--danger); }
+
+/* 项目行内展开:点击徽标/「+」后,从文字位向右逐个弹出项目胶囊 */
+.project-expand {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.project-expand::-webkit-scrollbar { display: none; }
+.task-item.project-expanding .project-expand {
+  display: flex;
+}
+/* 逐个弹出:每个胶囊按 --i 依次延迟出现 */
+.pe-opt {
+  padding: 0 5px; /* 1px 描边与徽标 1px 内边距互补,总尺寸与徽标一致 */
+  border: 1px solid rgba(91, 91, 224, 0.2); /* accent 20% 淡蓝描边,胶囊轮廓清晰 */
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5; /* 与徽标继承的行高一致,总高度对齐 */
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  background: rgba(232, 236, 250, 0.45); /* 徽标色的浅色版,便于与已选区分 */
+  color: var(--accent);
+  animation: pe-in 0.08s ease-out backwards;
+  animation-delay: calc(var(--i) * 0.02s);
+}
+/* 悬停时颜色与徽标一致(实色) */
+.pe-opt:hover { background: #e8ecfa; }
+/* 当前已选项目:徽标同款实色 */
+.pe-opt.active { background: #e8ecfa; }
+/* 无项目(✕):圆角字号与其他一致,悬停变红提示清除 */
+.pe-opt.none { color: var(--text-dim); }
+.pe-opt.none:hover { color: var(--danger); background: #fdeaea; }
+@keyframes pe-in {
+  from { transform: translateX(-8px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+/* 回收:反向逐个消失(与出现相反) */
+.pe-opt.pe-out {
+  animation: pe-out 0.06s ease-in forwards;
+  animation-delay: calc(var(--i) * 0.02s);
+}
+@keyframes pe-out {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(-8px); opacity: 0; }
+}
+/* 展开态:隐藏任务文字/日期胶囊/操作栏,勾选框与徽标保留 */
+.task-item.project-expanding .task-text-content,
+.task-item.project-expanding .hover-bar,
+.task-item.project-expanding .task-date-chip,
+.task-item.project-expanding .hotzone-hint {
+  display: none;
+}
+/* 展开态:文字收缩为徽标宽度并去掉 24px 让位,胶囊条紧贴徽标右侧弹出 */
+.task-item.project-expanding .task-text {
+  flex: 0 0 auto;
+  margin-right: 0;
+}
 
 /* 编辑态输入框 */
 .task-edit-input {
@@ -1047,6 +1142,8 @@ body {
 .page-row { padding: 7px 0; }
 .page-row-head + .page-row,
 .page-row + .page-row { border-top: 1px solid var(--border); }
+/* 父行与其缩进子项之间不画分隔线(由 L 型连接线取代) */
+.page-row + .page-row-sub { border-top: none; }
 .page-row-head span {
   font-size: 11px;
   color: var(--text-dim);
@@ -1076,6 +1173,20 @@ body {
   cursor: not-allowed;
 }
 .page-row .checkbox-label { margin: 0; }
+/* 页面从属子项(如项目页签栏 ∈ 任务管理页):缩进 + L 型连接线表示层级 */
+.page-row-sub { padding-left: 48px; position: relative; }
+/* L 型连接线:竖线从父行文字中心垂到子行中心,横线从连接点指向子项文字 */
+.page-row-sub::before {
+  content: '';
+  position: absolute;
+  left: 30px; /* 与文字同步右移 30px */
+  top: -50%; /* 父行与子行等高,父行底 = 子行顶,-50% 即父行中心 */
+  height: 100%; /* 垂到子行中心 */
+  width: 18px; /* 横线到缩进右缘(子项文字起始位) */
+  border-left: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  pointer-events: none;
+}
 
 /* 快捷键行 */
 .shortcut-row {
