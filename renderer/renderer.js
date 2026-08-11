@@ -15,6 +15,14 @@ const state = {
   projectNames: [],
   pagesEnabled: { tasks: true, tools: true },
   showSheetBar: true, // 项目页签栏显示开关(设置页,默认显示)
+  showProjectBadge: true, // 任务行项目胶囊显示开关(设置页,默认显示)
+  showDailyReport: true, // 任务页日报按钮显示开关(设置页,默认显示)
+  showCalendar: true, // 任务页日历按钮显示开关(设置页,默认显示)
+  calendarOpen: false, // 日历视图是否打开
+  calendarMonth: { y: 0, m: 0 }, // 日历当前显示的年月
+  calendarSelected: null, // 点击选中的日期 YYYY-MM-DD(organize 应用到新任务)
+  calendarDayDate: null, // 当日任务视图当前日期 YYYY-MM-DD
+  calendarWeek: null, // 周条当前显示的周(基准日,可独立于选中日期切周)
   toolsEnabled: { translate: true },
   hoveredImage: null,
   activeSheet: 'all',
@@ -47,6 +55,21 @@ const noteListOverlay = $('#note-list-overlay');
 const noteListItems = $('#note-list-items');
 const btnDailyReport = $('#btn-daily-report');
 const dailyReportHint = $('#daily-report-hint');
+const dailyReportGroup = $('.daily-report-group');
+const inputActions = $('#input-actions');
+const taskArea = $('#task-area');
+const btnCalendar = $('#btn-calendar');
+const calendarView = $('#calendar-view');
+const calGrid = $('#cal-grid');
+const calWeekline = $('#cal-weekline');
+const calWeekDays = $('#cal-week-days');
+const calWeekPrevBtn = $('#cal-week-prev');
+const calWeekNextBtn = $('#cal-week-next');
+const calMonthlabel = $('#cal-monthlabel');
+const calPrevBtn = $('#cal-prev');
+const calNextBtn = $('#cal-next');
+const calDayTasks = $('#cal-day-tasks');
+const recogTab = $('#recog-tab');
 const noteSearchBar = $('#note-search-bar');
 const noteSearchInput = $('#note-search-input');
 const noteSearchStatus = $('#note-search-status');
@@ -64,6 +87,7 @@ async function init() {
   updateOrganizeButton();
   updateTasksPageVisibility();
   updateToolsPageVisibility();
+  applyCalendarVisibility(); // 日历按钮开关(旧配置无字段时默认显示)
 
   textInput.addEventListener('input', updateOrganizeButton);
   textInput.addEventListener('paste', handlePaste);
@@ -116,6 +140,22 @@ async function init() {
   btnNoteList.addEventListener('click', toggleNoteList);
   btnNoteNew.addEventListener('click', createNote);
   btnDailyReport.addEventListener('click', generateDailyReport);
+  // 日历
+  btnCalendar.addEventListener('click', toggleCalendar);
+  calPrevBtn.addEventListener('click', () => shiftCalendarMonth(-1));
+  calNextBtn.addEventListener('click', () => shiftCalendarMonth(1));
+  // 点击年月:当日视图→返回全屏日历;全屏日历→返回任务列表(同 Esc)
+  calMonthlabel.addEventListener('click', () => {
+    if (state.calendarDayDate) exitDayMode();
+    else closeCalendar();
+  });
+  calWeekPrevBtn.addEventListener('click', () => shiftWeek(-1)); // 周条上一周
+  calWeekNextBtn.addEventListener('click', () => shiftWeek(1)); // 周条下一周
+  calGrid.addEventListener('wheel', onCalGridWheel, { passive: false }); // 日历滚轮切月
+  recogTab.addEventListener('click', () => {
+    collapseTextInput(false);
+    textInput.focus();
+  });
   // 页签栏滚轮横向滚动(仅当有横向溢出时拦截,否则放行给任务列表)
   sheetBar.addEventListener('wheel', (e) => {
     const scroller = sheetBar.querySelector('.sheet-scroll');
@@ -324,9 +364,9 @@ async function saveTasks() {
 }
 
 // ========== 任务渲染 ==========
-function snapshotPositions() {
+function snapshotPositions(container = taskItems) {
   const map = {};
-  taskItems.querySelectorAll('.task-item').forEach(el => {
+  container.querySelectorAll('.task-item').forEach(el => {
     map[el.dataset.id] = el.getBoundingClientRect().top;
   });
   return map;
@@ -340,6 +380,16 @@ function applySheetBarVisibility() {
     state.activeSheet = 'all';
     renderTasks();
   }
+}
+
+// 日报按钮显示开关:隐藏日报按钮组;space-between 单元素会左对齐,切 flex-end 保证重排/右滑按钮仍在最右侧
+function applyDailyReportVisibility() {
+  inputActions.classList.toggle('no-daily-report', !state.showDailyReport);
+}
+
+// 日历按钮显示开关
+function applyCalendarVisibility() {
+  btnCalendar.style.display = state.showCalendar ? '' : 'none';
 }
 
 function renderSheetBar() {
@@ -454,162 +504,7 @@ function renderTasks(shouldAnimate = false) {
 
   visible.forEach((task) => {
     const idx = state.tasks.indexOf(task);
-    const row = document.createElement('div');
-    row.className = 'task-item';
-    if (task.completed) row.classList.add('completed');
-    row.dataset.id = task.id;
-    row.dataset.idx = idx; // 事件回调从 dataset 读索引,拖拽重排后无需重建 DOM
-
-    const cb = document.createElement('div');
-    cb.className = `task-checkbox${task.completed ? ' checked' : ''}`;
-    cb.addEventListener('click', (e) => { e.stopPropagation(); toggleTask(+row.dataset.idx); });
-
-    const text = document.createElement('span');
-    text.className = `task-text${task.completed ? ' done' : ''}`;
-
-    // 项目徽标:单击行内展开项目选择(仅未完成任务;已完成任务徽标不可点)
-    if (task.project) {
-      const badge = document.createElement('span');
-      badge.className = 'project-badge';
-      badge.textContent = task.project;
-      if (!task.completed) {
-        badge.addEventListener('click', (e) => {
-          e.stopPropagation();
-          openProjectExpand(row, +row.dataset.idx);
-        });
-      }
-      text.appendChild(badge);
-    } else if (!task.completed) {
-      // 无项目任务:徽标位常驻虚位胶囊,单击行内展开项目选择
-      const ph = document.createElement('span');
-      ph.className = 'project-placeholder';
-      ph.textContent = '+';
-      ph.addEventListener('click', (e) => {
-        e.stopPropagation();
-        openProjectExpand(row, +row.dataset.idx);
-      });
-      text.appendChild(ph);
-    }
-    // 任务文字独立包装:展开态隐藏文字但保留徽标
-    const textContent = document.createElement('span');
-    textContent.className = 'task-text-content';
-    textContent.appendChild(document.createTextNode(task.task));
-    text.appendChild(textContent);
-
-    // 到期日颜色反馈（仅未完成任务）
-    let dueClass = null;
-    if (!task.completed && task.dueDate) {
-      const today = getToday();
-      const tomorrow = getTomorrowStr();
-      if (task.dueDate < today) dueClass = 'due-overdue';
-      else if (task.dueDate === today) dueClass = 'due-today';
-      else if (task.dueDate === tomorrow) dueClass = 'due-tomorrow';
-    }
-
-    textContent.title = task.task.length > 50 ? task.task : '';
-
-    const alarm = document.createElement('span');
-    alarm.className = 'task-alarm';
-    alarm.textContent = task.alarmTime || '--:--';
-    alarm.addEventListener('click', (e) => {
-      e.stopPropagation();
-      openTimePicker(alarm, +row.dataset.idx);
-    });
-
-    // 到期日胶囊
-    const ddate = document.createElement('span');
-    ddate.className = 'task-duedate' + (task.dueDate ? ' has-date' : '');
-    if (task.dueDate) {
-      ddate.textContent = task.dueDate.slice(5);
-    } else {
-      ddate.textContent = '📅';
-    }
-    ddate.addEventListener('click', (e) => {
-      e.stopPropagation();
-      openDatePicker(ddate, +row.dataset.idx);
-    });
-
-    // 常驻日期胶囊:仅展示,悬停时 CSS 隐藏;修改日期仍走 hover 栏 📅
-    let dateChip = null;
-    if (task.dueDate) {
-      dateChip = document.createElement('span');
-      dateChip.className = 'task-date-chip';
-      dateChip.textContent = task.dueDate.slice(5);
-      if (dueClass) dateChip.classList.add(dueClass);
-    }
-
-    const hoverBar = document.createElement('div');
-    hoverBar.className = 'hover-bar';
-    hoverBar.append(alarm, ddate);
-
-    let barTimer = null;
-    row.addEventListener('mouseenter', () => {
-      // 选择器展开期间:其他行不显示操作栏(选择器行已钉住,不受影响)
-      if (activePickerRow && row !== activePickerRow) return;
-      row.style.background = '#f3f3f8'; // 整行悬停背景;操作栏由右缘热区 mousemove 触发
-    });
-    row.addEventListener('mousemove', (e) => {
-      if (activePickerRow) return; // 选择器展开:选择器行钉住显示,其他行不显示
-      if (delHold) return; // 长按删除进行中,不弹操作栏
-      if (expandingRow === row) return; // 项目展开态:右缘热区不生效
-      // 右缘 15px 热区触发显示;保持范围:行右缘 115px 内(覆盖操作栏按钮),移出即隐藏
-      const rect = row.getBoundingClientRect();
-      if (e.clientX >= rect.right - 15) {
-        hoverBar.classList.add('visible');
-      } else if (e.clientX < rect.right - 115) {
-        hoverBar.classList.remove('visible');
-      }
-    });
-    row.addEventListener('mouseleave', () => {
-      if (row === activePickerRow) return; // 选择器行固定显示,离开不收起
-      clearTimeout(barTimer);
-      hoverBar.classList.remove('visible');
-      row.style.background = '';
-    });
-
-    // 右键长按删除:按住右键 → 红色进度条 1 秒填满 → 粒子消散 → 删除(仅未完成任务)
-    row.addEventListener('mousedown', (e) => {
-      if (e.button !== 2) return;
-      if (e.target.closest('.project-badge, .project-placeholder, .project-expanding')) return; // 项目控件/展开态上的右键不触发删除
-      const rIdx = +row.dataset.idx;
-      if (state.tasks[rIdx].completed) return; // 已完成任务不可删除
-      const taskId = state.tasks[rIdx].id;
-      startDeleteHold(e, row, {
-        textEl: text,
-        text: state.tasks[rIdx].task,
-        // 粒子散尽后按 id 删除,避免动画期间列表变化导致索引错位
-        onComplete: () => {
-          const i = state.tasks.findIndex(t => t.id === taskId);
-          if (i !== -1) deleteTask(i);
-        }
-      });
-    });
-    row.addEventListener('mouseup', cancelDeleteHold);
-    row.addEventListener('mouseleave', cancelDeleteHold);
-    row.addEventListener('contextmenu', (e) => {
-      if (!e.target.closest('.task-edit-input')) e.preventDefault();
-    });
-
-    row.append(cb, text, hoverBar);
-    // 注意:append 不能传 null(WebIDL 会把 null 转成 "null" 文本),空值用 appendChild 跳过
-    if (dateChip) row.appendChild(dateChip);
-    // 热区提示条:悬停行时右侧灰色竖条提示热区位置;操作栏浮现时由 CSS 淡出
-    const zoneHint = document.createElement('span');
-    zoneHint.className = 'hotzone-hint';
-    row.appendChild(zoneHint);
-    // 行内项目展开容器:默认隐藏,点击徽标/「+」时填充项目胶囊并显示
-    const projectExpand = document.createElement('div');
-    projectExpand.className = 'project-expand';
-    row.appendChild(projectExpand);
-    // 滚轮横向滚动(仅当内容溢出时拦截垂直滚动):增量累积到目标,平滑动画逼近
-    projectExpand.addEventListener('wheel', (e) => {
-      if (projectExpand.scrollWidth > projectExpand.clientWidth) {
-        e.preventDefault();
-        startExpandScroll(projectExpand, e.deltaY);
-      }
-    }, { passive: false });
-    // 边缘渐隐:滚动位置变化时更新左右渐隐遮罩
-    projectExpand.addEventListener('scroll', () => updateExpandMask(projectExpand));
+    const row = buildTaskRow(task, idx, {});
 
     // 整行拖拽排序:仅未完成任务,且仅在汇总页可用(项目页签按日期排序,禁拖)
     if (!task.completed && state.activeSheet === 'all') {
@@ -635,19 +530,6 @@ function renderTasks(shouldAnimate = false) {
       });
     }
 
-    let clickTimer = null;
-    row.addEventListener('click', (e) => {
-      if (expandingRow === row) return; // 项目展开态不进入双击编辑
-      if (e.target === alarm || e.target === ddate) return;
-      if (clickTimer) {
-        clearTimeout(clickTimer);
-        clickTimer = null;
-        enterEditMode(row, +row.dataset.idx);
-      } else {
-        clickTimer = setTimeout(() => { clickTimer = null; }, 400);
-      }
-    });
-
     taskItems.appendChild(row);
   });
 
@@ -669,6 +551,194 @@ function renderTasks(shouldAnimate = false) {
 
   // 恢复滚动位置(列表变短时浏览器自动收紧到最大可滚范围)
   taskList.scrollTop = prevScrollTop;
+  // 日历开着时刷新月历圆点(勾选/增删任务后计数同步)
+  if (state.calendarOpen) renderCalendar();
+  // 当日任务视图开着时同步刷新(行内项目切换/编辑/删除后保持一致),勾选重排时同步 FLIP 滑动
+  if (state.calendarDayDate) renderDayTasks(shouldAnimate);
+}
+
+// ========== 任务行构造(主列表与当日任务视图共用) ==========
+// opts.noHoverBar: 当日任务视图用,不渲染悬停操作栏(alarm/日期修改)与热区提示
+function buildTaskRow(task, idx, opts = {}) {
+  const row = document.createElement('div');
+  row.className = 'task-item';
+  if (task.completed) row.classList.add('completed');
+  row.dataset.id = task.id;
+  row.dataset.idx = idx; // 事件回调从 dataset 读索引,拖拽重排后无需重建 DOM
+
+  const cb = document.createElement('div');
+  cb.className = `task-checkbox${task.completed ? ' checked' : ''}`;
+  cb.addEventListener('click', (e) => { e.stopPropagation(); toggleTask(+row.dataset.idx); });
+
+  const text = document.createElement('span');
+  text.className = `task-text${task.completed ? ' done' : ''}`;
+
+  // 项目徽标:单击行内展开项目选择(仅未完成任务;已完成任务徽标不可点);项目胶囊开关关闭时不渲染
+  if (state.showProjectBadge && task.project) {
+    const badge = document.createElement('span');
+    badge.className = 'project-badge';
+    badge.textContent = task.project;
+    if (!task.completed) {
+      badge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openProjectExpand(row, +row.dataset.idx);
+      });
+    }
+    text.appendChild(badge);
+  } else if (state.showProjectBadge && !task.completed) {
+    // 无项目任务:徽标位常驻虚位胶囊,单击行内展开项目选择
+    const ph = document.createElement('span');
+    ph.className = 'project-placeholder';
+    ph.textContent = '+';
+    ph.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openProjectExpand(row, +row.dataset.idx);
+    });
+    text.appendChild(ph);
+  }
+  // 任务文字独立包装:展开态隐藏文字但保留徽标
+  const textContent = document.createElement('span');
+  textContent.className = 'task-text-content';
+  textContent.appendChild(document.createTextNode(task.task));
+  text.appendChild(textContent);
+
+  // 到期日颜色反馈（仅未完成任务）
+  let dueClass = null;
+  if (!task.completed && task.dueDate) {
+    const today = getToday();
+    const tomorrow = getTomorrowStr();
+    if (task.dueDate < today) dueClass = 'due-overdue';
+    else if (task.dueDate === today) dueClass = 'due-today';
+    else if (task.dueDate === tomorrow) dueClass = 'due-tomorrow';
+  }
+
+  textContent.title = task.task.length > 50 ? task.task : '';
+
+  // 悬停操作栏(时间/日期修改):仅主列表;当日视图不需要热区
+  let hoverBar = null;
+  if (!opts.noHoverBar) {
+    const alarm = document.createElement('span');
+    alarm.className = 'task-alarm';
+    alarm.textContent = task.alarmTime || '--:--';
+    alarm.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openTimePicker(alarm, +row.dataset.idx);
+    });
+
+    // 到期日胶囊
+    const ddate = document.createElement('span');
+    ddate.className = 'task-duedate' + (task.dueDate ? ' has-date' : '');
+    if (task.dueDate) {
+      ddate.textContent = task.dueDate.slice(5);
+    } else {
+      ddate.textContent = '📅';
+    }
+    ddate.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openDatePicker(ddate, +row.dataset.idx);
+    });
+
+    hoverBar = document.createElement('div');
+    hoverBar.className = 'hover-bar';
+    hoverBar.append(alarm, ddate);
+  }
+
+  // 常驻日期胶囊:仅展示,悬停时 CSS 隐藏;修改日期仍走 hover 栏 📅
+  let dateChip = null;
+  if (task.dueDate) {
+    dateChip = document.createElement('span');
+    dateChip.className = 'task-date-chip';
+    dateChip.textContent = task.dueDate.slice(5);
+    if (dueClass) dateChip.classList.add(dueClass);
+  }
+
+  let barTimer = null;
+  row.addEventListener('mouseenter', () => {
+    // 选择器展开期间:其他行不显示操作栏(选择器行已钉住,不受影响)
+    if (activePickerRow && row !== activePickerRow) return;
+    row.style.background = '#f3f3f8'; // 整行悬停背景;操作栏由右缘热区 mousemove 触发
+  });
+  row.addEventListener('mousemove', (e) => {
+    if (!hoverBar) return; // 当日视图无操作栏
+    if (activePickerRow) return; // 选择器展开:选择器行钉住显示,其他行不显示
+    if (delHold) return; // 长按删除进行中,不弹操作栏
+    if (expandingRow === row) return; // 项目展开态:右缘热区不生效
+    // 右缘 15px 热区触发显示;保持范围:行右缘 115px 内(覆盖操作栏按钮),移出即隐藏
+    const rect = row.getBoundingClientRect();
+    if (e.clientX >= rect.right - 15) {
+      hoverBar.classList.add('visible');
+    } else if (e.clientX < rect.right - 115) {
+      hoverBar.classList.remove('visible');
+    }
+  });
+  row.addEventListener('mouseleave', () => {
+    if (row === activePickerRow) return; // 选择器行固定显示,离开不收起
+    clearTimeout(barTimer);
+    if (hoverBar) hoverBar.classList.remove('visible');
+    row.style.background = '';
+  });
+
+  // 右键长按删除:按住右键 → 红色进度条 1 秒填满 → 粒子消散 → 删除(仅未完成任务)
+  row.addEventListener('mousedown', (e) => {
+    if (e.button !== 2) return;
+    if (e.target.closest('.project-badge, .project-placeholder, .project-expanding')) return; // 项目控件/展开态上的右键不触发删除
+    const rIdx = +row.dataset.idx;
+    if (state.tasks[rIdx].completed) return; // 已完成任务不可删除
+    const taskId = state.tasks[rIdx].id;
+    startDeleteHold(e, row, {
+      textEl: text,
+      text: state.tasks[rIdx].task,
+      // 粒子散尽后按 id 删除,避免动画期间列表变化导致索引错位
+      onComplete: () => {
+        const i = state.tasks.findIndex(t => t.id === taskId);
+        if (i !== -1) deleteTask(i);
+      }
+    });
+  });
+  row.addEventListener('mouseup', cancelDeleteHold);
+  row.addEventListener('mouseleave', cancelDeleteHold);
+  row.addEventListener('contextmenu', (e) => {
+    if (!e.target.closest('.task-edit-input')) e.preventDefault();
+  });
+
+  if (hoverBar) row.append(cb, text, hoverBar);
+  else row.append(cb, text);
+  // 注意:append 不能传 null(WebIDL 会把 null 转成 "null" 文本),空值用 appendChild 跳过
+  if (dateChip) row.appendChild(dateChip);
+  // 热区提示条:悬停行时右侧灰色竖条提示热区位置;操作栏浮现时由 CSS 淡出
+  if (!opts.noHoverBar) {
+    const zoneHint = document.createElement('span');
+    zoneHint.className = 'hotzone-hint';
+    row.appendChild(zoneHint);
+  }
+  // 行内项目展开容器:默认隐藏,点击徽标/「+」时填充项目胶囊并显示
+  const projectExpand = document.createElement('div');
+  projectExpand.className = 'project-expand';
+  row.appendChild(projectExpand);
+  // 滚轮横向滚动(仅当内容溢出时拦截垂直滚动):增量累积到目标,平滑动画逼近
+  projectExpand.addEventListener('wheel', (e) => {
+    if (projectExpand.scrollWidth > projectExpand.clientWidth) {
+      e.preventDefault();
+      startExpandScroll(projectExpand, e.deltaY);
+    }
+  }, { passive: false });
+  // 边缘渐隐:滚动位置变化时更新左右渐隐遮罩
+  projectExpand.addEventListener('scroll', () => updateExpandMask(projectExpand));
+
+  let clickTimer = null;
+  row.addEventListener('click', (e) => {
+    if (expandingRow === row) return; // 项目展开态不进入双击编辑
+    if (hoverBar && (e.target === hoverBar.children[0] || e.target === hoverBar.children[1])) return;
+    if (clickTimer) {
+      clearTimeout(clickTimer);
+      clickTimer = null;
+      enterEditMode(row, +row.dataset.idx);
+    } else {
+      clickTimer = setTimeout(() => { clickTimer = null; }, 400);
+    }
+  });
+
+  return row;
 }
 
 // ========== 任务操作 ==========
@@ -818,7 +888,7 @@ function toggleTask(idx) {
   state.tasks[idx].completedAt = state.tasks[idx].completed ? new Date().toISOString() : null;
   sortTasks();
   saveTasks();
-  renderTasks(true);
+  renderTasks(true); // 末尾统一刷新月历圆点与当日任务视图
 }
 
 // ========== 右键长按删除:红色进度条 + 粒子消散 ==========
@@ -928,9 +998,12 @@ function spawnParticles(row, opts) {
   }
 }
 
-// Esc 全局取消长按删除 + 关闭项目展开态
+// Esc 全局取消长按删除 + 关闭项目展开态;日历开着优先退出日历
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { cancelDeleteHold(); closeProjectExpand(); }
+  if (e.key === 'Escape') {
+    if (state.calendarOpen) { closeCalendar(); return; }
+    cancelDeleteHold(); closeProjectExpand();
+  }
 });
 
 function deleteTask(idx) {
@@ -1544,17 +1617,20 @@ async function organize() {
       if (result.success && result.tasks.length > 0) {
         // LLM 返回的 task 不含项目名，在前面拼上
         if (project) result.tasks.forEach(t => { t.project = project; });
+        applyCalendarDate(result.tasks);
         addTasks(result.tasks);
       } else {
         // IPC 失败或无结果时 fallback，不丢失用户任务
         if (!result.success) console.warn(result.error);
         const tasks = fallbackOrganize(text, imgs, projectNames, project);
+        applyCalendarDate(tasks);
         if (tasks.length > 0) addTasks(tasks);
       }
     } else {
       // 浏览器调试模式：fallback 简单拆分
       await sleep(500);
       const tasks = fallbackOrganize(text, imgs, projectNames, project);
+      applyCalendarDate(tasks);
       if (tasks.length > 0) addTasks(tasks);
     }
   } catch (e) {
@@ -1659,6 +1735,16 @@ function escapeHtml(s) {
 // ========== Markdown ↔ HTML 转换 ==========
   // 图片数据缓存（用于复制到外部应用时替换 note-image:// 为 base64）
 const imageDataCache = new Map(); // relativePath → base64 data URL
+const MAX_IMAGE_CACHE = 30; // 容量上限,超出淘汰最旧条目(当前 DOM 图仍可用 data-b64 兜底)
+
+function cacheImageData(relativePath, dataUrl) {
+  if (imageDataCache.has(relativePath)) imageDataCache.delete(relativePath); // 刷新访问时间(移到末尾,真 LRU)
+  imageDataCache.set(relativePath, dataUrl);
+  if (imageDataCache.size > MAX_IMAGE_CACHE) {
+    const oldest = imageDataCache.keys().next().value;
+    if (oldest !== undefined) imageDataCache.delete(oldest);
+  }
+}
 
 function loadMarkdown(md) {
   if (!md) return '';
@@ -1668,7 +1754,7 @@ function loadMarkdown(md) {
     const parts = line.split(/(!\[[^\]]*\]\([^)]+\))/g);
     return '<div>' + parts.map(part => {
       const m = part.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-      if (m) return `<img src="note-image://${m[2]}" alt="${escapeHtml(m[1] || '')}">`;
+      if (m) return `<img src="note-image://${escapeHtml(m[2])}" alt="${escapeHtml(m[1] || '')}">`;
       return escapeHtml(part);
     }).join('') + '</div>';
   }).join('');
@@ -1765,7 +1851,7 @@ async function populateImageCache() {
       try {
         const dataUrl = await window.electronAPI.readNoteImage(relativePath);
         if (dataUrl) {
-          imageDataCache.set(relativePath, dataUrl);
+          cacheImageData(relativePath, dataUrl);
           img.setAttribute('data-b64', dataUrl);
         }
       } catch (e) { /* ignore */ }
@@ -1790,6 +1876,20 @@ async function loadShortcutsFromConfig() {
     if (cfg.showSheetBar !== undefined) {
       state.showSheetBar = !!cfg.showSheetBar;
       applySheetBarVisibility();
+    }
+    // 任务行项目胶囊显示开关(默认 true,旧配置无此字段视为显示)
+    if (cfg.showProjectBadge !== undefined) {
+      state.showProjectBadge = !!cfg.showProjectBadge;
+    }
+    // 任务页日报按钮显示开关(默认 true,旧配置无此字段视为显示)
+    if (cfg.showDailyReport !== undefined) {
+      state.showDailyReport = !!cfg.showDailyReport;
+      applyDailyReportVisibility();
+    }
+    // 任务页日历按钮显示开关(默认 true,旧配置无此字段视为显示)
+    if (cfg.showCalendar !== undefined) {
+      state.showCalendar = !!cfg.showCalendar;
+      applyCalendarVisibility();
     }
     app.classList.toggle('win-fixed', cfg.winFixed !== false);
   }
@@ -1837,6 +1937,9 @@ async function openSettings() {
     }
     $('#settings-winfixed').checked = cfg.winFixed !== false;
     $('#settings-sheetbar').checked = cfg.showSheetBar !== false;
+    $('#settings-projectcapsule').checked = cfg.showProjectBadge !== false;
+    $('#settings-dailyreport').checked = cfg.showDailyReport !== false;
+    $('#settings-calendar').checked = cfg.showCalendar !== false;
     $('#settings-tasks-page').checked = cfg.pagesEnabled?.tasks !== false;
     $('#settings-tools-page').checked = cfg.pagesEnabled?.tools !== false;
     const blurHide = cfg.blurHide || { tasks: true, notepad: true, tools: true };
@@ -1892,6 +1995,9 @@ async function confirmSettings() {
   collectShortcutsFromInputs();
   const winFixed = $('#settings-winfixed').checked;
   const showSheetBar = $('#settings-sheetbar').checked;
+  const showProjectBadge = $('#settings-projectcapsule').checked;
+  const showDailyReport = $('#settings-dailyreport').checked;
+  const showCalendar = $('#settings-calendar').checked;
   const tasksEnabled = $('#settings-tasks-page').checked;
   const toolsEnabled = $('#settings-tools-page').checked;
   const pagesEnabled = { tasks: tasksEnabled, tools: toolsEnabled };
@@ -1900,7 +2006,7 @@ async function confirmSettings() {
     notepad: $('#settings-blurhide-notepad').checked,
     tools: $('#settings-blurhide-tools').checked,
   };
-  const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, showSheetBar, pagesEnabled, blurHide };
+  const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, showSheetBar, showProjectBadge, showDailyReport, showCalendar, pagesEnabled, blurHide };
 
   if (window.electronAPI) {
     await window.electronAPI.saveConfig(cfg);
@@ -1919,6 +2025,15 @@ async function confirmSettings() {
   // 页签栏显示开关:整行隐藏;关闭时若停在项目页签,强制回任务汇总(否则无入口切回)
   state.showSheetBar = showSheetBar;
   applySheetBarVisibility();
+  // 任务行项目胶囊开关:关闭时徽标/「+」占位不渲染(改归属需重新打开开关)
+  state.showProjectBadge = showProjectBadge;
+  // 任务页日报按钮显示开关
+  state.showDailyReport = showDailyReport;
+  applyDailyReportVisibility();
+  // 任务页日历按钮显示开关
+  state.showCalendar = showCalendar;
+  applyCalendarVisibility();
+  renderTasks();
   if (!tasksEnabled && tasksWasEnabled && state.currentPage === 'main') {
     switchToNotepad();
   }
@@ -2075,6 +2190,359 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function showProcessing(show, text = '') {
   if (show) { processingText.textContent = text; processingOverlay.classList.remove('hidden'); }
   else { processingOverlay.classList.add('hidden'); }
+}
+
+// 日历选中日期:organize 生成的任务统一带该日期;提示使命完成恢复默认占位符
+function applyCalendarDate(tasks) {
+  if (!state.calendarSelected) return;
+  tasks.forEach(t => { t.dueDate = state.calendarSelected; });
+  textInput.placeholder = '记录想做的事...';
+}
+
+// ========== 日历 ==========
+// 纯函数:dateStr(YYYY-MM-DD) → 所在周 7 天(周日开头,与 openDatePicker 一致)
+function buildWeekDays(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const start = new Date(y, m - 1, d - new Date(y, m - 1, d).getDay());
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const dt = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    days.push(formatDateStr(dt.getFullYear(), dt.getMonth() + 1, dt.getDate()));
+  }
+  return days;
+}
+
+// 纯函数:月历网格(周日开头,前后补齐上月/下月格)
+function buildMonthGrid(y, m) {
+  const firstDow = new Date(y, m, 1).getDay();
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  const daysInPrev = new Date(y, m, 0).getDate();
+  const cells = [];
+  for (let i = firstDow - 1; i >= 0; i--) {
+    const d = daysInPrev - i;
+    const dt = new Date(y, m - 1, d);
+    cells.push({ date: formatDateStr(dt.getFullYear(), dt.getMonth() + 1, dt.getDate()), inMonth: false, day: d });
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    cells.push({ date: formatDateStr(y, m + 1, d), inMonth: true, day: d });
+  }
+  const remainder = cells.length % 7 === 0 ? 0 : 7 - (cells.length % 7);
+  for (let d = 1; d <= remainder; d++) {
+    const dt = new Date(y, m + 1, d);
+    cells.push({ date: formatDateStr(dt.getFullYear(), dt.getMonth() + 1, dt.getDate()), inMonth: false, day: d });
+  }
+  return cells;
+}
+
+// 纯函数:统计某日期下任务数(未完成/总数)与未完成任务的去重项目数(无项目任务计 1 类)
+function countTasksByDate(tasks, dateStr) {
+  let undone = 0, total = 0;
+  const projects = new Set();
+  for (const t of tasks) {
+    if (t.dueDate === dateStr) {
+      total++;
+      if (!t.completed) {
+        undone++;
+        projects.add(t.project || '(无项目)');
+      }
+    }
+  }
+  return { undone, total, projectCount: projects.size };
+}
+
+// direction: 1=下月(网格从右滑入), -1=上月(从左滑入), 0=无动画(首次打开/返回月历)
+function renderCalendar(direction = 0) {
+  const { y, m } = state.calendarMonth;
+  const today = getToday();
+  calMonthlabel.textContent = `${y}/${m + 1}`;
+
+  const weekdays = document.createElement('div');
+  weekdays.className = 'cal-weekdays';
+  ['日', '一', '二', '三', '四', '五', '六'].forEach(w => {
+    const el = document.createElement('div');
+    el.className = 'cal-wd';
+    el.textContent = w;
+    weekdays.appendChild(el);
+  });
+
+  const grid = document.createElement('div');
+  grid.className = 'cal-days';
+  buildMonthGrid(y, m).forEach(cell => {
+    const el = document.createElement('div');
+    let cls = 'cal-day';
+    if (!cell.inMonth) cls += ' other-month';
+    if (cell.date === today) cls += ' today';
+    if (cell.date === state.calendarSelected) cls += ' selected';
+    el.className = cls;
+    el.dataset.date = cell.date;
+    const num = document.createElement('span');
+    num.className = 'cal-day-num';
+    num.textContent = cell.day;
+    el.appendChild(num);
+    // 有未完成任务:底部圆点按去重项目数显示 1~3 个(绿黄红),title 显示详情
+    const { undone, total, projectCount } = countTasksByDate(state.tasks, cell.date);
+    if (undone > 0) {
+      const dotColors = ['cal-dot-green', 'cal-dot-yellow', 'cal-dot-red'];
+      const dots = document.createElement('span');
+      dots.className = 'cal-dots';
+      const n = Math.min(projectCount, 3); // 最多 3 个点
+      for (let i = 0; i < n; i++) {
+        const dot = document.createElement('span');
+        dot.className = 'cal-dot ' + dotColors[i];
+        dots.appendChild(dot);
+      }
+      el.appendChild(dots);
+      el.title = `未完成 ${undone} / 共 ${total}`;
+    }
+    el.addEventListener('click', () => selectDate(cell.date));
+    el.addEventListener('dblclick', () => enterDayMode(cell.date));
+    grid.appendChild(el);
+  });
+
+  calGrid.innerHTML = '';
+  calGrid.append(weekdays, grid);
+
+  // 滑动换月:新网格从切月方向滑入(旧网格随 innerHTML 重建消失,由新网格滑入带来滚动感)
+  if (direction !== 0) {
+    grid.animate([
+      { transform: `translateX(${direction * 36}px)`, opacity: 0 },
+      { transform: 'translateX(0)', opacity: 1 }
+    ], { duration: 220, easing: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)' });
+  }
+}
+
+// direction: 1=下一周(整行从右滑入), -1=上一周(从左滑入), 0=无切周动画
+function renderWeekbar(direction = 0) {
+  // 周条显示的周:优先周基准(可被 ‹ › 独立切周),否则选中日期所在周
+  const base = state.calendarWeek || state.calendarDayDate || state.calendarSelected || getToday();
+  // 高亮:选中日期(day 模式=当日视图日期;切周后选中日不在显示周内则无高亮)
+  const activeDate = state.calendarDayDate || state.calendarSelected;
+  const today = getToday();
+  // 记录旧 active 位置(切换日期时选中底色平滑滑动到新位置)
+  const prevActive = calWeekDays.querySelector('.cal-week-day.active');
+  const prevLeft = prevActive ? prevActive.getBoundingClientRect().left : null;
+  calWeekDays.innerHTML = '';
+  buildWeekDays(base).forEach(dateStr => {
+    const el = document.createElement('span');
+    let cls = 'cal-week-day';
+    if (dateStr === today) cls += ' today';
+    if (dateStr === activeDate) cls += ' active';
+    el.className = cls;
+    el.textContent = String(parseInt(dateStr.slice(8, 10), 10));
+    el.title = dateStr;
+    // day 模式:单击立即切换当天任务(点已选中日期不再重播任务渐现动画);全屏日历模式:选中日期
+    el.addEventListener('click', () => {
+      if (state.calendarDayDate) {
+        if (dateStr === state.calendarDayDate) return; // 已选中,无变化
+        enterDayMode(dateStr);
+      } else {
+        selectDate(dateStr);
+      }
+    });
+    calWeekDays.appendChild(el);
+  });
+
+  // FLIP 滑动:新 active 从旧位置滑到新位置(选中底色移动的视觉)
+  if (prevLeft !== null) {
+    const newActive = calWeekDays.querySelector('.cal-week-day.active');
+    if (newActive) {
+      const delta = prevLeft - newActive.getBoundingClientRect().left;
+      if (Math.abs(delta) > 0) {
+        newActive.animate([
+          { transform: `translateX(${delta}px)` },
+          { transform: 'translateX(0)' }
+        ], { duration: 250, easing: 'ease' });
+      }
+    }
+  }
+
+  // 切周动画:整行从切周方向滑入(任务列表不变,待点击日期后才切换)
+  if (direction !== 0) {
+    calWeekDays.animate([
+      { transform: `translateX(${direction * 42}px)`, opacity: 0 },
+      { transform: 'translateX(0)', opacity: 1 }
+    ], { duration: 250, easing: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)' });
+  }
+}
+
+// 周条切周:仅移动周条显示,任务列表保持原选中日期不变
+function shiftWeek(delta) {
+  const base = state.calendarWeek || state.calendarDayDate || state.calendarSelected || getToday();
+  const dt = new Date(base.slice(0, 4), parseInt(base.slice(5, 7), 10) - 1, parseInt(base.slice(8, 10), 10));
+  dt.setDate(dt.getDate() + delta * 7);
+  state.calendarWeek = formatDateStr(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
+  renderWeekbar(delta);
+}
+
+// 退出当日任务视图回月历(选中日期保留,周条清空;网格展开动画反向播放)
+function exitDayMode() {
+  if (!state.calendarDayDate) return;
+  state.calendarDayDate = null;
+  state.calendarWeek = null; // 周基准随当日视图退出清空
+  state.calendarDayDate = null;
+  calendarView.classList.remove('day-mode');
+  // 网格展开:从 0 过渡到足够大值,过渡结束后清 inline 恢复自动高度
+  // (退出动画 480ms 慢于进入,清理需等新时长结束)
+  calGrid.style.maxHeight = '600px';
+  setTimeout(() => {
+    if (!state.calendarDayDate) calGrid.style.maxHeight = '';
+  }, 500);
+  collapseTextInput(false);
+  renderCalendar();
+  calWeekDays.innerHTML = '';
+}
+
+// 点击日期:选中高亮 + 识别框提示聚焦(不重建网格,保证双击可连续触发)
+function selectDate(dateStr) {
+  state.calendarSelected = dateStr;
+  calGrid.querySelectorAll('.cal-day').forEach(el => {
+    el.classList.toggle('selected', el.dataset.date === dateStr);
+  });
+  const [, m, d] = dateStr.split('-').map(Number);
+  textInput.placeholder = `识别添加${m}月${d}日任务`;
+  textInput.focus();
+}
+
+// 双击日期:进入当日任务视图(日期格渐隐+网格折叠+周条上移,识别框保持展开)
+function enterDayMode(dateStr) {
+  state.calendarSelected = dateStr;
+  state.calendarDayDate = dateStr;
+  state.calendarWeek = dateStr; // 周条显示该日所在周
+  calendarView.classList.add('day-mode');
+  // 网格折叠动画:先清旧 inline,测实际高度设初始 max-height,再过渡到 0(auto→0 无法过渡)
+  calGrid.style.maxHeight = '';
+  const h = calGrid.getBoundingClientRect().height;
+  calGrid.style.maxHeight = h + 'px';
+  void calGrid.offsetHeight; // 强制重排,使过渡起点生效
+  calGrid.style.maxHeight = '0px';
+  renderWeekbar();
+  renderDayTasks(false, true); // 切换日期/进入视图:任务行逐行渐现
+}
+
+// 识别框收起:向左滑出为窄条,左侧留识别条(✍),点击再展开
+function collapseTextInput(collapsed) {
+  textInput.classList.toggle('collapsed', collapsed);
+  recogTab.classList.toggle('hidden', !collapsed);
+}
+
+// 日历区域滚轮切月:上滚上月,下滚下月;300ms 节流防一次滚动连切多个月
+let lastCalWheelSwitch = 0;
+function onCalGridWheel(e) {
+  if (!state.calendarOpen || state.calendarDayDate) return; // day 模式当日任务列表正常滚动
+  e.preventDefault();
+  const now = Date.now();
+  if (now - lastCalWheelSwitch < 300) return;
+  lastCalWheelSwitch = now;
+  shiftCalendarMonth(e.deltaY > 0 ? 1 : -1);
+}
+
+function shiftCalendarMonth(delta) {
+  state.calendarMonth.m += delta;
+  if (state.calendarMonth.m < 0) { state.calendarMonth.m = 11; state.calendarMonth.y--; }
+  if (state.calendarMonth.m > 11) { state.calendarMonth.m = 0; state.calendarMonth.y++; }
+  renderCalendar(delta); // 传方向:下月从右滑入,上月从左滑入
+}
+
+function toggleCalendar() {
+  if (state.calendarOpen) closeCalendar();
+  else openCalendar();
+}
+
+function openCalendar() {
+  const now = new Date();
+  state.calendarMonth = { y: now.getFullYear(), m: now.getMonth() };
+  state.calendarOpen = true;
+  taskArea.classList.add('dimmed'); // 任务区淡出(识别框不动)
+  calendarView.classList.remove('hidden'); // 日历就位(仍 opacity 0)
+  setTimeout(() => {
+    calendarView.classList.add('open'); // 日历渐渐出现
+    renderCalendar();
+  }, 220);
+}
+
+function closeCalendar() {
+  state.calendarOpen = false;
+  state.calendarSelected = null;
+  state.calendarDayDate = null;
+  state.calendarWeek = null; // 周基准随日历关闭清空
+  calendarView.classList.remove('open', 'day-mode');
+  taskArea.classList.remove('dimmed'); // 任务列表淡回
+  // 任务行从上到下逐行渐现(与当日视图切换日期一致)
+  taskItems.querySelectorAll('.task-item').forEach((el, i) => {
+    el.animate([
+      { opacity: 0, transform: 'translateY(8px)' },
+      { opacity: 1, transform: 'translateY(0)' }
+    ], { duration: 220, delay: i * 45, easing: 'ease', fill: 'both' });
+  });
+  collapseTextInput(false);
+  textInput.placeholder = '记录想做的事...';
+  // 清理 day 模式残留:折叠动画 inline、周条、当日任务,确保下次打开为初始态
+  calGrid.style.maxHeight = '';
+  calWeekDays.innerHTML = '';
+  calDayTasks.innerHTML = '';
+  setTimeout(() => {
+    if (!state.calendarOpen) calendarView.classList.add('hidden');
+  }, 350);
+}
+
+// 当日任务单列列表:与主任务列格式完全一致(无右侧热区操作栏),未完成在前(按 sortOrder),已完成灰显置底
+// shouldAnimate:勾选完成/取消后行滑动重排,与主列表 FLIP 特效一致
+// stagger:切换日期/进入视图时,任务行从上到下一个一个渐渐出现
+function renderDayTasks(shouldAnimate = false, stagger = false) {
+  const dateStr = state.calendarDayDate;
+  const oldPos = shouldAnimate ? snapshotPositions(calDayTasks) : null; // 清空前记旧位置
+  calDayTasks.innerHTML = '';
+  const list = document.createElement('div');
+  list.id = 'cal-day-list';
+  const tasks = state.tasks
+    .filter(t => t.dueDate === dateStr)
+    .sort((a, b) => {
+      if (a.completed !== b.completed) return a.completed ? 1 : -1;
+      return (a.sortOrder ?? 0) - (b.sortOrder ?? 0);
+    });
+
+  if (tasks.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.style.padding = '36px 0';
+    const icon = document.createElement('div');
+    icon.className = 'empty-icon';
+    icon.textContent = '🗓';
+    const title = document.createElement('div');
+    title.className = 'empty-title';
+    title.textContent = '当天暂无任务';
+    empty.append(icon, title);
+    list.appendChild(empty);
+  } else {
+    tasks.forEach(task => {
+      list.appendChild(buildTaskRow(task, state.tasks.indexOf(task), { noHoverBar: true }));
+    });
+  }
+  calDayTasks.appendChild(list);
+
+  // FLIP 动画:与主列表一致(记旧位置 → 重建 → 计算位移 → translateY 滑动归位)
+  if (oldPos) {
+    list.querySelectorAll('.task-item').forEach(el => {
+      const id = el.dataset.id;
+      const newTop = el.getBoundingClientRect().top;
+      const oldTop = oldPos[id];
+      if (oldTop !== undefined && Math.abs(newTop - oldTop) > 1) {
+        const delta = oldTop - newTop;
+        el.animate([
+          { transform: `translateY(${delta}px)` },
+          { transform: 'translateY(0)' }
+        ], { duration: 300, easing: 'ease' });
+      }
+    });
+  } else if (stagger) {
+    // 逐行渐现:从上到下依次淡入+上滑,每行间隔 45ms
+    list.querySelectorAll('.task-item').forEach((el, i) => {
+      el.animate([
+        { opacity: 0, transform: 'translateY(8px)' },
+        { opacity: 1, transform: 'translateY(0)' }
+      ], { duration: 220, delay: i * 45, easing: 'ease', fill: 'both' });
+    });
+  }
 }
 
 // ========== 页面切换 ==========
@@ -2286,6 +2754,7 @@ async function autoVerify(card, seq) {
 
 async function switchToNotepad() {
   if (state.currentPage === 'notepad') return;
+  // 日历状态切页:不播关闭动画,日历随任务页直接右滑;切回任务页时由 switchToMain 静默重置
   state.currentPage = 'notepad';
   if (window.electronAPI) {
     window.electronAPI.setPage('notepad');
@@ -2319,14 +2788,32 @@ async function switchToMain() {
   // 保存当前笔记
   saveCurrentNote();
   state.currentPage = 'main';
+  if (state.calendarOpen) resetCalendarState(); // 从其他页切回:静默重置日历,直接显示任务列表
   if (window.electronAPI) window.electronAPI.setPage('main');
   pagesContainer.classList.remove('on-notepad', 'on-tools');
   setTimeout(() => textInput.focus(), 400);
 }
 
+// 静默重置日历(无动画):切回任务页时直接恢复初始任务列表
+function resetCalendarState() {
+  state.calendarOpen = false;
+  state.calendarSelected = null;
+  state.calendarDayDate = null;
+  state.calendarWeek = null;
+  calendarView.classList.remove('open', 'day-mode');
+  calendarView.classList.add('hidden');
+  taskArea.classList.remove('dimmed');
+  calGrid.style.maxHeight = '';
+  calWeekDays.innerHTML = '';
+  calDayTasks.innerHTML = '';
+  textInput.placeholder = '记录想做的事...';
+  collapseTextInput(false);
+}
+
 async function switchToTools() {
   if (state.currentPage === 'tools') return;
   if (!isToolsPageEnabled()) return;
+  // 日历状态切页:不播关闭动画,日历随任务页直接右滑(同 switchToNotepad)
   // 保存当前笔记
   saveCurrentNote();
   state.currentPage = 'tools';
@@ -2441,7 +2928,7 @@ async function handleNotepadPaste(e) {
         if (window.electronAPI) {
           const result = await window.electronAPI.saveNoteImage(dataUrl);
           if (result.filename) {
-            imageDataCache.set(result.filename, dataUrl);
+            cacheImageData(result.filename, dataUrl);
             insertImageAtCursor(result.filename, dataUrl);
           }
         }

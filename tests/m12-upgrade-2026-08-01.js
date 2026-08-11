@@ -605,6 +605,44 @@ app.whenReady().then(async () => {
   `);
   assert(fallback === true, 'R11 activeSheet 回退到 all');
 
+  // ========== B: 项目胶囊开关 ==========
+  console.log('\n=== B 项目胶囊开关 ===');
+  const capsuleSwitch = await r(`
+    (() => {
+      // 默认开:有项目任务显示徽标,无项目任务显示「+」占位
+      state.tasks = ${JSON.stringify(makeTasks())};
+      state.activeSheet = 'all';
+      state.showProjectBadge = true;
+      renderTasks();
+      const on = document.querySelectorAll('.task-item').length > 0 && {
+        badge: document.querySelectorAll('.task-item .project-badge').length,
+        placeholder: document.querySelectorAll('.task-item .project-placeholder').length,
+        checkbox: !!document.querySelector('#settings-projectcapsule'),
+      };
+      // 关闭:徽标与占位全部不渲染,任务文字仍在
+      state.showProjectBadge = false;
+      renderTasks();
+      const off = {
+        badge: document.querySelectorAll('.task-item .project-badge').length,
+        placeholder: document.querySelectorAll('.task-item .project-placeholder').length,
+        rows: document.querySelectorAll('.task-item').length,
+      };
+      // 重新打开:恢复
+      state.showProjectBadge = true;
+      renderTasks();
+      const restored = {
+        badge: document.querySelectorAll('.task-item .project-badge').length,
+        placeholder: document.querySelectorAll('.task-item .project-placeholder').length,
+      };
+      return JSON.stringify({ on, off, restored });
+    })()
+  `);
+  const cap = JSON.parse(capsuleSwitch);
+  assert(cap.on.checkbox, 'B1 设置页存在「项目胶囊」开关');
+  assert(cap.on.badge === 5 && cap.on.placeholder === 2, `B1 默认开:徽标 5(含已完成) + 占位 2 (实际 ${cap.on.badge}/${cap.on.placeholder})`);
+  assert(cap.off.badge === 0 && cap.off.placeholder === 0 && cap.off.rows === 7, 'B2 关闭:徽标与占位不渲染,任务行仍在');
+  assert(cap.restored.badge === 5 && cap.restored.placeholder === 2, 'B3 重新打开:徽标与占位恢复');
+
   // ========== P: 性能 ==========
   console.log('\n=== P 性能 ===');
   const perf = await r(`

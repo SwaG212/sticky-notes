@@ -57,11 +57,30 @@ body {
 }
 
 /* ========== 任务清单区 ========== */
+#task-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 日历打开时任务列表/分隔线/页签栏淡出(日历覆盖层是其兄弟,不受影响),识别框保持可见
+   注意:不能淡 task-area 本身,否则其内部的日历覆盖层也被父容器 opacity 拖到全透明 */
 #task-list {
   flex: 1;
   overflow-y: auto;
   padding: 12px 14px 6px;
   min-height: 0;
+}
+#task-list,
+.divider,
+#sheet-bar {
+  transition: opacity 250ms ease;
+}
+#task-area.dimmed #task-list,
+#task-area.dimmed .divider,
+#task-area.dimmed #sheet-bar {
+  opacity: 0;
 }
 
 /* 统一滚动条样式 */
@@ -704,6 +723,227 @@ body {
   opacity: 0.7;
 }
 
+/* ========== 日历 ========== */
+#calendar-view {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 300ms ease;
+}
+#calendar-view.open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+#calendar-view.hidden { display: none; }
+
+/* 顶部条：年月行 + 周条 */
+#cal-weekbar {
+  flex-shrink: 0;
+  padding: 10px 14px 4px;
+  transition: padding 260ms ease;
+}
+/* day 模式:周条上移至紧凑位置(顶部留白收紧) */
+#calendar-view.day-mode #cal-weekbar {
+  padding: 6px 14px 0;
+}
+/* 退出当日视图回日历:动画整体慢 100ms */
+#calendar-view:not(.day-mode) #cal-weekbar {
+  transition: padding 460ms ease;
+}
+#cal-monthline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.cal-nav {
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.cal-nav:hover { background: var(--bg-secondary); color: var(--text); }
+/* 点击年月退出日历(同 Esc):所有模式可点击 */
+#cal-monthlabel {
+  cursor: pointer;
+  padding: 1px 8px;
+  border-radius: 6px;
+}
+#cal-monthlabel:hover { background: var(--bg-secondary); }
+/* day 模式:‹ › 切月失效隐藏 */
+#calendar-view.day-mode .cal-nav { display: none; }
+
+/* 周条:仅 day 模式显示(全屏日历不渲染),两侧 ‹ › 切周 */
+#cal-weekline {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 0 10px;
+}
+#calendar-view:not(.day-mode) #cal-weekline { display: none; }
+#cal-week-days {
+  flex: 1;
+  display: flex;
+  justify-content: space-between;
+}
+.cal-week-nav {
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.cal-week-nav:hover { background: var(--bg-secondary); color: var(--accent); }
+.cal-week-day {
+  width: 30px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.cal-week-day:hover { background: var(--bg-secondary); }
+.cal-week-day.today { font-weight: 700; color: var(--accent); }
+.cal-week-day.active { background: var(--accent); color: white; font-weight: 600; }
+
+/* 月历网格:折叠动画由 JS 先设初始 max-height 再过渡到 0(auto→0 无法过渡,会瞬间跳变) */
+#cal-grid {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: max-height 280ms ease;
+}
+/* day 模式:网格折叠(JS 用 inline max-height 驱动过渡;此规则兜底最终态) */
+#calendar-view.day-mode #cal-grid { max-height: 0; }
+/* 退出当日视图回日历:网格展开慢 100ms */
+#calendar-view:not(.day-mode) #cal-grid {
+  transition: max-height 480ms ease;
+}
+/* 日期格:双击进入当日视图时快速渐渐消失(表头+日期行) */
+.cal-weekdays,
+.cal-days {
+  transition: opacity 220ms ease;
+}
+#calendar-view.day-mode .cal-weekdays,
+#calendar-view.day-mode .cal-days { opacity: 0; }
+/* 退出当日视图回日历:日期格渐显慢 100ms */
+#calendar-view:not(.day-mode) .cal-weekdays,
+#calendar-view:not(.day-mode) .cal-days {
+  transition: opacity 420ms ease;
+}
+.cal-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  padding: 4px 8px 0;
+}
+.cal-wd {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 4px 0;
+}
+.cal-days {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  padding: 2px 8px 10px;
+  gap: 2px;
+}
+.cal-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 4px 0;
+  border-radius: 8px;
+  cursor: pointer;
+  position: relative;
+}
+.cal-day:hover { background: var(--bg-secondary); }
+.cal-day-num { font-size: 13px; color: var(--text); }
+.cal-day.today .cal-day-num { color: var(--accent); font-weight: 700; }
+/* 今日/选中日:共用同一圆角矩形外框形状 */
+.cal-day.today::before,
+.cal-day.selected::before {
+  content: '';
+  position: absolute;
+  inset: 2px 4px;
+  border-radius: 8px;
+  pointer-events: none;
+}
+/* 今日:加粗实色紫框 */
+.cal-day.today::before { border: 2px solid var(--accent); }
+/* 选中:与今日线框同形状的淡紫实底 */
+.cal-day.selected::before { background: rgba(91, 91, 224, 0.8); }
+/* 数字提升到紫底之上(::before 默认盖住内容) */
+.cal-day.selected .cal-day-num {
+  color: white;
+  font-weight: 600;
+  position: relative;
+  z-index: 1;
+}
+.cal-day.other-month .cal-day-num { color: var(--text-dim); opacity: 0.45; }
+/* 任务圆点:按去重项目数显示 1~3 个(绿黄红) */
+.cal-dots {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 5px;
+  position: relative;
+  z-index: 1; /* 选中日紫底(::before)之上 */
+}
+.cal-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+.cal-dot-green { background: #4caf50; }
+.cal-dot-yellow { background: #f5b301; }
+.cal-dot-red { background: #e05570; }
+
+/* 当日任务单列列表(day 模式):任务行复用 .task-item 主列表样式,仅容器不同 */
+#cal-day-tasks {
+  display: none;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  animation: calFadeIn 300ms ease;
+}
+#calendar-view.day-mode #cal-day-tasks { display: flex; }
+@keyframes calFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+#cal-day-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 14px;
+}
+#cal-day-list::-webkit-scrollbar { width: 4px; }
+#cal-day-list::-webkit-scrollbar-track { background: var(--bg-secondary); }
+#cal-day-list::-webkit-scrollbar-thumb { background: #b0b0bc; border-radius: 2px; }
+#cal-day-list::-webkit-scrollbar-thumb:hover { background: #8a8a98; }
+
 /* ========== 输入区 ========== */
 #input-area {
   padding: 8px 14px 12px;
@@ -752,6 +992,7 @@ body {
 .image-preview-delete:hover { background: var(--danger); }
 
 /* 文字输入 */
+.recog-wrap { position: relative; }
 #text-input {
   width: 100%;
   background: var(--bg-input);
@@ -765,8 +1006,27 @@ body {
   outline: none;
   line-height: 1.6;
   height: 80px;
+  transition: width 200ms ease, border-color 0.15s;
 }
+/* day 模式:识别框向左收起为窄条 */
+#text-input.collapsed { width: 44px; }
 #text-input:focus { border-color: var(--accent); }
+/* 识别条:输入框收起时贴左侧的窄条,点击展开 */
+#recog-tab {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 44px;
+  height: 100%;
+  border: none;
+  background: none;
+  font-size: 16px;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-radius: 8px;
+}
+#recog-tab:hover { background: var(--bg-secondary); color: var(--accent); }
+#recog-tab.hidden { display: none; }
 #text-input::placeholder { color: var(--text-dim); opacity: 0.5; }
 
 /* 操作栏 */
@@ -776,10 +1036,18 @@ body {
   justify-content: space-between;
   margin-top: 8px;
 }
+/* 日报按钮隐藏时:日报组不占位(日历按钮在独立左组,始终靠左) */
+#input-actions.no-daily-report .daily-report-group { display: none; }
 .hint {
   font-size: 11px;
   color: var(--text-dim);
   opacity: 0.6;
+}
+/* 输入区左侧组:日历按钮独立于日报组,日报开关不影响日历按钮 */
+.input-left-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .daily-report-group {
   display: flex;
@@ -800,6 +1068,8 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  margin-left: auto; /* 始终贴最右,不随左侧组宽度变化 */
+  flex-shrink: 0;    /* 不被压缩(如日报提示文字撑宽左侧时) */
 }
 
 #btn-organize {
@@ -834,6 +1104,21 @@ body {
   white-space: nowrap;
 }
 #btn-daily-report:hover { background: var(--accent-hover); }
+
+/* 日历按钮:与日报按钮同尺寸的 accent 实心样式 */
+#btn-calendar {
+  padding: 6px 14px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+#btn-calendar:hover { background: var(--accent-hover); }
 
 /* ========== 整理中遮罩 ========== */
 #processing-overlay {

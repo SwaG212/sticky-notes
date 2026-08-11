@@ -12,30 +12,56 @@
   <div class="pages-container">
     <!-- 主页面（任务管理） -->
     <div class="page page-main">
-      <!-- 任务清单区 -->
-      <div id="task-list">
-        <div id="task-empty" class="empty-state">
-          <div class="empty-icon">📋</div>
-          <div class="empty-title">还没有任务</div>
-          <div class="empty-desc">在下方输入想做的事，然后点击「整理」</div>
+      <!-- 任务清单区：task-area 为日历覆盖层提供定位基准 -->
+      <div id="task-area">
+        <div id="task-list">
+          <div id="task-empty" class="empty-state">
+            <div class="empty-icon">📋</div>
+            <div class="empty-title">还没有任务</div>
+            <div class="empty-desc">在下方输入想做的事，然后点击「整理」</div>
+          </div>
+          <div id="task-items"></div>
         </div>
-        <div id="task-items"></div>
+
+        <!-- 分隔线 -->
+        <div class="divider"></div>
+
+        <!-- 项目页签栏 -->
+        <div id="sheet-bar"></div>
+
+        <!-- 日历覆盖层 -->
+        <div id="calendar-view" class="hidden">
+          <div id="cal-weekbar">
+            <div id="cal-monthline">
+              <button id="cal-prev" class="cal-nav">‹</button>
+              <span id="cal-monthlabel">2026/8</span>
+              <button id="cal-next" class="cal-nav">›</button>
+            </div>
+            <div id="cal-weekline">
+              <button id="cal-week-prev" class="cal-week-nav" title="上一周">‹</button>
+              <div id="cal-week-days"></div>
+              <button id="cal-week-next" class="cal-week-nav" title="下一周">›</button>
+            </div>
+          </div>
+          <div id="cal-grid"></div>
+          <div id="cal-day-tasks"></div>
+        </div>
       </div>
-
-      <!-- 分隔线 -->
-      <div class="divider"></div>
-
-      <!-- 项目页签栏 -->
-      <div id="sheet-bar"></div>
 
       <!-- 输入区 -->
       <div id="input-area">
         <div id="image-previews"></div>
-        <textarea id="text-input" placeholder="记录想做的事..." rows="1"></textarea>
+        <div class="recog-wrap">
+          <textarea id="text-input" placeholder="记录想做的事..." rows="1"></textarea>
+          <button id="recog-tab" class="hidden" title="展开识别框">✍</button>
+        </div>
         <div id="input-actions">
-          <span class="daily-report-group">
-            <button id="btn-daily-report">日报</button>
-            <span id="daily-report-hint" class="daily-report-hint"></span>
+          <span class="input-left-group">
+            <button id="btn-calendar">日历</button>
+            <span class="daily-report-group">
+              <button id="btn-daily-report">日报</button>
+              <span id="daily-report-hint" class="daily-report-hint"></span>
+            </span>
           </span>
           <span class="input-buttons">
             <button id="btn-organize" disabled>重排 ▸</button>
@@ -140,6 +166,21 @@
           <div class="page-row page-row-sub">
             <span class="page-row-name">项目页签栏</span>
             <label class="checkbox-label page-col"><input type="checkbox" id="settings-sheetbar"></label>
+            <span class="page-col"></span>
+          </div>
+          <div class="page-row page-row-sub">
+            <span class="page-row-name">项目胶囊</span>
+            <label class="checkbox-label page-col"><input type="checkbox" id="settings-projectcapsule"></label>
+            <span class="page-col"></span>
+          </div>
+          <div class="page-row page-row-sub">
+            <span class="page-row-name">日报按钮</span>
+            <label class="checkbox-label page-col"><input type="checkbox" id="settings-dailyreport"></label>
+            <span class="page-col"></span>
+          </div>
+          <div class="page-row page-row-sub">
+            <span class="page-row-name">日历按钮</span>
+            <label class="checkbox-label page-col"><input type="checkbox" id="settings-calendar"></label>
             <span class="page-col"></span>
           </div>
           <div class="page-row">
