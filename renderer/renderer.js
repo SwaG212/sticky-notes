@@ -22,6 +22,8 @@ const state = {
   calendarMonth: { y: 0, m: 0 }, // 日历当前显示的年月
   calendarSelected: null, // 点击选中的日期 YYYY-MM-DD(organize 应用到新任务)
   calendarDayDate: null, // 当日任务视图当前日期 YYYY-MM-DD
+  calendarDayTasks: null, // 当日视图渲染的任务数组(历史日期含文件任务,负 idx 操作映射)
+  calendarDayIdMap: null, // 负 idx → 任务 的精确映射(点击操作按 id 定位,防排序错位)
   calendarWeek: null, // 周条当前显示的周(基准日,可独立于选中日期切周)
   toolsEnabled: { translate: true },
   hoveredImage: null,
@@ -683,15 +685,17 @@ function buildTaskRow(task, idx, opts = {}) {
     if (e.button !== 2) return;
     if (e.target.closest('.project-badge, .project-placeholder, .project-expanding')) return; // 项目控件/展开态上的右键不触发删除
     const rIdx = +row.dataset.idx;
-    if (state.tasks[rIdx].completed) return; // 已完成任务不可删除
-    const taskId = state.tasks[rIdx].id;
+    const t = taskByIdx(rIdx);
+    if (!t || t.completed) return; // 已完成任务不可删除(历史任务经 taskByIdx 映射,防非法索引)
+    const taskId = t.id;
     startDeleteHold(e, row, {
       textEl: text,
-      text: state.tasks[rIdx].task,
+      text: t.task,
       // 粒子散尽后按 id 删除,避免动画期间列表变化导致索引错位
       onComplete: () => {
-        const i = state.tasks.findIndex(t => t.id === taskId);
+        const i = state.tasks.findIndex(x => x.id === taskId);
         if (i !== -1) deleteTask(i);
+        else removeTaskFromFile(t); // 历史任务:直接从文件删(同步所有副本)
       }
     });
   });
@@ -884,11 +888,12 @@ function onDragEnd() {
 }
 
 function toggleTask(idx) {
-  state.tasks[idx].completed = !state.tasks[idx].completed;
-  state.tasks[idx].completedAt = state.tasks[idx].completed ? new Date().toISOString() : null;
-  sortTasks();
-  saveTasks();
-  renderTasks(true); // 末尾统一刷新月历圆点与当日任务视图
+  const t = taskByIdx(idx);
+  if (!t) return;
+  t.completed = !t.completed;
+  t.completedAt = t.completed ? new Date().toISOString() : null;
+  // 今天任务:写今天文件并同步历史副本(带 updatedAt);历史任务:写回并同步
+  persistTask(t).then(() => renderTasks(true));
 }
 
 // ========== 右键长按删除:红色进度条 + 粒子消散 ==========
@@ -1007,16 +1012,19 @@ document.addEventListener('keydown', (e) => {
 });
 
 function deleteTask(idx) {
-  state.tasks.splice(idx, 1);
-  saveTasks();
-  renderTasks();
+  const t = taskByIdx(idx);
+  if (!t) return;
+  if (idx >= 0) { state.tasks.splice(idx, 1); saveTasks(); renderTasks(); }
+  else { removeTaskFromFile(t).then(() => renderTasks()); } // 历史任务:从文件删除
 }
 
 function enterEditMode(row, idx) {
+  const t = taskByIdx(idx);
+  if (!t) return;
   closeActivePicker(); // 编辑中操作栏隐藏,先收起可能展开的选择器
   row.classList.add('editing'); // 编辑中隐藏悬停操作栏(CSS 规则)
   const span = row.querySelector('.task-text');
-  const oldText = state.tasks[idx].task;
+  const oldText = t.task;
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'task-edit-input';
@@ -1025,9 +1033,13 @@ function enterEditMode(row, idx) {
   input.focus();
   input.select();
 
-  const finish = () => {
+  const finish = async () => {
     const newText = input.value.trim();
-    if (newText && newText !== oldText) { state.tasks[idx].task = newText; saveTasks(); }
+    if (newText && newText !== oldText) {
+      const prevKey = t.task + '|' + (t.project || ''); // 修改前身份键,供跨文件副本匹配
+      t.task = newText;
+      await persistTask(t, prevKey);
+    }
     renderTasks();
   };
   input.addEventListener('blur', finish);
@@ -1426,7 +1438,7 @@ function openProjectExpand(rowEl, taskIdx) {
   container.innerHTML = '';
   container.scrollLeft = 0;
   expandScrollState.delete(container); // 重置滚动动画目标,避免旧目标残留
-  const current = state.tasks[taskIdx].project || null;
+  const current = taskByIdx(taskIdx).project || null;
 
   const seen = new Set();
   const options = [];
@@ -1442,9 +1454,12 @@ function openProjectExpand(rowEl, taskIdx) {
     opt.className = 'pe-opt' + (cls ? ' ' + cls : '');
     opt.textContent = label;
     opt.style.setProperty('--i', container.children.length); // 逐个弹出延迟
-    opt.addEventListener('click', () => {
-      state.tasks[taskIdx].project = name;
-      saveTasks();
+    opt.addEventListener('click', async () => {
+      const t = taskByIdx(taskIdx);
+      if (!t) return;
+      const prevKey = t.task + '|' + (t.project || ''); // 修改前身份键
+      t.project = name;
+      await persistTask(t, prevKey);
       closeProjectExpand();
       renderTasks();
     });
@@ -1462,10 +1477,13 @@ function openProjectExpand(rowEl, taskIdx) {
   none.textContent = '✕';
   none.title = '清除项目归属';
   none.style.setProperty('--i', container.children.length);
-  none.addEventListener('click', () => {
+  none.addEventListener('click', async () => {
+    const t = taskByIdx(taskIdx);
+    if (!t) return;
     if (current !== null) {
-      state.tasks[taskIdx].project = null;
-      saveTasks();
+      const prevKey = t.task + '|' + (t.project || ''); // 修改前身份键
+      t.project = null;
+      await persistTask(t, prevKey);
     }
     closeProjectExpand();
     renderTasks();
@@ -2236,27 +2254,82 @@ function buildMonthGrid(y, m) {
   return cells;
 }
 
-// 纯函数:统计某日期下任务数(未完成/总数)与未完成任务的去重项目数(无项目任务计 1 类)
-function countTasksByDate(tasks, dateStr) {
+// 纯函数:统计某日期任务数组(未完成/总数)与去重项目数(未完成/已完成,无项目任务计 1 类)
+// 数组已按日期归属(今天=dueDate 匹配;历史=文件日期),不再按 dueDate 过滤
+function countDayTasks(dayTasks) {
   let undone = 0, total = 0;
-  const projects = new Set();
-  for (const t of tasks) {
-    if (t.dueDate === dateStr) {
-      total++;
-      if (!t.completed) {
-        undone++;
-        projects.add(t.project || '(无项目)');
-      }
+  const undoneProjects = new Set();
+  const doneProjects = new Set();
+  for (const t of dayTasks) {
+    total++;
+    if (!t.completed) {
+      undone++;
+      undoneProjects.add(t.project || '(无项目)');
+    } else {
+      doneProjects.add(t.project || '(无项目)');
     }
   }
-  return { undone, total, projectCount: projects.size };
+  return { undone, total, projectCount: undoneProjects.size, doneProjectCount: doneProjects.size };
+}
+
+// 纯函数:合并某日期任务(按 任务+项目 去重;保留 updatedAt 最新版本,同时间戳时 done=true 优先)
+function mergeDayTasks(todayOnes, historic) {
+  const seen = new Map(); // key → task(保留最新)
+  const order = [];
+  const add = (t) => {
+    const key = t.task + '|' + (t.project || '');
+    if (seen.has(key)) {
+      const cur = seen.get(key);
+      const tNew = (t.updatedAt || t.createdAt || '');
+      const curNew = (cur.updatedAt || cur.createdAt || '');
+      if (tNew > curNew) {
+        const i = order.indexOf(key);
+        order[i] = key;
+        seen.set(key, t);
+      } else if (tNew === curNew && t.completed && !cur.completed) {
+        // 同时间戳:勾选状态优先(旧的持久化任务无 updatedAt,createdAt 相同,勾选副本视为最新)
+        const i = order.indexOf(key);
+        order[i] = key;
+        seen.set(key, t);
+      }
+      return;
+    }
+    seen.set(key, t);
+    order.push(key);
+  };
+  for (const t of todayOnes) add(t);
+  for (const t of (historic || [])) add(t);
+  return order.map(k => seen.get(k));
+}
+
+// 纯函数:按日期类型生成圆点颜色序列(最多 3 点)
+// 历史日期:未完成项目优先(绿黄红),剩余名额用完成绿点(#4caf50)填充;当天/未来:仅未完成项目,无绿点
+function dotSequenceForDate(dayTasks, dateStr, todayStr) {
+  const { projectCount, doneProjectCount } = countDayTasks(dayTasks);
+  if (dateStr < todayStr) {
+    const n1 = Math.min(projectCount, 3);
+    const colors = ['cal-dot-green', 'cal-dot-yellow', 'cal-dot-red'].slice(0, n1);
+    const n2 = Math.min(doneProjectCount, 3 - n1);
+    for (let i = 0; i < n2; i++) colors.push('cal-dot-done');
+    return colors;
+  }
+  return ['cal-dot-green', 'cal-dot-yellow', 'cal-dot-red'].slice(0, Math.min(projectCount, 3));
 }
 
 // direction: 1=下月(网格从右滑入), -1=上月(从左滑入), 0=无动画(首次打开/返回月历)
-function renderCalendar(direction = 0) {
+// 任务归属:完全按日期胶囊(dueDate);无日期胶囊任务不显示;历史任务按 dueDate 跨文件收集
+// 异步:首次需增量加载历史任务文件;序列号丢弃切月/关闭期间的过期渲染
+let renderCalSeq = 0;
+async function renderCalendar(direction = 0) {
+  const seq = ++renderCalSeq;
   const { y, m } = state.calendarMonth;
   const today = getToday();
   calMonthlabel.textContent = `${y}/${m + 1}`;
+
+  const cells = buildMonthGrid(y, m);
+  await ensureTaskFilesLoaded(); // 增量加载全部历史任务文件(之后日历/日视图都按 dueDate 归属)
+  if (seq !== renderCalSeq) return; // 期间切月/关闭,丢弃过期渲染
+  const dueIndex = buildDueDateIndex(state.tasks, taskFileCache.values());
 
   const weekdays = document.createElement('div');
   weekdays.className = 'cal-weekdays';
@@ -2269,7 +2342,7 @@ function renderCalendar(direction = 0) {
 
   const grid = document.createElement('div');
   grid.className = 'cal-days';
-  buildMonthGrid(y, m).forEach(cell => {
+  cells.forEach(cell => {
     const el = document.createElement('div');
     let cls = 'cal-day';
     if (!cell.inMonth) cls += ' other-month';
@@ -2281,20 +2354,20 @@ function renderCalendar(direction = 0) {
     num.className = 'cal-day-num';
     num.textContent = cell.day;
     el.appendChild(num);
-    // 有未完成任务:底部圆点按去重项目数显示 1~3 个(绿黄红),title 显示详情
-    const { undone, total, projectCount } = countTasksByDate(state.tasks, cell.date);
-    if (undone > 0) {
-      const dotColors = ['cal-dot-green', 'cal-dot-yellow', 'cal-dot-red'];
+    // 底部圆点:该日期全部任务(完全按 dueDate 归属);历史未完成优先+完成补绿点,当天/未来仅未完成
+    const dayTasks = dueIndex.get(cell.date) || [];
+    const { undone, total } = countDayTasks(dayTasks);
+    const dotColors = dotSequenceForDate(dayTasks, cell.date, today);
+    if (dotColors.length > 0) {
       const dots = document.createElement('span');
       dots.className = 'cal-dots';
-      const n = Math.min(projectCount, 3); // 最多 3 个点
-      for (let i = 0; i < n; i++) {
+      for (let i = 0; i < dotColors.length; i++) {
         const dot = document.createElement('span');
         dot.className = 'cal-dot ' + dotColors[i];
         dots.appendChild(dot);
       }
       el.appendChild(dots);
-      el.title = `未完成 ${undone} / 共 ${total}`;
+      el.title = undone > 0 ? `未完成 ${undone} / 共 ${total}` : `已完成 ${total} / 共 ${total}`;
     }
     el.addEventListener('click', () => selectDate(cell.date));
     el.addEventListener('dblclick', () => enterDayMode(cell.date));
@@ -2406,7 +2479,7 @@ function selectDate(dateStr) {
 }
 
 // 双击日期:进入当日任务视图(日期格渐隐+网格折叠+周条上移,识别框保持展开)
-function enterDayMode(dateStr) {
+async function enterDayMode(dateStr) {
   state.calendarSelected = dateStr;
   state.calendarDayDate = dateStr;
   state.calendarWeek = dateStr; // 周条显示该日所在周
@@ -2418,7 +2491,7 @@ function enterDayMode(dateStr) {
   void calGrid.offsetHeight; // 强制重排,使过渡起点生效
   calGrid.style.maxHeight = '0px';
   renderWeekbar();
-  renderDayTasks(false, true); // 切换日期/进入视图:任务行逐行渐现
+  await renderDayTasks(false, true); // 切换日期/进入视图:任务行逐行渐现
 }
 
 // 识别框收起:向左滑出为窄条,左侧留识别条(✍),点击再展开
@@ -2490,20 +2563,183 @@ function closeCalendar() {
 }
 
 // 当日任务单列列表:与主任务列格式完全一致(无右侧热区操作栏),未完成在前(按 sortOrder),已完成灰显置底
+// 数据源:当天=state.tasks;历史日期=历史文件+state.tasks 合并(显示该日期全部任务,含已完成)
 // shouldAnimate:勾选完成/取消后行滑动重排,与主列表 FLIP 特效一致
 // stagger:切换日期/进入视图时,任务行从上到下一个一个渐渐出现
-function renderDayTasks(shouldAnimate = false, stagger = false) {
+let dayTasksSeq = 0; // 渲染序列号:丢弃过期异步渲染,防快速切日期的竞态
+
+// 行索引解析:idx>=0 今天任务(state.tasks);idx<0 历史任务(state.calendarDayTasks 按渲染时记录的 id 映射)
+// 注意:负 idx 必须用渲染时该行对应的任务 id 精确定位(排序/去重数组顺序可能变化),不能靠数组下标
+function taskByIdx(idx) {
+  if (idx >= 0) return state.tasks[idx];
+  const map = state.calendarDayIdMap;
+  return map ? map.get(idx) : undefined;
+}
+
+// 修改后持久化:任务写回对应文件并同步所有同身份副本(今天任务也同步历史缓存)
+// prevKey:修改前的身份键(任务+项目),用于改名/改项目后仍能匹配旧副本
+// 所有操作(勾选/编辑/项目/日期)都先打 updatedAt 时间戳,去重按最新时间戳判断
+function persistTask(t, prevKey) {
+  if (!t) return Promise.resolve();
+  t.updatedAt = new Date().toISOString();
+  if (state.tasks.includes(t)) {
+    // 今天任务:先写今天文件,再同步历史缓存里的同身份副本
+    saveTasks();
+    return syncTaskCopies(t, prevKey, true);
+  }
+  const fileDate = t._fileDate || t.dueDate;
+  if (!fileDate || !window.electronAPI) return Promise.resolve();
+  let arr = taskFileCache.get(fileDate);
+  if (!arr) {
+    return window.electronAPI.loadTasksByDate(fileDate).then(fileTasks => {
+      const list = fileTasks || [];
+      for (const x of list) x._fileDate = fileDate;
+      taskFileCache.set(fileDate, list);
+      taskFileCacheLoaded.add(fileDate);
+      return persistTask(t, prevKey);
+    }).catch(() => { /* ignore */ });
+  }
+  // 按 id 或(任务+项目)匹配更新,避免不同 id 同名记录重复
+  let idx = arr.findIndex(x => x.id === t.id);
+  if (idx === -1) idx = arr.findIndex(x => (x.task === t.task) && (x.project || '') === (t.project || ''));
+  if (idx >= 0) arr[idx] = t;
+  else arr.push(t);
+  return Promise.all([window.electronAPI.saveTasksByDate(fileDate, arr), ...syncTaskCopies(t, prevKey)]).then(() => {
+    taskFileCacheLoaded.add(fileDate);
+    // 视图同步:更新 calendarDayTasks 中同名对象,避免重渲染时被旧文件状态覆盖
+    if (state.calendarDayTasks) {
+      const vi = state.calendarDayTasks.findIndex(x => x.id === t.id);
+      if (vi >= 0) state.calendarDayTasks[vi] = t;
+      else {
+        const vi2 = state.calendarDayTasks.findIndex(x => x.task === t.task && (x.project || '') === (t.project || ''));
+        if (vi2 >= 0) state.calendarDayTasks[vi2] = t;
+      }
+    }
+  }).catch(() => { /* ignore */ });
+}
+
+// 同步所有文件里的同身份副本(按 id 或 任务+项目,支持旧身份键 prevKey 匹配改名/改项目前的副本)
+// 返回写盘 promise 数组
+function syncTaskCopies(t, prevKey, saveTodayToo) {
+  if (!window.electronAPI) return [];
+  const syncs = [];
+  const matchesKey = (x) => {
+    if (x.id && t.id && x.id === t.id) return true;
+    if (x.task === t.task && (x.project || '') === (t.project || '')) return true;
+    if (prevKey && (x.task + '|' + (x.project || '')) === prevKey) return true;
+    return false;
+  };
+  for (const [d, fileArr] of taskFileCache) {
+    if (!fileArr) continue;
+    let changed = false;
+    for (let i = 0; i < fileArr.length; i++) {
+      const x = fileArr[i];
+      if (x === t) continue;
+      if (matchesKey(x)) {
+        x.completed = t.completed;
+        x.completedAt = t.completedAt;
+        x.project = t.project;
+        x.task = t.task;
+        x.updatedAt = t.updatedAt;
+        changed = true;
+      }
+    }
+    if (changed) syncs.push(window.electronAPI.saveTasksByDate(d, fileArr));
+  }
+  if (saveTodayToo && state.tasks.length) {
+    syncs.push(window.electronAPI.saveTasks(state.tasks));
+  }
+  return syncs;
+}
+
+// 历史任务从文件删除:删除所有文件里的同身份副本(id 或 任务+项目)
+function removeTaskFromFile(t) {
+  if (!window.electronAPI) return Promise.resolve();
+  const syncs = [];
+  for (const [d, fileArr] of taskFileCache) {
+    if (!fileArr) continue;
+    const rest = fileArr.filter(x => x !== t && x.id !== t.id && !(x.task === t.task && (x.project || '') === (t.project || '')));
+    if (rest.length !== fileArr.length) {
+      taskFileCache.set(d, rest);
+      taskFileCacheLoaded.add(d);
+      syncs.push(window.electronAPI.saveTasksByDate(d, rest));
+    }
+  }
+  return Promise.all(syncs).catch(() => { /* ignore */ });
+}
+
+// 某日期全部任务:完全按日期胶囊(dueDate)归属,不按文件日期
+// 今天文件任务=state.tasks;历史文件任务从缓存取;去重(任务+项目)今天版本优先
+// 历史文件任务附加运行时标记 _fileDate(来源文件,不持久化):写回据此定位文件
+const taskFileCache = new Map();  // dateStr → tasks[](已加载的历史任务文件)
+const taskFileCacheLoaded = new Set(); // 已加载的日期(增量加载判断)
+
+// 增量加载全部历史任务文件到缓存
+async function ensureTaskFilesLoaded() {
+  if (!window.electronAPI) return;
+  try {
+    const files = await window.electronAPI.listTasksFiles();
+    const need = (files || [])
+      .filter(f => /^\d{4}-\d{2}-\d{2}\.json$/.test(f))
+      .map(f => f.slice(0, 10))
+      .filter(d => !taskFileCacheLoaded.has(d));
+    if (need.length === 0) return;
+    await Promise.all(need.map(async (d) => {
+      try {
+        const arr = await window.electronAPI.loadTasksByDate(d);
+        for (const t of (arr || [])) t._fileDate = d;
+        taskFileCache.set(d, arr || []);
+      } catch (e) { taskFileCache.set(d, []); }
+      taskFileCacheLoaded.add(d);
+    }));
+  } catch (e) { /* ignore */ }
+}
+
+// 纯函数:按 dueDate 构建日期索引(无日期胶囊任务不收录;同名按 任务+项目 去重,保留 updatedAt 最新版本)
+function buildDueDateIndex(todayTasks, cachedFiles) {
+  const index = new Map();
+  const add = (t) => {
+    if (!t || typeof t.dueDate !== 'string') return;
+    const key = t.task + '|' + (t.project || '');
+    const list = index.get(t.dueDate);
+    if (!list) { index.set(t.dueDate, [t]); return; }
+    const i = list.findIndex(x => x.task + '|' + (x.project || '') === key);
+    if (i === -1) { list.push(t); return; }
+    // 同名副本:保留 updatedAt 最新;同时间戳时 done=true 优先(旧数据无 updatedAt 时勾选副本视为最新)
+    const cur = list[i];
+    const tNew = (t.updatedAt || t.createdAt || '');
+    const curNew = (cur.updatedAt || cur.createdAt || '');
+    if (tNew > curNew) list[i] = t;
+    else if (tNew === curNew && t.completed && !cur.completed) list[i] = t;
+  };
+  for (const t of todayTasks) add(t);
+  for (const arr of cachedFiles) for (const t of arr) add(t);
+  return index;
+}
+
+async function loadTasksForDate(dateStr) {
+  await ensureTaskFilesLoaded();
+  const todayOnes = state.tasks.filter(t => t.dueDate === dateStr);
+  const hist = [];
+  for (const arr of taskFileCache.values()) {
+    for (const t of arr) if (t.dueDate === dateStr) hist.push(t);
+  }
+  return mergeDayTasks(todayOnes, hist); // 历史对象自带 _fileDate(缓存加载时打标),今天对象走 state.tasks
+}
+
+async function renderDayTasks(shouldAnimate = false, stagger = false) {
+  const seq = ++dayTasksSeq;
   const dateStr = state.calendarDayDate;
   const oldPos = shouldAnimate ? snapshotPositions(calDayTasks) : null; // 清空前记旧位置
   calDayTasks.innerHTML = '';
   const list = document.createElement('div');
   list.id = 'cal-day-list';
-  const tasks = state.tasks
-    .filter(t => t.dueDate === dateStr)
-    .sort((a, b) => {
-      if (a.completed !== b.completed) return a.completed ? 1 : -1;
-      return (a.sortOrder ?? 0) - (b.sortOrder ?? 0);
-    });
+  const tasks = (await loadTasksForDate(dateStr)).sort((a, b) => {
+    if (a.completed !== b.completed) return a.completed ? 1 : -1;
+    return (a.sortOrder ?? 0) - (b.sortOrder ?? 0);
+  });
+  if (seq !== dayTasksSeq) return; // 期间已切换到其他日期,丢弃本次渲染
+  state.calendarDayTasks = tasks;
 
   if (tasks.length === 0) {
     const empty = document.createElement('div');
@@ -2518,8 +2754,20 @@ function renderDayTasks(shouldAnimate = false, stagger = false) {
     empty.append(icon, title);
     list.appendChild(empty);
   } else {
-    tasks.forEach(task => {
-      list.appendChild(buildTaskRow(task, state.tasks.indexOf(task), { noHoverBar: true }));
+    // 负 idx 用唯一负序列号(-1,-2,...),渲染时记录 idx→任务 映射,点击经 taskByIdx 精确取对象
+    // 不能用 -i-1(排序后下标):合并/去重数组顺序可能与渲染行不一致,导致勾选连带误改
+    state.calendarDayIdMap = new Map();
+    let neg = 0;
+    tasks.forEach((task) => {
+      const idxInToday = state.tasks.indexOf(task);
+      let idx;
+      if (idxInToday >= 0) {
+        idx = idxInToday;
+      } else {
+        idx = -(++neg);
+        state.calendarDayIdMap.set(idx, task);
+      }
+      list.appendChild(buildTaskRow(task, idx, { noHoverBar: true }));
     });
   }
   calDayTasks.appendChild(list);

@@ -917,9 +917,10 @@ body {
   height: 5px;
   border-radius: 50%;
 }
-.cal-dot-green { background: #4caf50; }
-.cal-dot-yellow { background: #f5b301; }
-.cal-dot-red { background: #e05570; }
+.cal-dot-green { background: #D4B300; }
+.cal-dot-yellow { background: #DB8700; }
+.cal-dot-red { background: #E65C00; }
+.cal-dot-done { background: #4caf50; } /* 历史日期已完成项目的绿点 */
 
 /* 当日任务单列列表(day 模式):任务行复用 .task-item 主列表样式,仅容器不同 */
 #cal-day-tasks {

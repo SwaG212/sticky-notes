@@ -806,6 +806,25 @@ function setupIPC() {
     catch (e) { return { success: false, error: e.message }; }
     saveTasksToFile(tasks); return { success: true };
   });
+  // 按日期读/写历史任务文件(day 视图显示该日期全部任务,含已完成);日期格式校验防目录穿越
+  const TASK_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  ipcMain.handle('list-tasks-files', (_e) => {
+    if (!isTrustedSender(_e)) return [];
+    const dir = path.join(userDataPath, 'tasks');
+    try { return fs.existsSync(dir) ? fs.readdirSync(dir) : []; }
+    catch (e) { return []; }
+  });
+  ipcMain.handle('load-tasks-by-date', (_e, dateStr) => {
+    if (!isTrustedSender(_e) || !TASK_DATE_RE.test(dateStr || '')) return [];
+    return readJSON(path.join(userDataPath, 'tasks', `${dateStr}.json`)) || [];
+  });
+  ipcMain.handle('save-tasks-by-date', (_e, dateStr, tasks) => {
+    if (!isTrustedSender(_e) || !TASK_DATE_RE.test(dateStr || '')) return { success: false, error: 'FORBIDDEN' };
+    try { validateTasks(tasks); }
+    catch (e) { return { success: false, error: e.message }; }
+    writeJSON(path.join(userDataPath, 'tasks', `${dateStr}.json`), tasks);
+    return { success: true };
+  });
   ipcMain.handle('set-window-fixed', (_e, fixed) => {
     if (!isTrustedSender(_e)) return;
     winFixed = fixed;

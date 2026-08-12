@@ -22,6 +22,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 任务存储
   loadTasks: () => ipcRenderer.invoke('load-tasks'),
   saveTasks: (tasks) => ipcRenderer.invoke('save-tasks', tasks),
+  listTasksFiles: () => ipcRenderer.invoke('list-tasks-files'),
+  loadTasksByDate: (dateStr) => ipcRenderer.invoke('load-tasks-by-date', dateStr),
+  saveTasksByDate: (dateStr, tasks) => ipcRenderer.invoke('save-tasks-by-date', dateStr, tasks),
 
   // 窗口位置
   setWindowFixed: (fixed) => ipcRenderer.invoke('set-window-fixed', fixed),
