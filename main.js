@@ -1,8 +1,9 @@
-const { app, BrowserWindow, Tray, globalShortcut, Menu, nativeImage, screen, ipcMain, safeStorage, clipboard, protocol, net, shell } = require('electron');
+const { app, BrowserWindow, Tray, globalShortcut, Menu, nativeImage, screen, ipcMain, safeStorage, clipboard, protocol, net, shell, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execSync } = require('child_process');
 const os = require('os');
+const { pathToFileURL } = require('url');
 
 // ========== 性能优化 ==========
 app.disableHardwareAcceleration();
@@ -428,13 +429,36 @@ function getNotesDir() {
   return cfg.notesDir && cfg.notesDir.trim() ? cfg.notesDir.trim() : path.join(userDataPath, 'notes');
 }
 
-// 路径安全:校验 name 解析后仍位于 baseDir 内,防止 ../ 目录穿越逃出笔记目录
+// 路径安全:词法校验(防 ../ 穿越) + 真实路径校验(防符号链接/Junction 逃逸)
+// 已存在的文件验证 realpath;不存在(新建)则向上找存在的最深祖先目录验证真实路径后拼回
 function safeJoin(baseDir, name) {
   if (typeof name !== 'string' || !name) throw new Error('INVALID_PATH');
   const base = path.resolve(baseDir);
   const full = path.resolve(base, name);
   if (full !== base && !full.startsWith(base + path.sep)) throw new Error('INVALID_PATH');
+  let target = full;
+  const suffix = [];
+  while (!fs.existsSync(target) && target !== path.dirname(target)) {
+    suffix.unshift(path.basename(target));
+    target = path.dirname(target);
+  }
+  try {
+    const realTarget = fs.realpathSync(target);
+    const realBase = fs.realpathSync(base);
+    let realFull = realTarget;
+    for (const s of suffix) realFull = path.join(realFull, s);
+    if (realFull !== realBase && !realFull.startsWith(realBase + path.sep)) throw new Error('INVALID_PATH');
+  } catch (e) {
+    throw new Error('INVALID_PATH'); // realpath 失败或真实路径逃出根目录,一律拒绝
+  }
   return full;
+}
+
+// 笔记文件名:必须是根目录下单层 .md 文件(禁止子目录/路径/其他扩展名)
+function validateNoteName(filename) {
+  if (typeof filename !== 'string' || !filename) return false;
+  if (path.basename(filename) !== filename) return false;
+  return filename.toLowerCase().endsWith('.md');
 }
 
 function getPinsPath() {
@@ -450,6 +474,7 @@ function savePinnedNotes(pinned) {
 }
 
 function togglePinNote(filename) {
+  if (!validateNoteName(filename)) return getPinnedNotes(); // 非法文件名拒绝置顶
   const pinned = getPinnedNotes();
   const idx = pinned.indexOf(filename);
   if (idx === -1) {
@@ -474,6 +499,7 @@ async function listNotes() {
 }
 
 function readNote(filename) {
+  if (!validateNoteName(filename)) return ''; // 非法文件名按"文件不存在"处理
   let filePath;
   try { filePath = safeJoin(getNotesDir(), filename); }
   catch (e) { return ''; } // 非法路径按"文件不存在"处理
@@ -482,6 +508,7 @@ function readNote(filename) {
 }
 
 function saveNote(filename, content) {
+  if (!validateNoteName(filename)) throw new Error('INVALID_PATH');
   const dir = getNotesDir();
   ensureDir(dir);
   fs.writeFileSync(safeJoin(dir, filename), content, 'utf-8');
@@ -499,6 +526,7 @@ function createNote() {
 }
 
 function renameNoteFile(oldName, newName) {
+  if (!validateNoteName(oldName) || !validateNoteName(newName)) throw new Error('INVALID_PATH'); // 禁跨目录/改扩展名
   const dir = getNotesDir();
   const oldPath = safeJoin(dir, oldName);
   const newPath = safeJoin(dir, newName);
@@ -511,6 +539,7 @@ function renameNoteFile(oldName, newName) {
 }
 
 function deleteNoteFile(filename) {
+  if (!validateNoteName(filename)) return; // 非法文件名按"文件不存在"处理
   let filePath;
   try { filePath = safeJoin(getNotesDir(), filename); }
   catch (e) { return; } // 非法路径按"文件不存在"处理
@@ -529,6 +558,7 @@ function deleteNoteFile(filename) {
 
 // ========== AI 笔记命名 ==========
 async function aiNameNote(filename, content) {
+  if (!validateNoteName(filename)) return null; // 源文件名非法则放弃
   const cfg = loadConfig();
   if (!cfg.apiKey) return null;
   const prompt = `用不超过15个字概括以下笔记的主要内容，只返回概括文字，不要日期、标点或任何额外内容。\n\n笔记内容：\n${content}`;
@@ -539,9 +569,10 @@ async function aiNameNote(filename, content) {
       cfg.baseUrl
     );
     let summary = response.choices?.[0]?.message?.content || '';
-    summary = summary.replace(/[，,。\.！!？?\n\r]/g, '').trim().slice(0, 15);
+    summary = summary.replace(/[，,。\.！!？?\n\r\/\\]/g, '').trim().slice(0, 15);
     if (!summary) return null;
     const newName = `${summary}.md`;
+    if (!validateNoteName(newName)) return null; // AI 摘要含路径分隔符则放弃
     const dir = getNotesDir();
     const oldPath = safeJoin(dir, filename);
     const newPath = safeJoin(dir, newName);
@@ -594,7 +625,6 @@ function showAlarmWindow(tasks) {
     show: false,
     backgroundColor: '#ffffff',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -619,7 +649,6 @@ function showAlarmWindow(tasks) {
     <div class="divider"></div>
     <div class="note">时间到了！</div>
     <button onclick="window.close()">确认</button>
-    <script>const{ipcRenderer}=require('electron');</script>
   </body></html>`;
 
   alarmWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
@@ -641,8 +670,37 @@ const MAX_TASK_LEN = 1000;              // 单条任务文本长度
 const MAX_NOTE_LEN = 5 * 1024 * 1024;   // 笔记内容(字符数)
 const MAX_IMAGE_DATAURL_LEN = 14 * 1024 * 1024; // 图片 data URL 字符串长度(base64 4/3 膨胀,14MB 解码约 10.5MB)
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;       // 图片解码后字节数(与渲染层限制一致)
+const MAX_IMAGE_READ_BYTES = 10 * 1024 * 1024;  // 读取磁盘图片文件上限(防外部放入的超大文件被读入内存)
 const MAX_AI_TEXT_LEN = 10000;          // AI 输入文本长度
 const MAX_AI_IMAGES = 5;                // AI 附带图片张数
+
+// ========== IPC 安全 ==========
+const MAIN_PAGE_URL = pathToFileURL(path.join(__dirname, 'renderer', 'index.html')).href;
+
+// 只接受主页面(index.html)发出的 IPC,拒绝其他 webContents/frame
+function isTrustedSender(event) {
+  const url = event && event.senderFrame ? event.senderFrame.url : '';
+  return typeof url === 'string' && url.toLowerCase() === MAIN_PAGE_URL.toLowerCase();
+}
+
+// 图片附件相对路径:必须 attachments/ 下单层文件 + 固定图片扩展名
+const IMAGE_REL_RE = /^attachments\/[^\\/]+\.(png|jpe?g|gif|webp|bmp)$/i;
+function validateImageRelPath(relPath) {
+  return typeof relPath === 'string' && IMAGE_REL_RE.test(relPath);
+}
+
+// 文件魔数检测(不信 Data URL 声明的 MIME):返回实际类型,无法识别返回 null
+function detectImageType(buf) {
+  if (!buf || buf.length < 12) return null;
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 &&
+      buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a) return 'png';
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpeg';
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'gif';
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return 'webp';
+  if (buf[0] === 0x42 && buf[1] === 0x4d) return 'bmp';
+  return null;
+}
 
 function validateTasks(tasks) {
   if (!Array.isArray(tasks) || tasks.length > MAX_TASKS) throw new Error('INPUT_TOO_LARGE');
@@ -675,6 +733,7 @@ function validateAiInput(text, images) {
 function setupIPC() {
   ipcMain.handle('organize-request', async (_event, { text, images, project }) => {
     try {
+      if (!isTrustedSender(_event)) throw new Error('FORBIDDEN');
       validateAiInput(text, images);
       const tasks = await organizeText(text, images, project);
       return { success: true, tasks };
@@ -686,24 +745,69 @@ function setupIPC() {
         'EMPTY_INPUT': '请输入内容',
         'PARSE_ERROR': 'AI 返回格式异常，请重试',
         'INPUT_TOO_LARGE': '输入内容过大',
+        'FORBIDDEN': '请求被拒绝',
       };
       const msg = errMap[e.message] || `AI 服务异常：${e.message}`;
       return { success: false, error: msg };
     }
   });
 
-  ipcMain.handle('get-config', () => loadConfig());
-  ipcMain.handle('set-settings-open', (_e, open) => { settingsOpen = open; });
-  ipcMain.handle('save-config', (_event, cfg) => { saveConfig(cfg); return { success: true }; });
-  ipcMain.handle('get-login-settings', () => app.getLoginItemSettings().openAtLogin);
-  ipcMain.handle('set-login-settings', (_e, enabled) => app.setLoginItemSettings({ openAtLogin: enabled }));
-  ipcMain.handle('load-tasks', () => loadTasksFromFile());
+  ipcMain.handle('get-config', (_event) => {
+    if (!isTrustedSender(_event)) return null;
+    const cfg = loadConfig();
+    const { apiKey, ...safe } = cfg; // 不向渲染层返回 API Key
+    return safe;
+  });
+  ipcMain.handle('has-api-key', (_event) => {
+    if (!isTrustedSender(_event)) return false;
+    return !!loadConfig().apiKey;
+  });
+  ipcMain.handle('set-settings-open', (_e, open) => { if (isTrustedSender(_e)) settingsOpen = open; });
+  // 配置白名单:渲染层只能改这些字段,其余字段(含 apiKey 结构)一律丢弃
+  const CONFIG_WHITELIST = ['baseUrl', 'reportName', 'notesDir', 'projectNames', 'shortcuts', 'pagesEnabled', 'blurHide', 'winFixed', 'showSheetBar', 'showProjectBadge', 'showDailyReport', 'showCalendar'];
+  ipcMain.handle('save-config', async (_event, cfg) => {
+    if (!isTrustedSender(_event)) return { success: false, error: 'FORBIDDEN' };
+    const cur = loadConfig();
+    const merged = { ...cur };
+    for (const key of CONFIG_WHITELIST) {
+      if (cfg && cfg[key] !== undefined) merged[key] = cfg[key];
+    }
+    // API Key:渲染层拿不到旧 Key;仅显式输入新 Key 才更新,留空/占位则保留旧 Key
+    if (cfg && typeof cfg.apiKey === 'string' && cfg.apiKey.trim() && !cfg.apiKey.trim().startsWith('*')) {
+      merged.apiKey = cfg.apiKey.trim();
+    }
+    // 笔记目录变更需主进程确认(防受控渲染层替换受信任根目录)
+    const newDir = String(merged.notesDir || '').trim();
+    const oldDir = String(cur.notesDir || '').trim();
+    if (newDir !== oldDir) {
+      try {
+        const { response } = await dialog.showMessageBox(win, {
+          type: 'question',
+          buttons: ['确认修改', '取消'],
+          defaultId: 1,
+          cancelId: 1,
+          message: '确认修改笔记目录？',
+          detail: `笔记目录将从「${oldDir || '默认位置'}」修改为「${newDir}」`,
+        });
+        if (response !== 0) merged.notesDir = cur.notesDir; // 取消则保持旧目录
+      } catch (e) {
+        merged.notesDir = cur.notesDir; // 弹窗失败保守拒绝
+      }
+    }
+    saveConfig(merged);
+    return { success: true };
+  });
+  ipcMain.handle('get-login-settings', (_e) => { if (!isTrustedSender(_e)) return false; return app.getLoginItemSettings().openAtLogin; });
+  ipcMain.handle('set-login-settings', (_e, enabled) => { if (isTrustedSender(_e)) app.setLoginItemSettings({ openAtLogin: enabled }); });
+  ipcMain.handle('load-tasks', (_e) => { if (!isTrustedSender(_e)) return []; return loadTasksFromFile(); });
   ipcMain.handle('save-tasks', (_event, tasks) => {
+    if (!isTrustedSender(_event)) return { success: false, error: 'FORBIDDEN' };
     try { validateTasks(tasks); }
     catch (e) { return { success: false, error: e.message }; }
     saveTasksToFile(tasks); return { success: true };
   });
   ipcMain.handle('set-window-fixed', (_e, fixed) => {
+    if (!isTrustedSender(_e)) return;
     winFixed = fixed;
     if (win && !win.isDestroyed() && fixed) {
       const { x, y, width, height } = getWindowPosition();
@@ -711,48 +815,78 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle('set-page', (_e, page) => { currentPage = page; });
-  ipcMain.handle('list-notes', () => listNotes());
-  ipcMain.handle('get-pinned-notes', () => getPinnedNotes());
-  ipcMain.handle('toggle-pin-note', (_e, filename) => togglePinNote(filename));
-  ipcMain.handle('read-note', (_e, filename) => readNote(filename));
+  ipcMain.handle('set-page', (_e, page) => { if (isTrustedSender(_e)) currentPage = page; });
+  ipcMain.handle('list-notes', (_e) => { if (!isTrustedSender(_e)) return []; return listNotes(); });
+  ipcMain.handle('get-pinned-notes', (_e) => { if (!isTrustedSender(_e)) return []; return getPinnedNotes(); });
+  ipcMain.handle('toggle-pin-note', (_e, filename) => { if (!isTrustedSender(_e)) return getPinnedNotes(); return togglePinNote(filename); });
+  ipcMain.handle('read-note', (_e, filename) => { if (!isTrustedSender(_e)) return ''; return readNote(filename); });
   ipcMain.handle('save-note', (_e, filename, content) => {
+    if (!isTrustedSender(_e)) return { success: false, error: 'FORBIDDEN' };
     try { validateNoteContent(content); }
     catch (err) { return { success: false, error: err.message }; }
-    saveNote(filename, content); return { success: true };
+    try { saveNote(filename, content); return { success: true }; }
+    catch (err) { return { success: false, error: err.message }; }
   });
-  ipcMain.handle('create-note', () => createNote());
-  ipcMain.handle('rename-note', (_e, oldName, newName) => { renameNoteFile(oldName, newName); return { success: true }; });
-  ipcMain.handle('delete-note', (_e, filename) => { deleteNoteFile(filename); return { success: true }; });
+  ipcMain.handle('create-note', (_e) => { if (!isTrustedSender(_e)) return null; return createNote(); });
+  ipcMain.handle('rename-note', (_e, oldName, newName) => {
+    if (!isTrustedSender(_e)) return { success: false, error: 'FORBIDDEN' };
+    try { renameNoteFile(oldName, newName); return { success: true }; }
+    catch (err) { return { success: false, error: err.message }; }
+  });
+  ipcMain.handle('delete-note', (_e, filename) => {
+    if (!isTrustedSender(_e)) return { success: false, error: 'FORBIDDEN' };
+    deleteNoteFile(filename); return { success: true };
+  });
   ipcMain.handle('save-note-image', (_event, dataUrl) => {
+    if (!isTrustedSender(_event)) return { error: 'Invalid data URL' };
     let buf;
     try { buf = validateImageDataUrl(dataUrl); }
     catch (e) { return { error: 'Invalid data URL' }; }
+    const type = detectImageType(buf); // 魔数验证:不信 Data URL 声明
+    if (!type) return { error: 'Invalid data URL' };
     const dir = path.join(getNotesDir(), 'attachments');
     ensureDir(dir);
-    const filename = `img_${Date.now()}.png`;
+    const filename = `img_${Date.now()}.${type}`; // 扩展名取自真实文件类型
     fs.writeFileSync(path.join(dir, filename), buf);
     return { filename: `attachments/${filename}` };
   });
-  ipcMain.handle('read-note-image', async (_e, relativePath) => {
+  ipcMain.handle('read-note-image', (_e, relativePath) => {
+    if (!isTrustedSender(_e)) return null;
+    if (!validateImageRelPath(relativePath)) return null; // 仅 attachments/ 单层图片
     let fullPath;
     try { fullPath = safeJoin(getNotesDir(), relativePath); }
     catch (e) { return null; }
     if (!fs.existsSync(fullPath)) return null;
-    const data = fs.readFileSync(fullPath);
-    const ext = path.extname(relativePath).toLowerCase();
-    const mimeTypes = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp' };
-    return `data:${mimeTypes[ext] || 'image/png'};base64,${data.toString('base64')}`;
+    try {
+      if (fs.statSync(fullPath).size > MAX_IMAGE_READ_BYTES) return null; // 超大文件拒读
+      const data = fs.readFileSync(fullPath);
+      if (!detectImageType(data)) return null; // 伪装文件(扩展名与内容不符)拒读
+      const ext = path.extname(relativePath).toLowerCase();
+      const mimeTypes = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp' };
+      return `data:${mimeTypes[ext] || 'image/png'};base64,${data.toString('base64')}`;
+    } catch (e) { return null; }
   });
   ipcMain.handle('open-note-image', (_e, relativePath) => {
+    if (!isTrustedSender(_e)) return { error: 'File not found' };
+    if (!validateImageRelPath(relativePath)) return { error: 'File not found' };
     let fullPath;
     try { fullPath = safeJoin(getNotesDir(), relativePath); }
     catch (e) { return { error: 'File not found' }; }
     if (!fs.existsSync(fullPath)) return { error: 'File not found' };
+    try { // 打开前复核:大小限制 + 魔数,防止外部放置的超大/伪装文件被系统关联程序执行
+      if (fs.statSync(fullPath).size > MAX_IMAGE_READ_BYTES) return { error: 'File not found' };
+      const fd = fs.openSync(fullPath, 'r');
+      const head = Buffer.alloc(12);
+      fs.readSync(fd, head, 0, 12, 0);
+      fs.closeSync(fd);
+      if (!detectImageType(head)) return { error: 'File not found' };
+    } catch (e) { return { error: 'File not found' }; }
     shell.openPath(fullPath);
     return { success: true };
   });
   ipcMain.handle('delete-note-image', (_e, relativePath) => {
+    if (!isTrustedSender(_e)) return { success: true };
+    if (!validateImageRelPath(relativePath)) return { success: true };
     let fullPath;
     try { fullPath = safeJoin(getNotesDir(), relativePath); }
     catch (e) { return { success: true }; }
@@ -766,11 +900,13 @@ function setupIPC() {
     return { success: true };
   });
   ipcMain.handle('ai-name-note', async (_e, filename, content) => {
+    if (!isTrustedSender(_e)) return { newFilename: null };
     const newName = await aiNameNote(filename, content);
     return { newFilename: newName };
   });
 
   ipcMain.handle('generate-daily-report', (_event, tasks) => {
+    if (!isTrustedSender(_event)) return { report: '' };
     try { validateTasks(tasks); }
     catch (e) { return { report: '' }; }
     const cfg = loadConfig();
@@ -791,6 +927,7 @@ function setupIPC() {
 
   ipcMain.handle('translate', async (_event, { text, images }) => {
     try {
+      if (!isTrustedSender(_event)) throw new Error('FORBIDDEN');
       validateAiInput(text, images);
       const res = await translateText(text || '', images || []);
       return { success: true, translated: res.translated, sourceLang: res.sourceLang, targetLang: res.targetLang };
@@ -802,6 +939,7 @@ function setupIPC() {
         'EMPTY_INPUT': '请输入内容',
         'OCR_FAILED': '图片识别失败，请重试或直接输入文字',
         'INPUT_TOO_LARGE': '输入内容过大',
+        'FORBIDDEN': '请求被拒绝',
       };
       const msg = errMap[e.message] || `翻译服务异常：${e.message}`;
       return { success: false, error: msg };
@@ -846,6 +984,12 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.setVisibleOnAllWorkspaces(true);
+
+  // 导航与弹窗防护:禁止页面导航离开主页面,禁止新窗口
+  win.webContents.on('will-navigate', (e, url) => {
+    if (url !== win.webContents.getURL()) e.preventDefault();
+  });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
   // 物理裁切圆角（CSS border-radius 在透明窗口无效）
   win.once('ready-to-show', () => {

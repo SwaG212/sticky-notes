@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 配置
   getConfig: () => ipcRenderer.invoke('get-config'),
+  hasApiKey: () => ipcRenderer.invoke('has-api-key'),
   saveConfig: (cfg) => ipcRenderer.invoke('save-config', cfg),
   setSettingsOpen: (open) => ipcRenderer.invoke('set-settings-open', open),
   getLoginSettings: () => ipcRenderer.invoke('get-login-settings'),

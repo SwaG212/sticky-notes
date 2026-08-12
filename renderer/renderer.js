@@ -1735,14 +1735,17 @@ function escapeHtml(s) {
 // ========== Markdown ↔ HTML 转换 ==========
   // 图片数据缓存（用于复制到外部应用时替换 note-image:// 为 base64）
 const imageDataCache = new Map(); // relativePath → base64 data URL
-const MAX_IMAGE_CACHE = 30; // 容量上限,超出淘汰最旧条目(当前 DOM 图仍可用 data-b64 兜底)
+const MAX_IMAGE_CACHE_BYTES = 40 * 1024 * 1024; // 总字节上限 ~40MB(防 30 条 × 10MB 突破 V8 128MB 堆)
 
 function cacheImageData(relativePath, dataUrl) {
   if (imageDataCache.has(relativePath)) imageDataCache.delete(relativePath); // 刷新访问时间(移到末尾,真 LRU)
   imageDataCache.set(relativePath, dataUrl);
-  if (imageDataCache.size > MAX_IMAGE_CACHE) {
+  let total = 0;
+  for (const v of imageDataCache.values()) total += v.length;
+  while (total > MAX_IMAGE_CACHE_BYTES && imageDataCache.size > 1) {
     const oldest = imageDataCache.keys().next().value;
-    if (oldest !== undefined) imageDataCache.delete(oldest);
+    total -= imageDataCache.get(oldest).length;
+    imageDataCache.delete(oldest);
   }
 }
 
@@ -1796,10 +1799,9 @@ function htmlToMarkdown(html) {
   return lines.join('\n');
 }
 
-function insertImageAtCursor(relativePath, dataUrl) {
+function insertImageAtCursor(relativePath) {
   const img = document.createElement('img');
   img.src = `note-image://${relativePath}`;
-  img.setAttribute('data-b64', dataUrl);
   const sel = window.getSelection();
   if (sel.rangeCount > 0) {
     const range = sel.getRangeAt(0);
@@ -1850,10 +1852,7 @@ async function populateImageCache() {
     if (!imageDataCache.has(relativePath)) {
       try {
         const dataUrl = await window.electronAPI.readNoteImage(relativePath);
-        if (dataUrl) {
-          cacheImageData(relativePath, dataUrl);
-          img.setAttribute('data-b64', dataUrl);
-        }
+        if (dataUrl) cacheImageData(relativePath, dataUrl);
       } catch (e) { /* ignore */ }
     }
   }
@@ -1899,7 +1898,10 @@ async function openSettings() {
   if (window.electronAPI) {
     window.electronAPI.setSettingsOpen(true);
     const cfg = await window.electronAPI.getConfig();
-    $('#settings-apikey').value = cfg.apiKey || '';
+    // API Key 不回填(主进程隔离):已配置时显示占位提示,留空提交则保持旧 Key
+    const hasKey = await window.electronAPI.hasApiKey();
+    $('#settings-apikey').value = '';
+    $('#settings-apikey').placeholder = hasKey ? '已配置，留空保持不变' : 'sk-xxxxxxxxxxxxxxxxxxxx';
     $('#settings-baseurl').value = cfg.baseUrl || 'https://api.deepseek.com';
     $('#settings-reportname').value = cfg.reportName || '';
 
@@ -2452,6 +2454,7 @@ function openCalendar() {
   const now = new Date();
   state.calendarMonth = { y: now.getFullYear(), m: now.getMonth() };
   state.calendarOpen = true;
+  btnCalendar.textContent = '列表'; // 日历状态:按钮切换为「列表」
   taskArea.classList.add('dimmed'); // 任务区淡出(识别框不动)
   calendarView.classList.remove('hidden'); // 日历就位(仍 opacity 0)
   setTimeout(() => {
@@ -2462,6 +2465,7 @@ function openCalendar() {
 
 function closeCalendar() {
   state.calendarOpen = false;
+  btnCalendar.textContent = '日历'; // 切回任务列表:按钮文字恢复
   state.calendarSelected = null;
   state.calendarDayDate = null;
   state.calendarWeek = null; // 周基准随日历关闭清空
@@ -2754,7 +2758,7 @@ async function autoVerify(card, seq) {
 
 async function switchToNotepad() {
   if (state.currentPage === 'notepad') return;
-  // 日历状态切页:不播关闭动画,日历随任务页直接右滑;切回任务页时由 switchToMain 静默重置
+  // 日历状态切页:不播关闭动画,日历随任务页直接右滑;切回任务页时由 switchToMain 保持状态
   state.currentPage = 'notepad';
   if (window.electronAPI) {
     window.electronAPI.setPage('notepad');
@@ -2788,26 +2792,10 @@ async function switchToMain() {
   // 保存当前笔记
   saveCurrentNote();
   state.currentPage = 'main';
-  if (state.calendarOpen) resetCalendarState(); // 从其他页切回:静默重置日历,直接显示任务列表
+  // 日历状态切页保持:切回任务页时保留上次视图(日历/选中日期/当日模式),与隐藏再显示一致
   if (window.electronAPI) window.electronAPI.setPage('main');
   pagesContainer.classList.remove('on-notepad', 'on-tools');
   setTimeout(() => textInput.focus(), 400);
-}
-
-// 静默重置日历(无动画):切回任务页时直接恢复初始任务列表
-function resetCalendarState() {
-  state.calendarOpen = false;
-  state.calendarSelected = null;
-  state.calendarDayDate = null;
-  state.calendarWeek = null;
-  calendarView.classList.remove('open', 'day-mode');
-  calendarView.classList.add('hidden');
-  taskArea.classList.remove('dimmed');
-  calGrid.style.maxHeight = '';
-  calWeekDays.innerHTML = '';
-  calDayTasks.innerHTML = '';
-  textInput.placeholder = '记录想做的事...';
-  collapseTextInput(false);
 }
 
 async function switchToTools() {
@@ -2929,7 +2917,7 @@ async function handleNotepadPaste(e) {
           const result = await window.electronAPI.saveNoteImage(dataUrl);
           if (result.filename) {
             cacheImageData(result.filename, dataUrl);
-            insertImageAtCursor(result.filename, dataUrl);
+            insertImageAtCursor(result.filename);
           }
         }
       } catch (e) { /* ignore */ }
@@ -2937,7 +2925,7 @@ async function handleNotepadPaste(e) {
   }
 }
 
-function handleNotepadCopy(e) {
+async function handleNotepadCopy(e) {
   // 只处理来自记事本编辑区的复制
   if (!notepadTextarea.contains(window.getSelection()?.anchorNode)) return;
 
@@ -2950,15 +2938,16 @@ function handleNotepadCopy(e) {
   const container = document.createElement('div');
   container.appendChild(fragment);
 
-  container.querySelectorAll('img[src^="note-image://"]').forEach(img => {
+  for (const img of container.querySelectorAll('img[src^="note-image://"]')) {
     const url = img.getAttribute('src');
     const relativePath = url.replace('note-image://', '');
-    const b64 = imageDataCache.get(relativePath) || img.getAttribute('data-b64');
-    if (b64) {
-      img.src = b64;
-      img.removeAttribute('data-b64');
+    // 缓存未命中时回读磁盘(不再长期把 Base64 存 DOM 属性)
+    let b64 = imageDataCache.get(relativePath);
+    if (!b64 && window.electronAPI) {
+      try { b64 = await window.electronAPI.readNoteImage(relativePath); } catch (err) { b64 = null; }
     }
-  });
+    if (b64) img.src = b64;
+  }
 
   const html = container.innerHTML;
   e.preventDefault();
