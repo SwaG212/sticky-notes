@@ -75,7 +75,7 @@ function loadTasksFromFile() {
       if (unique.length > 0) {
         unique.forEach(t => {
           t.createdAt = new Date().toISOString();
-          t.id = 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+          if (!t.id) t.id = 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
           t.alarmTime = null;
         });
         tasks = [...unique, ...tasks];
@@ -127,6 +127,7 @@ assertEquals(result1.length, 2, 'should have 2 unfinished tasks');
 assert(result1.every(t => !t.completed), 'all imported tasks should be unfinished');
 assert(!result1.some(t => t.task === 'completed'), 'completed task should not appear');
 assert(result1.every(t => t.alarmTime === null), 'alarmTime should be cleared');
+assert(result1.some(t => t.id === 't1') && result1.some(t => t.id === 't3'), 'migration should preserve stable task ids');
 
 // --- 测试 2: 今天文件已存在且是今天创建的 -> isNewDay=false -> 不重复追加 ---
 console.log('\nTest 2: isNewDay=false skips migration');

@@ -269,6 +269,9 @@ body {
   flex-shrink: 0; /* flex 布局下不压缩,垂直居中由父级 align-items 保证 */
   white-space: nowrap;
   cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
 }
 .project-badge:hover { background: #d6e0f7; }
 .task-item.completed .project-badge {
@@ -293,6 +296,9 @@ body {
   width: 34px;
   box-sizing: border-box;
   text-align: center;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
 }
 .project-placeholder:hover { opacity: 1; color: var(--accent); border-color: var(--accent); }
 
@@ -444,37 +450,82 @@ body {
 .task-duedate.has-date { color: var(--text); }
 
 /* 时分选择器 */
+.time-picker-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 99;
+  background: rgba(42, 42, 54, 0.075);
+  animation: dp-scrim-in 0.14s ease-out both;
+}
 .time-picker {
   position: absolute;
   z-index: 100;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 6px 24px rgba(0,0,0,0.15);
-  padding: 6px;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) 24px;
   width: 120px;
+  height: 100px;
+  padding: 5px 5px 0;
+  overflow: visible;
+  background: var(--bg);
+  border: 1px solid rgba(91, 91, 224, 0.38);
+  border-radius: 11px;
+  box-shadow:
+    0 18px 42px rgba(35, 35, 50, 0.28),
+    0 3px 10px rgba(35, 35, 50, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  animation: dp-open-above 0.16s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.time-picker.tp-place-below { animation-name: dp-open-below; }
+.time-picker::before {
+  content: '';
+  position: absolute;
+  left: var(--tp-anchor-x, calc(100% - 24px));
+  bottom: -5px;
+  width: 9px;
+  height: 9px;
+  background: var(--bg);
+  border-right: 1px solid rgba(91, 91, 224, 0.38);
+  border-bottom: 1px solid rgba(91, 91, 224, 0.38);
+  transform: translateX(-50%) rotate(45deg);
+}
+.time-picker.tp-place-below::before {
+  top: -5px;
+  bottom: auto;
+  border: none;
+  border-left: 1px solid rgba(91, 91, 224, 0.38);
+  border-top: 1px solid rgba(91, 91, 224, 0.38);
 }
 .tp-actions {
-  display: flex;
-  gap: 4px;
-  margin-bottom: 4px;
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  margin: 0 -5px;
+  border-top: 1px solid var(--border);
 }
 .tp-save, .tp-clear {
-  flex: 1;
-  padding: 5px 0;
+  min-width: 0;
+  padding: 0;
   background: transparent;
   border: none;
   color: var(--text-dim);
-  font-size: 12px;
+  font-size: 11px;
   font-family: inherit;
   cursor: pointer;
-  border-radius: 4px;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+  transition: background 0.12s ease, color 0.12s ease;
 }
-.tp-save:hover { background: var(--accent); color: #fff; }
-.tp-clear:hover { color: var(--danger); }
+.tp-clear { border-radius: 0 0 0 10px; }
+.tp-save {
+  border-left: 1px solid var(--border);
+  border-radius: 0 0 10px 0;
+}
+.tp-save:hover { background: var(--bg-input); color: var(--accent); }
+.tp-clear:hover { background: var(--bg-input); color: var(--danger); }
+.tp-clear:disabled { opacity: 0.35; cursor: default; }
 .tp-cols {
+  min-height: 0;
   display: flex;
   gap: 2px;
   mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
@@ -482,9 +533,12 @@ body {
 }
 .tp-col {
   flex: 1;
-  max-height: 119px;
+  min-height: 0;
+  max-height: 69px;
   overflow-y: auto;
+  scrollbar-width: none;
 }
+.tp-col::-webkit-scrollbar { display: none; width: 0; }
 
 
 .tp-opt {
@@ -494,100 +548,218 @@ body {
   cursor: pointer;
   border-radius: 3px;
   color: var(--text);
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
 }
 .tp-opt:hover { background: var(--bg-secondary); }
 .tp-opt.active { background: var(--accent); color: #fff; }
 
 /* 日期选择器 */
+.date-picker-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 99;
+  background: rgba(42, 42, 54, 0.075);
+  animation: dp-scrim-in 0.14s ease-out both;
+}
 .date-picker {
   position: absolute;
   z-index: 100;
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  width: min(336px, calc(100% - 16px));
+  height: 94px;
+  overflow: visible;
   background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 6px 24px rgba(0,0,0,0.15);
-  padding: 8px;
-  width: 210px;
+  border: 1px solid rgba(91, 91, 224, 0.38);
+  border-radius: 11px;
+  box-shadow:
+    0 18px 42px rgba(35, 35, 50, 0.28),
+    0 3px 10px rgba(35, 35, 50, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  animation: dp-open-above 0.16s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
-.dp-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
-  font-size: 13px;
-  font-weight: bold;
+.date-picker.dp-place-below {
+  animation-name: dp-open-below;
+}
+.date-picker::before {
+  content: '';
+  position: absolute;
+  left: var(--dp-anchor-x, calc(100% - 24px));
+  bottom: -5px;
+  width: 9px;
+  height: 9px;
+  background: var(--bg);
+  border-right: 1px solid rgba(91, 91, 224, 0.38);
+  border-bottom: 1px solid rgba(91, 91, 224, 0.38);
+  transform: translateX(-50%) rotate(45deg);
+}
+.date-picker.dp-place-below::before {
+  top: -5px;
+  bottom: auto;
+  border: none;
+  border-left: 1px solid rgba(91, 91, 224, 0.38);
+  border-top: 1px solid rgba(91, 91, 224, 0.38);
+}
+@keyframes dp-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes dp-open-above {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes dp-open-below {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.dp-week-rail {
+  display: grid;
+  grid-template-rows: repeat(3, 1fr);
+  gap: 1px;
+  padding: 4px 5px;
+  overflow: hidden;
+  background: #f0f0f7;
+  border-right: 1px solid var(--border);
+  border-radius: 10px 0 0 10px;
+}
+.dp-week-option {
+  min-width: 0;
+  padding: 0 3px;
+  overflow: hidden;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  text-overflow: clip;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.dp-week-option:hover {
+  background: var(--bg-secondary);
   color: var(--text);
 }
-.dp-nav {
-  width: 24px;
-  height: 24px;
+.dp-week-option.is-active {
+  background: rgba(91, 91, 224, 0.12);
+  color: var(--accent);
+  cursor: default;
+}
+.dp-week-rail.dp-scroll-next .dp-week-option {
+  animation: dp-week-scroll-up 0.18s cubic-bezier(0.22, 0.72, 0.28, 1) both;
+}
+.dp-week-rail.dp-scroll-prev .dp-week-option {
+  animation: dp-week-scroll-down 0.18s cubic-bezier(0.22, 0.72, 0.28, 1) both;
+}
+@keyframes dp-week-scroll-up {
+  from { opacity: 0.42; transform: translateY(calc(100% + 1px)); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes dp-week-scroll-down {
+  from { opacity: 0.42; transform: translateY(calc(-100% - 1px)); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.dp-week-content {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: 1fr 24px;
+  overflow: hidden;
+  border-radius: 0 10px 10px 0;
+}
+.dp-date-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  padding: 3px 7px 1px;
+}
+.dp-date-option {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: repeat(2, 1fr);
+  place-items: center;
   padding: 0;
   border: none;
+  border-radius: 7px;
   background: transparent;
-  color: var(--text-dim);
-  font-size: 14px;
+  color: var(--text);
+  font-family: inherit;
   cursor: pointer;
-  border-radius: 4px;
-  display: flex;
+  transition: background 0.12s ease, opacity 0.12s ease;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+}
+.dp-date-option:hover { background: var(--bg-secondary); }
+.dp-date-option.is-past { opacity: 0.48; }
+.dp-date-option.is-past:hover,
+.dp-date-option.is-past:focus-visible { opacity: 1; }
+.dp-weekday {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.dp-day-number {
+  min-width: 24px;
+  height: 24px;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-}
-.dp-nav:hover { background: var(--bg-secondary); color: var(--text); }
-.dp-weekdays {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 2px;
-  margin-bottom: 4px;
-}
-.dp-weekday {
-  font-size: 10px;
-  color: var(--text-dim);
-  text-align: center;
-  padding: 2px 0;
-}
-.dp-grid {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 2px;
-}
-.dp-day {
-  padding: 5px 0;
+  padding: 0 3px;
+  border-radius: 8px;
   font-size: 12px;
-  text-align: center;
-  cursor: pointer;
-  border-radius: 4px;
-  color: var(--text);
-}
-.dp-day:hover { background: var(--bg-secondary); }
-.dp-day.other-month { color: var(--text-dim); opacity: 0.35; pointer-events: none; }
-.dp-day.today { box-shadow: inset 0 0 0 1px var(--accent); }
-.dp-day.selected { background: var(--accent); color: #fff; }
-.dp-actions {
-  display: flex;
-  gap: 3px;
-  margin-top: 6px;
-}
-.dp-actions .dp-action-btn { flex: 1; text-align: center; }
-.dp-clear-row {
-  display: flex;
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--border);
-}
-.dp-clear-row .dp-action-btn { flex: 1; padding: 4px 0; }
-.dp-action-btn {
-  padding: 3px 8px;
-  font-size: 11px;
-  font-family: inherit;
-  border: none;
-  background: transparent;
-  color: var(--text-dim);
-  border-radius: 4px;
-  cursor: pointer;
+  font-weight: 600;
   white-space: nowrap;
 }
-.dp-action-btn:hover { background: var(--bg-secondary); color: var(--text); }
-.dp-action-btn.clear-btn:hover { color: var(--danger); }
+.dp-date-option.is-today:not(.is-selected) .dp-day-number {
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--accent);
+}
+.dp-date-option.is-selected { opacity: 1; }
+.dp-date-option.is-selected .dp-day-number {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 7px rgba(91, 91, 224, 0.26);
+}
+.dp-clear-btn {
+  align-self: stretch;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 10px 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.dp-clear-btn:hover { background: var(--bg-input); color: var(--danger); }
+.dp-clear-btn:disabled { opacity: 0.35; cursor: default; }
+.dp-week-content.dp-slide-next .dp-date-grid { animation: dp-slide-next 0.14s ease-out both; }
+.dp-week-content.dp-slide-prev .dp-date-grid { animation: dp-slide-prev 0.14s ease-out both; }
+@keyframes dp-slide-next {
+  from { opacity: 0; transform: translateX(8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes dp-slide-prev {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .date-picker-scrim,
+  .time-picker-scrim,
+  .date-picker,
+  .date-picker.dp-place-below,
+  .time-picker,
+  .time-picker.tp-place-below,
+  .dp-week-rail.dp-scroll-next .dp-week-option,
+  .dp-week-rail.dp-scroll-prev .dp-week-option,
+  .dp-week-content.dp-slide-next .dp-date-grid,
+  .dp-week-content.dp-slide-prev .dp-date-grid { animation: none; }
+}
 
 /* 项目行内展开:点击徽标/「+」后,从文字位向右逐个弹出项目胶囊 */
 .project-expand {
@@ -619,6 +791,9 @@ body {
   color: var(--accent);
   animation: pe-in 0.08s ease-out backwards;
   animation-delay: calc(var(--i) * 0.02s);
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
 }
 /* 悬停时颜色与徽标一致(实色) */
 .pe-opt:hover { background: #e8ecfa; }
@@ -779,6 +954,9 @@ body {
   cursor: pointer;
   padding: 1px 8px;
   border-radius: 6px;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
 }
 #cal-monthlabel:hover { background: var(--bg-secondary); }
 /* day 模式:‹ › 切月失效隐藏 */
@@ -791,6 +969,7 @@ body {
   gap: 4px;
   margin-top: 4px;
   padding: 0 10px;
+  transition: opacity 250ms ease;
 }
 #calendar-view:not(.day-mode) #cal-weekline { display: none; }
 #cal-week-days {
@@ -818,6 +997,9 @@ body {
   border-radius: 6px;
   font-size: 13px;
   cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
 }
 .cal-week-day:hover { background: var(--bg-secondary); }
 .cal-week-day.today { font-weight: 700; color: var(--accent); }
@@ -878,6 +1060,9 @@ body {
   border-radius: 8px;
   cursor: pointer;
   position: relative;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
 }
 .cal-day:hover { background: var(--bg-secondary); }
 .cal-day-num { font-size: 13px; color: var(--text); }
@@ -920,6 +1105,7 @@ body {
 .cal-dot-green { background: #D4B300; }
 .cal-dot-yellow { background: #DB8700; }
 .cal-dot-red { background: #E65C00; }
+.cal-dot-overdue { background: #fe231b; } /* 历史日期未完成项目红点 */
 .cal-dot-done { background: #4caf50; } /* 历史日期已完成项目的绿点 */
 
 /* 当日任务单列列表(day 模式):任务行复用 .task-item 主列表样式,仅容器不同 */
@@ -929,8 +1115,33 @@ body {
   min-height: 0;
   flex-direction: column;
   animation: calFadeIn 300ms ease;
+  transition: opacity 250ms ease;
 }
 #calendar-view.day-mode #cal-day-tasks { display: flex; }
+
+/* 当日视图返回月历：任务和周行先淡出，月历在 220ms 时开始淡入。 */
+#calendar-view.day-mode-exiting #cal-weekline,
+#calendar-view.day-mode-exiting #cal-day-tasks {
+  opacity: 0;
+  pointer-events: none;
+}
+#calendar-view.month-entering #cal-weekbar {
+  transition: none;
+}
+#calendar-view.month-entering #cal-grid {
+  max-height: none;
+  opacity: 0;
+  transition: none;
+}
+#calendar-view.month-entering .cal-weekdays,
+#calendar-view.month-entering .cal-days {
+  opacity: 1;
+  transition: none;
+}
+#calendar-view.month-entering .cal-nav {
+  opacity: 0;
+  transition: none;
+}
 @keyframes calFadeIn {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }
@@ -944,6 +1155,34 @@ body {
 #cal-day-list::-webkit-scrollbar-track { background: var(--bg-secondary); }
 #cal-day-list::-webkit-scrollbar-thumb { background: #b0b0bc; border-radius: 2px; }
 #cal-day-list::-webkit-scrollbar-thumb:hover { background: #8a8a98; }
+
+/* 修改日期时的离场克隆：脱离列表布局，在便利贴裁切边界内独立滑出。 */
+.day-date-exit-clone {
+  position: absolute !important;
+  z-index: 90;
+  margin: 0 !important;
+  pointer-events: none;
+  overflow: hidden;
+  background: var(--bg-secondary) !important;
+  will-change: transform, opacity;
+}
+.day-date-exit-clone .hover-bar,
+.day-date-exit-clone .hotzone-hint {
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+/* 日视图任务行右缘热区提示：与主任务列表相同，悬停时显示灰色竖线，操作框浮现后淡出。 */
+#cal-day-list .cal-day-task-item:not(.editing):not(.task-dragging):not(.project-expanding):not(.deleting):hover .hotzone-hint {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.15s ease;
+}
+#cal-day-list .cal-day-task-item:not(.editing):not(.task-dragging) .hover-bar.visible ~ .hotzone-hint {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease, visibility 0s linear 0.12s;
+}
 
 /* ========== 输入区 ========== */
 #input-area {
@@ -1677,6 +1916,10 @@ body {
 #note-search-bar.hidden {
   visibility: hidden;
   pointer-events: none;
+}
+/* 子元素的无结果可见状态不能覆盖搜索栏整体隐藏。 */
+#note-search-bar.hidden #note-search-status {
+  visibility: hidden;
 }
 #note-search-input {
   width: 180px;

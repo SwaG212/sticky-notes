@@ -233,9 +233,13 @@ app.whenReady().then(async () => {
       // 点击 footer 元素本身(空白区,非按钮)
       footer.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       const opened = !bar.classList.contains('hidden') && document.activeElement === noteSearchInput;
-      // Esc 关闭
+      // 模拟无搜索结果后按 Esc：搜索栏和红色叹号必须一起退出。
+      const status = document.querySelector('#note-search-status');
+      status.classList.add('noresult');
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-      const closed = bar.classList.contains('hidden');
+      const closed = bar.classList.contains('hidden')
+        && !status.classList.contains('noresult')
+        && getComputedStyle(status).visibility === 'hidden';
       // 关闭后再点 footer 可重开
       footer.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       const reopened = !bar.classList.contains('hidden');
@@ -249,7 +253,7 @@ app.whenReady().then(async () => {
   `);
   const E = JSON.parse(e1);
   assert(E.opened, `E1 点击 footer 空白区进入搜索并聚焦(实际 ${E.opened})`);
-  assert(E.closed, 'E1 Esc 关闭搜索');
+  assert(E.closed, 'E1 无结果状态按 Esc 后搜索框与红色叹号一起关闭');
   assert(E.reopened, `E1 关闭后再点 footer 可重开(实际 ${E.reopened})`);
   assert(E.toolsNoOpen, `E1 工具箱页 footer 点击不触发搜索(实际 ${E.toolsNoOpen})`);
   // E2 点击搜索栏区域本身(bar 隐藏但存在)→ 也进入搜索(监听在 footer 上冒泡)
