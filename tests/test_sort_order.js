@@ -65,7 +65,7 @@ function loadTasksFromFile() {
         if (unique.length > 0) {
           unique.forEach((t, i) => {
             t.createdAt = new Date().toISOString();
-            t.id = genId();
+            if (!t.id) t.id = genId();
             t.alarmTime = null;
             t.sortOrder = i;
           });
@@ -85,7 +85,7 @@ function sortTasks(tasks) {
   const undone = tasks.filter(t => !t.completed);
   const done = tasks.filter(t => t.completed);
   undone.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
-  done.sort((a, b) => new Date(b.completedAt || 0).getTime() - new Date(a.completedAt || 0).getTime());
+  done.sort((a, b) => new Date(a.completedAt || 0).getTime() - new Date(b.completedAt || 0).getTime());
   return [...undone, ...done];
 }
 
@@ -184,6 +184,29 @@ tasks6.forEach((t, i) => { if (t.sortOrder === undefined) t.sortOrder = i; });
 assertEquals(tasks6.map(t => t.sortOrder), [0, 1, 2], 'sortOrders assigned by index');
 const sorted6 = sortTasks(tasks6);
 assertEquals(sorted6.map(t => t.id), ['a', 'b', 'c'], 'order preserved');
+
+// ====== 测试 7: 新勾选完成的任务滑到整个列表最下方 ======
+console.log('\nTest 7: newly completed task moves to list bottom');
+const tasks7 = [
+  { id: 'a', task: 'A', completed: false, sortOrder: 0 },
+  { id: 'old-done', task: '旧完成项', completed: true, completedAt: '2026-08-14T09:00:00Z', sortOrder: 1 },
+  { id: 'b', task: 'B', completed: false, sortOrder: 2 },
+  { id: 'new-done', task: '刚完成项', completed: true, completedAt: '2026-08-14T10:00:00Z', sortOrder: 3 },
+];
+const sorted7 = sortTasks(tasks7);
+assertEquals(sorted7.map(t => t.id), ['a', 'b', 'old-done', 'new-done'], 'latest completed task is the final row');
+
+const projectSorted7 = [...tasks7].sort((a, b) => {
+  if (a.completed !== b.completed) return a.completed ? 1 : -1;
+  if (a.completed && b.completed) {
+    return new Date(a.completedAt || 0).getTime() - new Date(b.completedAt || 0).getTime();
+  }
+  if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate);
+  if (a.dueDate) return -1;
+  if (b.dueDate) return 1;
+  return 0;
+});
+assertEquals(projectSorted7.map(t => t.id), ['a', 'b', 'old-done', 'new-done'], 'project tab also places latest completed task last');
 
 // Cleanup
 fs.rmSync(testDir, { recursive: true });

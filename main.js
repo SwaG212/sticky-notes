@@ -400,7 +400,8 @@ function loadTasksFromFile() {
       if (unique.length > 0) {
         unique.forEach((t, i) => {
           t.createdAt = new Date().toISOString();
-          t.id = 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+          // 跨天副本沿用稳定 id，后续完成/编辑/删除才能精确同步全部历史文件
+          if (!t.id) t.id = 't_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
           t.alarmTime = null; // 截止日期原样保留，仅清闹钟提醒
           t.sortOrder = i;
         });

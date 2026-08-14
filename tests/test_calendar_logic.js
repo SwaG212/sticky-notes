@@ -97,7 +97,7 @@ function dotSequenceForDate(dayTasks, dateStr, todayStr) {
   const { projectCount, doneProjectCount } = countDayTasks(dayTasks);
   if (dateStr < todayStr) {
     const n1 = Math.min(projectCount, 3);
-    const colors = ['cal-dot-green', 'cal-dot-yellow', 'cal-dot-red'].slice(0, n1);
+    const colors = Array(n1).fill('cal-dot-overdue');
     const n2 = Math.min(doneProjectCount, 3 - n1);
     for (let i = 0; i < n2; i++) colors.push('cal-dot-done');
     return colors;
@@ -204,23 +204,30 @@ assert(newerUnchecked.length === 1 && newerUnchecked[0].completed === false, '�
 // --- buildDueDateIndex:完全按日期胶囊(dueDate)归属 ---
 console.log('\n--- buildDueDateIndex 按 dueDate 索引 ---');
 function buildDueDateIndex(todayTasks, cachedFiles) {
+  const latest = new Map();
+  const currentKeys = new Set();
   const index = new Map();
-  const add = (t) => {
-    if (!t || typeof t.dueDate !== 'string') return;
+  const add = (t, isCurrent = false) => {
+    if (!t) return;
     const key = t.task + '|' + (t.project || '');
-    const list = index.get(t.dueDate);
-    if (!list) { index.set(t.dueDate, [t]); return; }
-    const i = list.findIndex(x => x.task + '|' + (x.project || '') === key);
-    if (i === -1) { list.push(t); return; }
+    if (isCurrent) currentKeys.add(key);
+    const cur = latest.get(key);
+    if (!cur) { latest.set(key, t); return; }
+    if (!isCurrent && currentKeys.has(key)) return;
     // 同名副本:保留 updatedAt 最新;同时间戳时 done=true 优先(旧数据无 updatedAt 时勾选副本视为最新)
-    const cur = list[i];
     const tNew = (t.updatedAt || t.createdAt || '');
     const curNew = (cur.updatedAt || cur.createdAt || '');
-    if (tNew > curNew) list[i] = t;
-    else if (tNew === curNew && t.completed && !cur.completed) list[i] = t;
+    if (tNew > curNew) latest.set(key, t);
+    else if (tNew === curNew && t.completed && !cur.completed) latest.set(key, t);
   };
-  for (const t of todayTasks) add(t);
-  for (const arr of cachedFiles) for (const t of arr) add(t);
+  for (const t of todayTasks) add(t, true);
+  for (const arr of cachedFiles) for (const t of arr) if (t.completed) add(t);
+  for (const t of latest.values()) {
+    if (typeof t.dueDate !== 'string') continue;
+    const list = index.get(t.dueDate);
+    if (list) list.push(t);
+    else index.set(t.dueDate, [t]);
+  }
   return index;
 }
 const idxToday = [
@@ -234,18 +241,49 @@ const idxFileA = [
 ];
 const idxFileB = [
   { id: 'f3', task: '今天有日期', project: '国寿', completed: true, dueDate: '2026-08-12' }, // 与今天同名 → 今天版本优先
-  { id: 'f4', task: '跨文件任务', project: '网易', completed: false, dueDate: '2026-08-12' },
+  { id: 'f4', task: '历史孤立未完成任务', project: '网易', completed: false, dueDate: '2026-08-12' },
 ];
 const dueIndex = buildDueDateIndex(idxToday, [idxFileA, idxFileB]);
-assert(dueIndex.get('2026-08-12').length === 2, '8/12: 今天1 + 历史唯一1(f3 与 t1 同名被去重) = 2 条');
-assert(dueIndex.get('2026-08-12')[0].id === 'f3', '同名同时间戳 → 勾选状态(true)优先');
+assert(dueIndex.get('2026-08-12').length === 1, '8/12: 当前任务显示,同名历史完成副本去重');
+assert(dueIndex.get('2026-08-12')[0].id === 't1', '当前列表状态优先于同名历史副本');
 assert(dueIndex.get('2026-08-20')[0].id === 't3', '未来日期任务按 dueDate 归位(即使来自今天文件)');
 assert(dueIndex.get('2026-08-10')[0].id === 'f1', '历史文件任务按 dueDate 归位(不按文件日期)');
 const allIdxTasks = [...dueIndex.values()].flat();
 assert(!allIdxTasks.some(t => t.id === 'f2') && !allIdxTasks.some(t => t.id === 't2'), '无日期任务(今天/历史)不在任何日期格');
+assert(!allIdxTasks.some(t => t.id === 'f4'), '历史文件中的孤立未完成任务不再显示为幽灵任务');
 let totalCount = 0;
 for (const v of dueIndex.values()) totalCount += v.length;
-assert(totalCount === 4, `索引总条数 4 (实际 ${totalCount})`);
+assert(totalCount === 3, `索引总条数 3 (实际 ${totalCount})`);
+
+// 同一任务的日期胶囊从 8/4 改为 8/18 后,只能归属最新日期
+const movedDateIndex = buildDueDateIndex([
+  { id: 'o32-new', task: 'O32连接--测试', project: '中加IBP项目', dueDate: '2026-08-18', updatedAt: '2026-08-14T08:00:00Z' },
+], [[
+  { id: 'o32-old', task: 'O32连接--测试', project: '中加IBP项目', completed: true, dueDate: '2026-08-04', updatedAt: '2026-08-04T08:00:00Z' },
+]]);
+assert(!movedDateIndex.has('2026-08-04'), '日期修改后旧日期 8/4 不再显示任务');
+assert(movedDateIndex.get('2026-08-18')?.length === 1, '日期修改后任务只显示在日期胶囊指定的 8/18');
+
+// 兼容修复前未写 updatedAt 的数据:当前任务优先于同状态的历史副本
+const legacyMovedDateIndex = buildDueDateIndex([
+  { id: 'legacy-new', task: '旧数据任务', project: '中加', dueDate: '2026-08-18', createdAt: '2026-08-01T08:00:00Z', completed: false },
+], [[
+  { id: 'legacy-old', task: '旧数据任务', project: '中加', dueDate: '2026-08-04', createdAt: '2026-08-01T08:00:00Z', completed: true },
+]]);
+assert(!legacyMovedDateIndex.has('2026-08-04') && legacyMovedDateIndex.has('2026-08-18'), '旧数据无 updatedAt 时也只显示当前日期胶囊日期');
+
+// 最新副本清空日期后,旧的有日期副本不能重新出现在日历
+const clearedDateIndex = buildDueDateIndex([
+  { id: 'clear-new', task: '已清日期任务', project: '中加', dueDate: null, updatedAt: '2026-08-14T09:00:00Z' },
+], [[
+  { id: 'clear-old', task: '已清日期任务', project: '中加', completed: true, dueDate: '2026-08-04', updatedAt: '2026-08-04T09:00:00Z' },
+]]);
+assert(!clearedDateIndex.has('2026-08-04'), '清空日期胶囊后旧日期不再显示任务');
+
+const orphanIndex = buildDueDateIndex([], [[
+  { id: 'ghost', task: '整理需求变动', project: '兴银', completed: false, dueDate: '2026-08-06' },
+]]);
+assert(!orphanIndex.has('2026-08-06'), '列表已不存在的历史未完成副本不会继续出现在日历');
 
 // --- 圆点规则:未完成 > 0 显示(当天/未来),历史日期完成也显示绿点 ---
 console.log('\n--- 圆点显示规则 ---');
@@ -320,26 +358,40 @@ const pastMix = [
   { task: 'C', dueDate: YESTERDAY, completed: true, project: '阿里' },
   { task: 'D', dueDate: YESTERDAY, completed: true, project: '百度' },
 ];
-assert(eq(dotSequenceForDate(pastMix, YESTERDAY, TODAY), ['cal-dot-green', 'cal-dot-yellow', 'cal-dot-done']), '历史 2未完成+2完成 → 绿黄+绿点');
+assert(eq(dotSequenceForDate(pastMix, YESTERDAY, TODAY), ['cal-dot-overdue', 'cal-dot-overdue', 'cal-dot-done']), '历史 2个未完成项目+2个完成项目 → 2红+1绿');
 const pastMix2 = [
   { task: 'A', dueDate: YESTERDAY, completed: false, project: '国寿' },
   { task: 'B', dueDate: YESTERDAY, completed: true, project: '腾讯' },
 ];
-assert(eq(dotSequenceForDate(pastMix2, YESTERDAY, TODAY), ['cal-dot-green', 'cal-dot-done']), '历史 1未完成+1完成 → 绿+绿点');
+assert(eq(dotSequenceForDate(pastMix2, YESTERDAY, TODAY), ['cal-dot-overdue', 'cal-dot-done']), '历史 1个未完成项目+1个完成项目 → 1红+1绿');
 const pastMix3 = [
   { task: 'A', dueDate: YESTERDAY, completed: false, project: '国寿' },
   { task: 'B', dueDate: YESTERDAY, completed: true, project: '腾讯' },
   { task: 'C', dueDate: YESTERDAY, completed: true, project: '阿里' },
   { task: 'D', dueDate: YESTERDAY, completed: true, project: '百度' },
 ];
-assert(eq(dotSequenceForDate(pastMix3, YESTERDAY, TODAY), ['cal-dot-green', 'cal-dot-done', 'cal-dot-done']), '历史 1未完成+3完成 → 绿+2绿点');
+assert(eq(dotSequenceForDate(pastMix3, YESTERDAY, TODAY), ['cal-dot-overdue', 'cal-dot-done', 'cal-dot-done']), '历史 1个未完成项目+3个完成项目 → 1红+2绿');
 const pastMix4 = [
   { task: 'A', dueDate: YESTERDAY, completed: false, project: '国寿' },
   { task: 'B', dueDate: YESTERDAY, completed: false, project: '腾讯' },
   { task: 'C', dueDate: YESTERDAY, completed: false, project: '阿里' },
   { task: 'D', dueDate: YESTERDAY, completed: true, project: '百度' },
 ];
-assert(eq(dotSequenceForDate(pastMix4, YESTERDAY, TODAY), ['cal-dot-green', 'cal-dot-yellow', 'cal-dot-red']), '历史 3未完成+1完成 → 全未完成色(绿点不顶替)');
+assert(eq(dotSequenceForDate(pastMix4, YESTERDAY, TODAY), ['cal-dot-overdue', 'cal-dot-overdue', 'cal-dot-overdue']), '历史 3个未完成项目+1个完成项目 → 3红(绿点不顶替)');
+
+const pastSameProject = [
+  { task: 'A1', dueDate: YESTERDAY, completed: false, project: '兴银' },
+  { task: 'A2', dueDate: YESTERDAY, completed: false, project: '兴银' },
+];
+assert(eq(dotSequenceForDate(pastSameProject, YESTERDAY, TODAY), ['cal-dot-overdue']), '历史同一项目 2 个未完成任务 → 1 个红点');
+const pastThreeProjectsFiveTasks = [
+  { task: 'A1', dueDate: YESTERDAY, completed: false, project: '兴银' },
+  { task: 'A2', dueDate: YESTERDAY, completed: false, project: '兴银' },
+  { task: 'B1', dueDate: YESTERDAY, completed: false, project: '华创' },
+  { task: 'B2', dueDate: YESTERDAY, completed: false, project: '华创' },
+  { task: 'C1', dueDate: YESTERDAY, completed: false, project: '中加' },
+];
+assert(eq(dotSequenceForDate(pastThreeProjectsFiveTasks, YESTERDAY, TODAY), ['cal-dot-overdue', 'cal-dot-overdue', 'cal-dot-overdue']), '历史 3 个项目 5 个未完成任务 → 3 个红点');
 assert(eq(dotSequenceForDate([], YESTERDAY, TODAY), []), '历史无任务 → 无点');
 // 当天/未来:不显示绿点,仅未完成
 const todayMix = [
@@ -377,6 +429,7 @@ function syncCopies(cache, t, prevKey) {
         x.completed = t.completed;
         x.project = t.project;
         x.task = t.task;
+        x.dueDate = t.dueDate;
         synced.push(d + ':' + x.id);
       }
     }
@@ -415,6 +468,116 @@ const cache4 = new Map([
 const tRenamedNoKey = { id: 'd6', task: '新名', project: '国寿', completed: true };
 const synced4 = syncCopies(cache4, tRenamedNoKey, null);
 assert(synced4.length === 0, '无 prevKey 改名 → 旧副本不匹配(prevKey 是必要参数)');
+
+// 场景5:修改日期胶囊后,所有历史副本同步到新日期
+const cache5 = new Map([
+  ['2026-08-04', [{ id: 'e4', task: 'O32连接--测试', project: '中加IBP项目', dueDate: '2026-08-04' }]],
+  ['2026-08-18', [{ id: 'e18', task: 'O32连接--测试', project: '中加IBP项目', dueDate: '2026-08-04' }]],
+]);
+const tDateChanged = { id: 'e18', task: 'O32连接--测试', project: '中加IBP项目', dueDate: '2026-08-18' };
+syncCopies(cache5, tDateChanged, null);
+assert(cache5.get('2026-08-04')[0].dueDate === '2026-08-18', '修改日期胶囊 → 历史副本 dueDate 同步为 8/18');
+
+// --- 任务列表与日历一致性:当天完成项沉底保留,删除清除全部副本 ---
+console.log('\n--- 任务列表与日历一致性 ---');
+function visibleListTasks(tasks, activeSheet = 'all') {
+  return activeSheet === 'all'
+    ? tasks
+    : tasks.filter(t => t.project === activeSheet);
+}
+const consistencyTasks = [
+  { id: 'pending', task: '未完成任务', project: '兴银', completed: false, dueDate: '2026-08-14' },
+  { id: 'done', task: '历史已完成任务', project: '兴银', completed: true, dueDate: '2026-08-06' },
+];
+assert(visibleListTasks(consistencyTasks).map(t => t.id).join(',') === 'pending,done', '任务列表保留当天已完成任务');
+assert(visibleListTasks(consistencyTasks, '兴银').map(t => t.id).join(',') === 'pending,done', '项目页签内也保留该项目已完成任务');
+const consistencyIndex = buildDueDateIndex(consistencyTasks, []);
+assert(consistencyIndex.get('2026-08-06')?.[0].id === 'done', '已完成任务仍保留在历史日期日历中');
+
+const restoredFromHistory = { id: 'done', task: '历史已完成任务', project: '兴银', completed: false, dueDate: '2026-08-06' };
+const restoredCurrent = consistencyTasks.some(t => t.id === restoredFromHistory.id)
+  ? consistencyTasks.map(t => t.id === restoredFromHistory.id ? restoredFromHistory : t)
+  : [...consistencyTasks, restoredFromHistory];
+assert(visibleListTasks(restoredCurrent).some(t => t.id === 'done'), '从历史日历取消完成后任务恢复到当前列表');
+
+function removeCopies(todayTasks, cachedFiles, target) {
+  const matches = (x) => x === target
+    || (x.id && target.id && x.id === target.id)
+    || (x.task === target.task && (x.project || '') === (target.project || ''));
+  return {
+    today: todayTasks.filter(x => !matches(x)),
+    files: cachedFiles.map(arr => arr.filter(x => !matches(x))),
+  };
+}
+const deleteTarget = { id: 'today-copy', task: '整理需求变动', project: '兴银', completed: false, dueDate: '2026-08-06' };
+const removed = removeCopies([
+  deleteTarget,
+  { id: 'keep', task: '保留任务', project: '兴银', completed: false },
+], [[
+  { id: 'legacy-copy', task: '整理需求变动', project: '兴银', completed: false, dueDate: '2026-08-06' },
+], [
+  { id: 'keep-history', task: '其他历史任务', project: '兴银', completed: true, dueDate: '2026-08-05' },
+]] , deleteTarget);
+assert(!removed.today.some(t => t.task === '整理需求变动'), '删除任务会清除当天 JSON 中的副本');
+assert(!removed.files.flat().some(t => t.task === '整理需求变动'), '删除任务会清除全部历史 JSON 中的副本');
+assert(removed.today.some(t => t.id === 'keep') && removed.files.flat().some(t => t.id === 'keep-history'), '删除不会影响其他任务');
+
+// --- 紧凑周选择器:周日开周/三周滑动/远期标签 ---
+console.log('\n--- 紧凑周选择器逻辑 ---');
+function shiftPickerDate(dateStr, deltaDays) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const shifted = new Date(y, m - 1, d + deltaDays);
+  return formatDateStr(shifted.getFullYear(), shifted.getMonth() + 1, shifted.getDate());
+}
+function getPickerWeekStart(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  date.setDate(date.getDate() - date.getDay());
+  return formatDateStr(date.getFullYear(), date.getMonth() + 1, date.getDate());
+}
+function getPickerWeekDistance(weekStart, todayStr) {
+  const toUtcDay = (dateStr) => {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    return Date.UTC(y, m - 1, d);
+  };
+  const currentStart = getPickerWeekStart(todayStr);
+  return Math.round((toUtcDay(weekStart) - toUtcDay(currentStart)) / (7 * 86400000));
+}
+function formatPickerWeekRange(weekStart) {
+  const weekEnd = shiftPickerDate(weekStart, 6);
+  return `${weekStart.slice(5, 7)}${weekStart.slice(8, 10)}-${weekEnd.slice(5, 7)}${weekEnd.slice(8, 10)}`;
+}
+function formatPickerWeekLabel(weekStart, todayStr) {
+  const distance = getPickerWeekDistance(weekStart, todayStr);
+  if (distance === -2) return '上上周';
+  if (distance === -1) return '上周';
+  if (distance === 0) return '本周';
+  if (distance === 1) return '下周';
+  if (distance === 2) return '下下周';
+  return formatPickerWeekRange(weekStart);
+}
+function buildDatePickerWeekState(viewWeekStart, todayStr) {
+  const weekStarts = [-7, 0, 7].map(delta => shiftPickerDate(viewWeekStart, delta));
+  return {
+    weekStarts,
+    labels: weekStarts.map(start => formatPickerWeekLabel(start, todayStr)),
+    days: buildWeekDays(viewWeekStart),
+  };
+}
+
+assert(getPickerWeekStart('2026-08-14') === '2026-08-09', '周选择器以周日作为一周起点');
+assert(getPickerWeekStart('2026-08-09') === '2026-08-09', '周日日期保持为本周起点');
+const pickerCurrent = buildDatePickerWeekState('2026-08-09', '2026-08-14');
+assert(pickerCurrent.weekStarts.join(',') === '2026-08-02,2026-08-09,2026-08-16', '本周视图左侧依次为前一周/本周/后一周');
+assert(pickerCurrent.labels.join(',') === '上周,本周,下周', '本周视图使用上周/本周/下周标签');
+assert(pickerCurrent.days[0] === '2026-08-09' && pickerCurrent.days[6] === '2026-08-15', '右侧横排日号覆盖周日至周六');
+
+const pickerNext = buildDatePickerWeekState('2026-08-16', '2026-08-14');
+assert(pickerNext.labels.join(',') === '本周,下周,下下周', '向后滑一周后标签自动更新');
+const pickerFar = buildDatePickerWeekState('2026-08-30', '2026-08-14');
+assert(pickerFar.labels.join(',') === '下下周,0830-0905,0906-0912', '远期周使用 MMDD-MMDD 紧凑标签');
+assert(formatPickerWeekRange('2026-12-27') === '1227-0102', '跨年周范围格式为 1227-0102');
+assert(shiftPickerDate('2026-12-31', 1) === '2027-01-01', '周切换日期计算支持跨年');
 
 console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
 process.exit(failed > 0 ? 1 : 0);

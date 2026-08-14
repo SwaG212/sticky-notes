@@ -333,7 +333,7 @@ async function loadTasks() {
         if (raw) {
           const unfinished = JSON.parse(raw).filter(t => !t.completed);
           if (unfinished.length > 0) {
-            unfinished.forEach(t => { t.createdAt = new Date().toISOString(); t.id = genId(); t.alarmTime = null; });
+            unfinished.forEach(t => { t.createdAt = new Date().toISOString(); if (!t.id) t.id = genId(); t.alarmTime = null; });
             state.tasks = [...unfinished, ...state.tasks];
             changed = true;
             break;
@@ -372,6 +372,17 @@ function snapshotPositions(container = taskItems) {
     map[el.dataset.id] = el.getBoundingClientRect().top;
   });
   return map;
+}
+
+// 任务行统一出现动画：日历返回与项目页签切换共用同一节奏。
+function animateTaskRowsIn(container = taskItems) {
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  container.querySelectorAll('.task-item').forEach((el, i) => {
+    el.animate([
+      { opacity: 0, transform: 'translateY(8px)' },
+      { opacity: 1, transform: 'translateY(0)' }
+    ], { duration: 220, delay: i * 45, easing: 'ease', fill: 'both' });
+  });
 }
 
 // ========== 项目页签栏 ==========
@@ -441,8 +452,9 @@ function renderSheetBar() {
     cnt.textContent = count;
     div.append(name, cnt);
     div.addEventListener('click', () => {
+      if (state.activeSheet === key) return;
       state.activeSheet = key;
-      renderTasks();
+      renderTasks(false, true);
     });
     return div;
   };
@@ -460,7 +472,7 @@ function renderSheetBar() {
   updateOrganizeButton(); // 切页签后刷新重排按钮可用状态
 }
 
-function renderTasks(shouldAnimate = false) {
+function renderTasks(shouldAnimate = false, staggerIn = false) {
   // 列表重建后旧行元素失效,清除选择器行引用
   if (activePickerRow) activePickerRow = null;
   expandingRow = null; // 行重建,项目展开态失效
@@ -471,6 +483,7 @@ function renderTasks(shouldAnimate = false) {
   // FLIP 动画第一步：记录旧位置
   const oldPos = shouldAnimate ? snapshotPositions() : null;
 
+  // 当天已完成任务继续显示，并由 sortTasks 沉到列表底部；历史日期仍由日历文件提供。
   let visible = state.activeSheet === 'all'
     ? state.tasks
     : state.tasks.filter(t => t.project === state.activeSheet);
@@ -481,6 +494,9 @@ function renderTasks(shouldAnimate = false) {
     visible = [...visible].sort((a, b) => {
       // 已完成的任务沉底
       if (a.completed !== b.completed) return a.completed ? 1 : -1;
+      if (a.completed && b.completed) {
+        return new Date(a.completedAt || 0).getTime() - new Date(b.completedAt || 0).getTime();
+      }
       if (a.dueDate && b.dueDate) return a.dueDate < b.dueDate ? -1 : a.dueDate > b.dueDate ? 1 : 0;
       if (a.dueDate) return -1;
       if (b.dueDate) return 1;
@@ -553,6 +569,7 @@ function renderTasks(shouldAnimate = false) {
 
   // 恢复滚动位置(列表变短时浏览器自动收紧到最大可滚范围)
   taskList.scrollTop = prevScrollTop;
+  if (staggerIn) animateTaskRowsIn(taskItems);
   // 日历开着时刷新月历圆点(勾选/增删任务后计数同步)
   if (state.calendarOpen) renderCalendar();
   // 当日任务视图开着时同步刷新(行内项目切换/编辑/删除后保持一致),勾选重排时同步 FLIP 滑动
@@ -560,7 +577,7 @@ function renderTasks(shouldAnimate = false) {
 }
 
 // ========== 任务行构造(主列表与当日任务视图共用) ==========
-// opts.noHoverBar: 当日任务视图用,不渲染悬停操作栏(alarm/日期修改)与热区提示
+// opts.noHoverBar: 特殊只读场景可禁用悬停操作栏(alarm/日期修改)与热区提示
 function buildTaskRow(task, idx, opts = {}) {
   const row = document.createElement('div');
   row.className = 'task-item';
@@ -616,7 +633,7 @@ function buildTaskRow(task, idx, opts = {}) {
 
   textContent.title = task.task.length > 50 ? task.task : '';
 
-  // 悬停操作栏(时间/日期修改):仅主列表;当日视图不需要热区
+  // 悬停操作栏(时间/日期修改):任务列表与日视图共用
   let hoverBar = null;
   if (!opts.noHoverBar) {
     const alarm = document.createElement('span');
@@ -695,7 +712,7 @@ function buildTaskRow(task, idx, opts = {}) {
       onComplete: () => {
         const i = state.tasks.findIndex(x => x.id === taskId);
         if (i !== -1) deleteTask(i);
-        else removeTaskFromFile(t); // 历史任务:直接从文件删(同步所有副本)
+        else removeTaskFromFile(t).then(() => renderTasks()); // 历史任务:删除全部副本后刷新日历
       }
     });
   });
@@ -750,7 +767,8 @@ function sortTasks() {
   const undone = state.tasks.filter(t => !t.completed);
   const done = state.tasks.filter(t => t.completed);
   undone.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
-  done.sort((a, b) => new Date(b.completedAt || 0).getTime() - new Date(a.completedAt || 0).getTime());
+  // 最近勾选完成的任务排在最末尾，视觉上会从原位置滑到整个列表底部。
+  done.sort((a, b) => new Date(a.completedAt || 0).getTime() - new Date(b.completedAt || 0).getTime());
   state.tasks = [...undone, ...done];
 }
 
@@ -892,6 +910,7 @@ function toggleTask(idx) {
   if (!t) return;
   t.completed = !t.completed;
   t.completedAt = t.completed ? new Date().toISOString() : null;
+  sortTasks();
   // 今天任务:写今天文件并同步历史副本(带 updatedAt);历史任务:写回并同步
   persistTask(t).then(() => renderTasks(true));
 }
@@ -1014,8 +1033,7 @@ document.addEventListener('keydown', (e) => {
 function deleteTask(idx) {
   const t = taskByIdx(idx);
   if (!t) return;
-  if (idx >= 0) { state.tasks.splice(idx, 1); saveTasks(); renderTasks(); }
-  else { removeTaskFromFile(t).then(() => renderTasks()); } // 历史任务:从文件删除
+  removeTaskFromFile(t).then(() => renderTasks()); // 当天与历史文件中的同一任务一并删除
 }
 
 function enterEditMode(row, idx) {
@@ -1103,7 +1121,12 @@ let activePicker = null;
 let activePickerRow = null; // 选择器所在任务行,展开期间固定显示其操作栏
 
 function closeActivePicker() {
-  if (activePicker) { activePicker.remove(); activePicker = null; }
+  if (activePicker) {
+    const picker = activePicker;
+    activePicker = null;
+    if (typeof picker._cleanup === 'function') picker._cleanup();
+    picker.remove();
+  }
   if (activePickerRow) {
     const row = activePickerRow;
     activePickerRow = null;
@@ -1117,6 +1140,15 @@ function closeActivePicker() {
 }
 
 function openTimePicker(anchorEl, taskIdx) {
+  const task = taskByIdx(taskIdx);
+  if (!task) return;
+
+  // 再点同一个时间入口时直接收起，与日期选择器行为一致。
+  if (activePicker?.classList.contains('time-picker') && activePicker._anchorEl === anchorEl) {
+    closeActivePicker();
+    return;
+  }
+
   closeActivePicker();
   activePickerRow = anchorEl.closest('.task-item');
   if (activePickerRow) {
@@ -1125,235 +1157,465 @@ function openTimePicker(anchorEl, taskIdx) {
     activePickerRow.style.background = '#f3f3f8';
   }
 
-  const current = state.tasks[taskIdx].alarmTime || '';
-  const curH = current.slice(0, 2) || '';
-  const curM = current.slice(3, 5) || '';
+  const current = task.alarmTime || '';
+  const now = new Date();
+  const localTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  // 未设置提醒时只把当前本地时间滚入视野，不显示紫色选中态；已有提醒仍显示已保存时间。
+  let selectedTime = current || localTime;
+  const displayH = selectedTime.slice(0, 2);
+  const displayM = selectedTime.slice(3, 5);
 
+  const scrim = document.createElement('div');
+  scrim.className = 'time-picker-scrim';
+  scrim.setAttribute('aria-hidden', 'true');
   const picker = document.createElement('div');
   picker.className = 'time-picker';
-  picker.innerHTML = `<div class="tp-actions"><button class="tp-save">保存</button><button class="tp-clear">清除</button></div><div class="tp-cols"><div class="tp-col" id="tp-hour"></div><div class="tp-col" id="tp-min"></div></div>`;
+  picker.setAttribute('role', 'dialog');
+  picker.setAttribute('aria-label', '设置提醒时间');
+  picker._anchorEl = anchorEl;
+  picker.innerHTML = `<div class="tp-cols"><div class="tp-col" id="tp-hour" aria-label="小时"></div><div class="tp-col" id="tp-min" aria-label="分钟"></div></div><div class="tp-actions"><button type="button" class="tp-clear"${current ? '' : ' disabled'}>清除</button><button type="button" class="tp-save">保存</button></div>`;
+  app.appendChild(scrim);
   app.appendChild(picker);
+  activePicker = picker;
 
   // 填充小时 00-23
   const colH = picker.querySelector('#tp-hour');
+  const colM = picker.querySelector('#tp-min');
+  const syncActiveOptions = () => {
+    const selectedH = selectedTime.slice(0, 2);
+    const selectedM = selectedTime.slice(3, 5);
+    colH.querySelector('.tp-opt.active')?.classList.remove('active');
+    colM.querySelector('.tp-opt.active')?.classList.remove('active');
+    [...colH.children].find(el => el.textContent === selectedH)?.classList.add('active');
+    [...colM.children].find(el => el.textContent === selectedM)?.classList.add('active');
+  };
   for (let h = 0; h < 24; h++) {
     const opt = document.createElement('div');
-    opt.className = 'tp-opt' + (String(h).padStart(2,'0') === curH ? ' active' : '');
+    opt.className = 'tp-opt' + (current && String(h).padStart(2,'0') === displayH ? ' active' : '');
     opt.textContent = String(h).padStart(2, '0');
     opt.addEventListener('click', () => {
-      const m = state.tasks[taskIdx].alarmTime ? state.tasks[taskIdx].alarmTime.slice(3, 5) : '00';
-      state.tasks[taskIdx].alarmTime = `${opt.textContent}:${m}`;
-      colH.querySelector('.tp-opt.active')?.classList.remove('active');
-      opt.classList.add('active');
+      const m = selectedTime ? selectedTime.slice(3, 5) : '00';
+      selectedTime = `${opt.textContent}:${m}`;
+      syncActiveOptions();
     });
     colH.appendChild(opt);
   }
 
   // 填充分钟 00-59
-  const colM = picker.querySelector('#tp-min');
   for (let m = 0; m < 60; m++) {
     const opt = document.createElement('div');
-    opt.className = 'tp-opt' + (String(m).padStart(2,'0') === curM ? ' active' : '');
+    opt.className = 'tp-opt' + (current && String(m).padStart(2,'0') === displayM ? ' active' : '');
     opt.textContent = String(m).padStart(2, '0');
     opt.addEventListener('click', () => {
-      const h = state.tasks[taskIdx].alarmTime ? state.tasks[taskIdx].alarmTime.slice(0, 2) : '00';
-      state.tasks[taskIdx].alarmTime = `${h}:${opt.textContent}`;
-      colM.querySelector('.tp-opt.active')?.classList.remove('active');
-      opt.classList.add('active');
+      const h = selectedTime ? selectedTime.slice(0, 2) : '00';
+      selectedTime = `${h}:${opt.textContent}`;
+      syncActiveOptions();
     });
     colM.appendChild(opt);
   }
 
   // 保存按钮
-  picker.querySelector('.tp-save').addEventListener('click', () => {
-    saveTasks();
+  picker.querySelector('.tp-save').addEventListener('click', async () => {
+    task.alarmTime = selectedTime || null;
+    await persistTask(task);
     closeActivePicker();
     renderTasks();
   });
 
   // 清除按钮
-  picker.querySelector('.tp-clear').addEventListener('click', () => {
-    state.tasks[taskIdx].alarmTime = null;
-    saveTasks();
+  picker.querySelector('.tp-clear').addEventListener('click', async () => {
+    if (!current) return;
+    task.alarmTime = null;
+    await persistTask(task);
     closeActivePicker();
     renderTasks();
   });
 
-  // 滚动到选中的位置
-  if (curH) colH.querySelector('.tp-opt.active')?.scrollIntoView({ block: 'center' });
-  if (curM) colM.querySelector('.tp-opt.active')?.scrollIntoView({ block: 'center' });
+  // 无论是否已有提醒，都把应显示的时间滚到可视区域中央；未保存时间不添加 active。
+  [...colH.children].find(el => el.textContent === displayH)?.scrollIntoView({ block: 'center' });
+  [...colM.children].find(el => el.textContent === displayM)?.scrollIntoView({ block: 'center' });
 
-  // 定位：相对于 #app 容器
-  const appRect = app.getBoundingClientRect();
-  const anchorRect = anchorEl.getBoundingClientRect();
-  picker.style.left = Math.max(8, anchorRect.left - appRect.left - 40) + 'px';
-  picker.style.top = Math.max(4, anchorRect.top - appRect.top - 185) + 'px';
+  // 定位规则与日期选择器一致：默认下方，下方不足时翻到上方，并钳制在应用边界内。
+  function positionPicker() {
+    if (!picker.isConnected) return;
+    const appRect = app.getBoundingClientRect();
+    const anchorRect = anchorEl.getBoundingClientRect();
+    const pickerWidth = picker.offsetWidth;
+    const pickerHeight = picker.offsetHeight;
+    const edge = 8;
+    const gap = 7;
 
-  // 点击外部关闭（不保存）
-  setTimeout(() => {
-    const closePk = (e) => {
-      if (!picker.contains(e.target) && e.target !== anchorEl) {
-        if (activePicker === picker) closeActivePicker();
-        app.removeEventListener('click', closePk);
-      }
-    };
-    app.addEventListener('click', closePk, true);
+    let left = anchorRect.right - appRect.left - pickerWidth;
+    left = Math.max(edge, Math.min(appRect.width - pickerWidth - edge, left));
+
+    const above = anchorRect.top - appRect.top - pickerHeight - gap;
+    const below = anchorRect.bottom - appRect.top + gap;
+    const fitsAbove = above >= edge;
+    const fitsBelow = below + pickerHeight <= appRect.height - edge;
+    const spaceAbove = anchorRect.top - appRect.top - edge;
+    const spaceBelow = appRect.bottom - anchorRect.bottom - edge;
+    const placeBelow = fitsBelow || (!fitsAbove && spaceBelow >= spaceAbove);
+    let top = placeBelow ? below : above;
+    top = Math.max(edge, Math.min(appRect.height - pickerHeight - edge, top));
+
+    picker.style.left = `${left}px`;
+    picker.style.top = `${top}px`;
+    picker.style.setProperty('--tp-anchor-x', `${Math.max(18, Math.min(pickerWidth - 18, anchorRect.left + anchorRect.width / 2 - appRect.left - left))}px`);
+    picker.classList.toggle('tp-place-below', placeBelow);
+  }
+
+  positionPicker();
+
+  // 点击外部或按 Esc 关闭（不保存）。
+  const closeTp = (e) => {
+    const isEsc = e.key === 'Escape';
+    if (isEsc || (!picker.contains(e.target) && e.target !== anchorEl)) {
+      if (activePicker === picker) closeActivePicker();
+    }
+  };
+  const outsideTimer = setTimeout(() => {
+    document.addEventListener('keydown', closeTp, true);
+    app.addEventListener('click', closeTp, true);
   }, 0);
+  picker._cleanup = () => {
+    clearTimeout(outsideTimer);
+    document.removeEventListener('keydown', closeTp, true);
+    app.removeEventListener('click', closeTp, true);
+    scrim.remove();
+  };
+}
 
-  activePicker = picker;
+// ========== 日视图修改日期：任务行离场 + 下方任务 FLIP 补位 ==========
+let activeDayDateExit = null;
+let dayDateChangeSeq = 0;
+let pendingDayEmptyFadeDate = null;
+
+function cleanupDayDateExitVisual() {
+  const active = activeDayDateExit;
+  if (!active) return;
+  active.animations.forEach(anim => anim.cancel());
+  active.clone.remove();
+  activeDayDateExit = null;
+}
+
+function cancelDayDateExit() {
+  dayDateChangeSeq++;
+  cleanupDayDateExitVisual();
+  pendingDayEmptyFadeDate = null;
+}
+
+// -1=向左(更早)，0=原地淡出(清除日期)，1=向右(更晚)，null=仍属当前日期
+function getDayDateExitDirection(newDate, dayDate) {
+  if (newDate === null) return 0;
+  if (newDate < dayDate) return -1;
+  if (newDate > dayDate) return 1;
+  return null;
+}
+
+async function animateDayDateExit(row, direction) {
+  if (!row?.isConnected) return;
+
+  const list = row.parentElement;
+  const rows = [...list.children].filter(el => el.classList.contains('task-item'));
+  const survivingRows = rows.filter(el => el !== row);
+  const oldTops = new Map(survivingRows.map(el => [el, el.getBoundingClientRect().top]));
+
+  // 尊重系统减少动态效果设置：数据与布局仍立即更新，不播放位移动画。
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    row.remove();
+    return;
+  }
+
+  const rowRect = row.getBoundingClientRect();
+  const appRect = app.getBoundingClientRect();
+  const clone = row.cloneNode(true);
+  clone.classList.add('day-date-exit-clone');
+  clone.querySelector('.hover-bar')?.classList.remove('visible');
+  Object.assign(clone.style, {
+    left: `${rowRect.left - appRect.left}px`,
+    top: `${rowRect.top - appRect.top}px`,
+    width: `${rowRect.width}px`,
+    height: `${rowRect.height}px`,
+  });
+  app.appendChild(clone);
+
+  // 原行退出布局后，下方任务先用反向位移保持原位，再延迟 130ms 向上补位。
+  row.remove();
+  const animations = survivingRows.flatMap(el => {
+    const oldTop = oldTops.get(el);
+    const newTop = el.getBoundingClientRect().top;
+    const delta = oldTop - newTop;
+    if (Math.abs(delta) < 1) return [];
+    return [el.animate([
+      { transform: `translateY(${delta}px)` },
+      { transform: 'translateY(0)' }
+    ], {
+      duration: 200,
+      delay: 130,
+      easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)',
+      fill: 'both'
+    })];
+  });
+
+  let exitFrames;
+  let exitDuration;
+  if (direction === 0) {
+    exitDuration = 130;
+    exitFrames = [
+      { opacity: 1, transform: 'scale(1)' },
+      { opacity: 0, transform: 'scale(0.97)' }
+    ];
+  } else {
+    exitDuration = 200;
+    const distance = direction < 0
+      ? -(rowRect.right - appRect.left + 20)
+      : (appRect.right - rowRect.left + 20);
+    exitFrames = [
+      { opacity: 1, transform: 'translateX(0)', offset: 0 },
+      { opacity: 1, transform: `translateX(${distance * 0.62}px)`, offset: 0.62 },
+      { opacity: 0, transform: `translateX(${distance}px)`, offset: 1 }
+    ];
+  }
+
+  const exitAnimation = clone.animate(exitFrames, {
+    duration: exitDuration,
+    easing: direction === 0 ? 'ease-out' : 'cubic-bezier(0.4, 0, 1, 1)',
+    fill: 'forwards'
+  });
+  animations.push(exitAnimation);
+
+  const active = { clone, animations };
+  activeDayDateExit = active;
+  await Promise.all(animations.map(anim => anim.finished.catch(() => null)));
+  if (activeDayDateExit === active) {
+    clone.remove();
+    activeDayDateExit = null;
+  }
+}
+
+async function commitTaskDueDate(task, anchorEl, newDate) {
+  const row = anchorEl.closest('#cal-day-list .cal-day-task-item');
+  const dayDate = state.calendarDayDate;
+  const direction = row && dayDate ? getDayDateExitDirection(newDate, dayDate) : null;
+  const shouldExitDay = !!row && direction !== null;
+  const wasLastDayTask = shouldExitDay
+    && row.parentElement.querySelectorAll('.task-item').length === 1;
+
+  const seq = ++dayDateChangeSeq;
+  cleanupDayDateExitVisual();
+  task.dueDate = newDate;
+  closeActivePicker();
+
+  const persistPromise = persistTask(task);
+  if (shouldExitDay) {
+    await Promise.all([persistPromise, animateDayDateExit(row, direction)]);
+  } else {
+    await persistPromise;
+  }
+
+  // 期间若已关闭日历、切换日期或开始另一项修改，由最新视图接管刷新。
+  if (seq !== dayDateChangeSeq) return;
+  if (wasLastDayTask && state.calendarDayDate === dayDate) {
+    pendingDayEmptyFadeDate = dayDate;
+  }
+  renderTasks();
 }
 
 // ========== 到期日选择器 ==========
+// 日期选择器以周日为一周起点；远期周标签使用紧凑的 MMDD-MMDD 格式。
+function shiftPickerDate(dateStr, deltaDays) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const shifted = new Date(y, m - 1, d + deltaDays);
+  return formatDateStr(shifted.getFullYear(), shifted.getMonth() + 1, shifted.getDate());
+}
+
+function getPickerWeekStart(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  date.setDate(date.getDate() - date.getDay());
+  return formatDateStr(date.getFullYear(), date.getMonth() + 1, date.getDate());
+}
+
+function getPickerWeekDistance(weekStart, todayStr) {
+  const toUtcDay = (dateStr) => {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    return Date.UTC(y, m - 1, d);
+  };
+  const currentStart = getPickerWeekStart(todayStr);
+  return Math.round((toUtcDay(weekStart) - toUtcDay(currentStart)) / (7 * 86400000));
+}
+
+function formatPickerWeekRange(weekStart) {
+  const weekEnd = shiftPickerDate(weekStart, 6);
+  return `${weekStart.slice(5, 7)}${weekStart.slice(8, 10)}-${weekEnd.slice(5, 7)}${weekEnd.slice(8, 10)}`;
+}
+
+function formatPickerWeekLabel(weekStart, todayStr) {
+  const distance = getPickerWeekDistance(weekStart, todayStr);
+  if (distance === -2) return '上上周';
+  if (distance === -1) return '上周';
+  if (distance === 0) return '本周';
+  if (distance === 1) return '下周';
+  if (distance === 2) return '下下周';
+  return formatPickerWeekRange(weekStart);
+}
+
+function buildDatePickerWeekState(viewWeekStart, todayStr) {
+  const weekStarts = [-7, 0, 7].map(delta => shiftPickerDate(viewWeekStart, delta));
+  return {
+    weekStarts,
+    labels: weekStarts.map(start => formatPickerWeekLabel(start, todayStr)),
+    days: buildWeekDays(viewWeekStart),
+  };
+}
+
 function openDatePicker(anchorEl, taskIdx) {
+  const task = taskByIdx(taskIdx);
+  if (!task) return;
+
+  // 再点同一个日期入口时直接收起，不重新创建选择器。
+  if (activePicker?.classList.contains('date-picker') && activePicker._anchorEl === anchorEl) {
+    closeActivePicker();
+    return;
+  }
+
   closeActivePicker();
   activePickerRow = anchorEl.closest('.task-item');
   if (activePickerRow) {
     const bar = activePickerRow.querySelector('.hover-bar');
-    if (bar) bar.classList.add('visible'); // 选择器展开即钉住操作栏
+    if (bar) bar.classList.add('visible');
     activePickerRow.style.background = '#f3f3f8';
   }
 
-  const current = state.tasks[taskIdx].dueDate || '';
-  let viewYear, viewMonth;
+  const today = getToday();
+  const current = task.dueDate || '';
+  let viewWeekStart = getPickerWeekStart(current || today);
 
-  if (current) {
-    viewYear = parseInt(current.slice(0, 4), 10);
-    viewMonth = parseInt(current.slice(5, 7), 10) - 1;
-  } else {
-    const now = new Date();
-    viewYear = now.getFullYear();
-    viewMonth = now.getMonth();
-  }
-
+  const scrim = document.createElement('div');
+  scrim.className = 'date-picker-scrim';
+  scrim.setAttribute('aria-hidden', 'true');
   const picker = document.createElement('div');
   picker.className = 'date-picker';
+  picker.setAttribute('role', 'dialog');
+  picker.setAttribute('aria-label', '设置任务日期');
+  picker._anchorEl = anchorEl;
+  app.appendChild(scrim);
+  app.appendChild(picker);
+  activePicker = picker;
 
-  function renderCalendar() {
-    const today = getToday();
-    const todayParts = today.split('-');
-    const todayY = parseInt(todayParts[0], 10);
-    const todayM = parseInt(todayParts[1], 10);
-    const todayD = parseInt(todayParts[2], 10);
+  function positionPicker() {
+    if (!picker.isConnected) return;
+    const appRect = app.getBoundingClientRect();
+    const anchorRect = anchorEl.getBoundingClientRect();
+    const pickerWidth = picker.offsetWidth;
+    const pickerHeight = picker.offsetHeight;
+    const edge = 8;
+    const gap = 7;
 
-    const firstDay = new Date(viewYear, viewMonth, 1).getDay();
-    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
-    const daysInPrevMonth = new Date(viewYear, viewMonth, 0).getDate();
+    let left = anchorRect.right - appRect.left - pickerWidth;
+    left = Math.max(edge, Math.min(appRect.width - pickerWidth - edge, left));
 
-    const monthLabel = `${viewYear}年${viewMonth + 1}月`;
+    const above = anchorRect.top - appRect.top - pickerHeight - gap;
+    const below = anchorRect.bottom - appRect.top + gap;
+    const fitsAbove = above >= edge;
+    const fitsBelow = below + pickerHeight <= appRect.height - edge;
+    // 默认从任务行下方展开；仅当下方放不下而上方可用时翻转到上方。
+    // 两侧都不足的极端情况下，选择可用空间更多的一侧，再由边界钳制保证完整显示。
+    const spaceAbove = anchorRect.top - appRect.top - edge;
+    const spaceBelow = appRect.bottom - anchorRect.bottom - edge;
+    const placeBelow = fitsBelow || (!fitsAbove && spaceBelow >= spaceAbove);
+    let top = placeBelow ? below : above;
+    top = Math.max(edge, Math.min(appRect.height - pickerHeight - edge, top));
 
-    let html = `<div class="dp-header">
-      <button class="dp-nav dp-prev">&lt;</button>
-      <span class="dp-month">${monthLabel}</span>
-      <button class="dp-nav dp-next">&gt;</button>
+    picker.style.left = `${left}px`;
+    picker.style.top = `${top}px`;
+    picker.style.setProperty('--dp-anchor-x', `${Math.max(18, Math.min(pickerWidth - 18, anchorRect.left + anchorRect.width / 2 - appRect.left - left))}px`);
+    picker.classList.toggle('dp-place-below', placeBelow);
+  }
+
+  function renderWeek(direction = 0, focusMiddle = false) {
+    const stateForWeek = buildDatePickerWeekState(viewWeekStart, today);
+    const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
+    const dayButtons = stateForWeek.days.map((dateStr, i) => {
+      const dayNumber = Number(dateStr.slice(8, 10));
+      const monthNumber = Number(dateStr.slice(5, 7));
+      const crossesMonth = dayNumber === 1 || (i > 0 && dateStr.slice(5, 7) !== stateForWeek.days[i - 1].slice(5, 7));
+      const displayNumber = crossesMonth ? `${monthNumber}/${dayNumber}` : String(dayNumber);
+      let cls = 'dp-date-option';
+      if (dateStr < today) cls += ' is-past';
+      if (dateStr === today) cls += ' is-today';
+      if (dateStr === current) cls += ' is-selected';
+      return `<button type="button" class="${cls}" data-date="${dateStr}" aria-label="${dateStr}">
+        <span class="dp-weekday">${weekdays[i]}</span>
+        <span class="dp-day-number">${displayNumber}</span>
+      </button>`;
+    }).join('');
+
+    const directionClass = direction > 0 ? ' dp-slide-next' : direction < 0 ? ' dp-slide-prev' : '';
+    const railDirectionClass = direction > 0 ? ' dp-scroll-next' : direction < 0 ? ' dp-scroll-prev' : '';
+    picker.innerHTML = `<div class="dp-week-rail${railDirectionClass}" role="group" aria-label="选择周">
+      <button type="button" class="dp-week-option" data-week-start="${stateForWeek.weekStarts[0]}">${stateForWeek.labels[0]}</button>
+      <button type="button" class="dp-week-option is-active" data-week-start="${stateForWeek.weekStarts[1]}" aria-current="date">${stateForWeek.labels[1]}</button>
+      <button type="button" class="dp-week-option" data-week-start="${stateForWeek.weekStarts[2]}">${stateForWeek.labels[2]}</button>
+    </div>
+    <div class="dp-week-content${directionClass}">
+      <div class="dp-date-grid">${dayButtons}</div>
+      <button type="button" class="dp-clear-btn"${current ? '' : ' disabled'}>清除</button>
     </div>`;
 
-    html += '<div class="dp-weekdays">';
-    ['日','一','二','三','四','五','六'].forEach(w => {
-      html += `<div class="dp-weekday">${w}</div>`;
+    const weekOptions = picker.querySelectorAll('.dp-week-option');
+    weekOptions[0].addEventListener('click', () => {
+      viewWeekStart = stateForWeek.weekStarts[0];
+      renderWeek(-1, true);
     });
-    html += '</div>';
-
-    html += '<div class="dp-grid">';
-    for (let i = firstDay - 1; i >= 0; i--) {
-      const d = daysInPrevMonth - i;
-      html += `<div class="dp-day other-month">${d}</div>`;
-    }
-    for (let d = 1; d <= daysInMonth; d++) {
-      const dateStr = formatDateStr(viewYear, viewMonth + 1, d);
-      let cls = 'dp-day';
-      if (dateStr === today) cls += ' today';
-      if (dateStr === current) cls += ' selected';
-      html += `<div class="${cls}" data-date="${dateStr}">${d}</div>`;
-    }
-    const totalCells = firstDay + daysInMonth;
-    const remaining = totalCells % 7 === 0 ? 0 : 7 - (totalCells % 7);
-    for (let d = 1; d <= remaining; d++) {
-      html += `<div class="dp-day other-month">${d}</div>`;
-    }
-    html += '</div>';
-
-    html += '<div class="dp-actions">';
-    html += '<button class="dp-action-btn" data-action="mon">周一</button>';
-    html += '<button class="dp-action-btn" data-action="tue">周二</button>';
-    html += '<button class="dp-action-btn" data-action="wed">周三</button>';
-    html += '<button class="dp-action-btn" data-action="thu">周四</button>';
-    html += '<button class="dp-action-btn" data-action="fri">周五</button>';
-    html += '</div>';
-    html += '<div class="dp-clear-row">';
-    html += '<button class="dp-action-btn clear-btn" data-action="clear">清除</button>';
-    html += '</div>';
-
-    picker.innerHTML = html;
-
-    picker.querySelector('.dp-prev').addEventListener('click', () => {
-      viewMonth--;
-      if (viewMonth < 0) { viewMonth = 11; viewYear--; }
-      renderCalendar();
-    });
-    picker.querySelector('.dp-next').addEventListener('click', () => {
-      viewMonth++;
-      if (viewMonth > 11) { viewMonth = 0; viewYear++; }
-      renderCalendar();
+    weekOptions[2].addEventListener('click', () => {
+      viewWeekStart = stateForWeek.weekStarts[2];
+      renderWeek(1, true);
     });
 
-    picker.querySelectorAll('.dp-day:not(.other-month)').forEach(dayEl => {
-      dayEl.addEventListener('click', () => {
-        state.tasks[taskIdx].dueDate = dayEl.dataset.date;
-        saveTasks();
-        closeActivePicker();
-        renderTasks();
+    const dateOptions = [...picker.querySelectorAll('.dp-date-option')];
+    dateOptions.forEach((dateEl, index) => {
+      dateEl.addEventListener('click', async () => {
+        await commitTaskDueDate(task, anchorEl, dateEl.dataset.date);
+      });
+      dateEl.addEventListener('keydown', (e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        const nextIndex = Math.max(0, Math.min(dateOptions.length - 1, index + (e.key === 'ArrowRight' ? 1 : -1)));
+        dateOptions[nextIndex].focus();
       });
     });
 
-    picker.querySelectorAll('.dp-action-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const action = btn.dataset.action;
-        let dateStr = null;
-        if (action === 'mon' || action === 'tue' || action === 'wed' || action === 'thu' || action === 'fri') {
-          const dowMap = { mon: 1, tue: 2, wed: 3, thu: 4, fri: 5 };
-          const now = new Date();
-          let todayDow = now.getDay();
-          if (todayDow === 0) todayDow = 7; // 周日=7
-          let offset = dowMap[action] - todayDow;
-          if (offset < 0) offset += 7; // 本周已过 → 下周
-          const d = new Date(now);
-          d.setDate(now.getDate() + offset);
-          dateStr = formatDateStr(d.getFullYear(), d.getMonth() + 1, d.getDate());
-        } else if (action === 'clear') {
-          state.tasks[taskIdx].dueDate = null;
-        }
-        if (dateStr !== undefined) {
-          if (dateStr !== null) state.tasks[taskIdx].dueDate = dateStr;
-          saveTasks();
-          closeActivePicker();
-          renderTasks();
-        }
-      });
+    picker.querySelector('.dp-clear-btn').addEventListener('click', async () => {
+      if (!current) return;
+      await commitTaskDueDate(task, anchorEl, null);
+    });
+
+    requestAnimationFrame(() => {
+      positionPicker();
+      if (focusMiddle) picker.querySelector('.dp-week-option.is-active')?.focus({ preventScroll: true });
     });
   }
 
-  renderCalendar();
-  app.appendChild(picker);
+  renderWeek();
+  positionPicker();
 
-  const appRect = app.getBoundingClientRect();
-  const anchorRect = anchorEl.getBoundingClientRect();
-  picker.style.left = Math.max(8, Math.min(appRect.width - 218, anchorRect.left - appRect.left - 50)) + 'px';
-  picker.style.top = Math.max(4, anchorRect.top - appRect.top - 260) + 'px';
-
-  setTimeout(() => {
-    function closeDp(e) {
-      const isEsc = e.key === 'Escape';
-      if (isEsc || (!picker.contains(e.target) && e.target !== anchorEl)) {
-        if (activePicker === picker) closeActivePicker();
-        document.removeEventListener('keydown', closeDp, true);
-        app.removeEventListener('click', closeDp, true);
-      }
+  const closeDp = (e) => {
+    const isEsc = e.key === 'Escape';
+    if (isEsc || (!picker.contains(e.target) && e.target !== anchorEl)) {
+      if (activePicker === picker) closeActivePicker();
     }
+  };
+  const outsideTimer = setTimeout(() => {
     document.addEventListener('keydown', closeDp, true);
     app.addEventListener('click', closeDp, true);
   }, 0);
-
-  activePicker = picker;
+  picker._cleanup = () => {
+    clearTimeout(outsideTimer);
+    document.removeEventListener('keydown', closeDp, true);
+    app.removeEventListener('click', closeDp, true);
+    scrim.remove();
+  };
 }
 
 // ========== 项目行内展开 ==========
@@ -2303,12 +2565,13 @@ function mergeDayTasks(todayOnes, historic) {
 }
 
 // 纯函数:按日期类型生成圆点颜色序列(最多 3 点)
-// 历史日期:未完成项目优先(绿黄红),剩余名额用完成绿点(#4caf50)填充;当天/未来:仅未完成项目,无绿点
+// 历史日期:每个未完成项目对应 1 个红点(#fe231b),剩余名额用完成绿点(#4caf50)填充
+// 当天/未来:沿用绿黄橙的未完成项目圆点,不显示完成绿点
 function dotSequenceForDate(dayTasks, dateStr, todayStr) {
   const { projectCount, doneProjectCount } = countDayTasks(dayTasks);
   if (dateStr < todayStr) {
     const n1 = Math.min(projectCount, 3);
-    const colors = ['cal-dot-green', 'cal-dot-yellow', 'cal-dot-red'].slice(0, n1);
+    const colors = Array(n1).fill('cal-dot-overdue');
     const n2 = Math.min(doneProjectCount, 3 - n1);
     for (let i = 0; i < n2; i++) colors.push('cal-dot-done');
     return colors;
@@ -2449,22 +2712,52 @@ function shiftWeek(delta) {
   renderWeekbar(delta);
 }
 
-// 退出当日任务视图回月历(选中日期保留,周条清空;网格展开动画反向播放)
-function exitDayMode() {
-  if (!state.calendarDayDate) return;
+let monthFadeCleanupTimer = null;
+let monthFadeAnimations = [];
+
+function cleanupMonthFade() {
+  if (monthFadeCleanupTimer) {
+    clearTimeout(monthFadeCleanupTimer);
+    monthFadeCleanupTimer = null;
+  }
+  // 先让静态样式接管最终 opacity:1，再取消 fill:forwards，视觉值不会跳变。
+  calendarView.classList.remove('month-entering');
+  monthFadeAnimations.forEach(anim => anim.cancel());
+  monthFadeAnimations = [];
+}
+
+// 退出当日任务视图回月历:任务+周行 250ms 淡出,220ms 后月历 300ms 淡入
+async function exitDayMode() {
+  if (!state.calendarDayDate || calendarView.classList.contains('day-mode-exiting')) return;
+  cancelDayDateExit();
+  calendarView.classList.add('day-mode-exiting');
+
+  // 与任务列表→日历保持相同节奏:淡出尚余 30ms 时开始下一个视图的淡入。
+  await new Promise(resolve => setTimeout(resolve, 220));
+  if (!state.calendarOpen || !state.calendarDayDate) return;
+
   state.calendarDayDate = null;
   state.calendarWeek = null; // 周基准随当日视图退出清空
-  state.calendarDayDate = null;
-  calendarView.classList.remove('day-mode');
-  // 网格展开:从 0 过渡到足够大值,过渡结束后清 inline 恢复自动高度
-  // (退出动画 480ms 慢于进入,清理需等新时长结束)
-  calGrid.style.maxHeight = '600px';
-  setTimeout(() => {
-    if (!state.calendarDayDate) calGrid.style.maxHeight = '';
-  }, 500);
-  collapseTextInput(false);
-  renderCalendar();
+  calendarView.classList.add('month-entering');
+  calendarView.classList.remove('day-mode', 'day-mode-exiting');
+  calGrid.style.maxHeight = '';
   calWeekDays.innerHTML = '';
+  collapseTextInput(false);
+  await renderCalendar();
+
+  if (!state.calendarOpen || state.calendarDayDate) return;
+  monthFadeAnimations = [calGrid, calPrevBtn, calNextBtn].map(el => el.animate([
+    { opacity: 0 },
+    { opacity: 1 }
+  ], { duration: 300, easing: 'ease', fill: 'forwards' }));
+
+  // 520ms 是最早清理点；低帧率时仍要等动画确认到达最终帧，不能中途跳到 opacity:1。
+  const activeMonthFadeAnimations = monthFadeAnimations;
+  monthFadeCleanupTimer = setTimeout(async () => {
+    monthFadeCleanupTimer = null;
+    await Promise.all(activeMonthFadeAnimations.map(anim => anim.finished.catch(() => null)));
+    if (monthFadeAnimations === activeMonthFadeAnimations) cleanupMonthFade();
+  }, 520);
 }
 
 // 点击日期:选中高亮 + 识别框提示聚焦(不重建网格,保证双击可连续触发)
@@ -2480,6 +2773,9 @@ function selectDate(dateStr) {
 
 // 双击日期:进入当日任务视图(日期格渐隐+网格折叠+周条上移,识别框保持展开)
 async function enterDayMode(dateStr) {
+  cancelDayDateExit();
+  cleanupMonthFade();
+  calendarView.classList.remove('day-mode-exiting');
   state.calendarSelected = dateStr;
   state.calendarDayDate = dateStr;
   state.calendarWeek = dateStr; // 周条显示该日所在周
@@ -2537,20 +2833,17 @@ function openCalendar() {
 }
 
 function closeCalendar() {
+  cancelDayDateExit();
+  cleanupMonthFade();
   state.calendarOpen = false;
   btnCalendar.textContent = '日历'; // 切回任务列表:按钮文字恢复
   state.calendarSelected = null;
   state.calendarDayDate = null;
   state.calendarWeek = null; // 周基准随日历关闭清空
-  calendarView.classList.remove('open', 'day-mode');
+  calendarView.classList.remove('open', 'day-mode', 'day-mode-exiting');
   taskArea.classList.remove('dimmed'); // 任务列表淡回
-  // 任务行从上到下逐行渐现(与当日视图切换日期一致)
-  taskItems.querySelectorAll('.task-item').forEach((el, i) => {
-    el.animate([
-      { opacity: 0, transform: 'translateY(8px)' },
-      { opacity: 1, transform: 'translateY(0)' }
-    ], { duration: 220, delay: i * 45, easing: 'ease', fill: 'both' });
-  });
+  // 任务行从上到下逐行渐现(与项目页签切换、当日视图切换日期一致)
+  animateTaskRowsIn(taskItems);
   collapseTextInput(false);
   textInput.placeholder = '记录想做的事...';
   // 清理 day 模式残留:折叠动画 inline、周条、当日任务,确保下次打开为初始态
@@ -2562,8 +2855,8 @@ function closeCalendar() {
   }, 350);
 }
 
-// 当日任务单列列表:与主任务列格式完全一致(无右侧热区操作栏),未完成在前(按 sortOrder),已完成灰显置底
-// 数据源:当天=state.tasks;历史日期=历史文件+state.tasks 合并(显示该日期全部任务,含已完成)
+// 当日任务单列列表:与主任务列格式完全一致(含右侧热区操作栏),未完成在前(按 sortOrder),已完成灰显置底
+// 数据源:当前活动任务 + 历史已完成记录;历史未完成孤立副本不显示
 // shouldAnimate:勾选完成/取消后行滑动重排,与主列表 FLIP 特效一致
 // stagger:切换日期/进入视图时,任务行从上到下一个一个渐渐出现
 let dayTasksSeq = 0; // 渲染序列号:丢弃过期异步渲染,防快速切日期的竞态
@@ -2578,14 +2871,14 @@ function taskByIdx(idx) {
 
 // 修改后持久化:任务写回对应文件并同步所有同身份副本(今天任务也同步历史缓存)
 // prevKey:修改前的身份键(任务+项目),用于改名/改项目后仍能匹配旧副本
-// 所有操作(勾选/编辑/项目/日期)都先打 updatedAt 时间戳,去重按最新时间戳判断
-function persistTask(t, prevKey) {
-  if (!t) return Promise.resolve();
+// 所有操作(勾选/编辑/项目/日期/时间)都先打 updatedAt 时间戳,去重按最新时间戳判断
+async function persistTask(t, prevKey) {
+  if (!t) return;
   t.updatedAt = new Date().toISOString();
+  await ensureTaskFilesLoaded(); // 同步前先加载全部历史文件，避免只更新已打开过的月份
   if (state.tasks.includes(t)) {
     // 今天任务:先写今天文件,再同步历史缓存里的同身份副本
-    saveTasks();
-    return syncTaskCopies(t, prevKey, true);
+    return Promise.all([saveTasks(), ...syncTaskCopies(t, prevKey, getToday())]).catch(() => { /* ignore */ });
   }
   const fileDate = t._fileDate || t.dueDate;
   if (!fileDate || !window.electronAPI) return Promise.resolve();
@@ -2604,7 +2897,36 @@ function persistTask(t, prevKey) {
   if (idx === -1) idx = arr.findIndex(x => (x.task === t.task) && (x.project || '') === (t.project || ''));
   if (idx >= 0) arr[idx] = t;
   else arr.push(t);
-  return Promise.all([window.electronAPI.saveTasksByDate(fileDate, arr), ...syncTaskCopies(t, prevKey)]).then(() => {
+  // 从日历修改历史任务时同步内存中的当天副本，保证切回任务列表后状态立即一致
+  const matchesState = (x) => (x.id && t.id && x.id === t.id)
+    || (x.task === t.task && (x.project || '') === (t.project || ''))
+    || (prevKey && (x.task + '|' + (x.project || '')) === prevKey);
+  const stateCopy = state.tasks.find(matchesState);
+  const stateSyncs = [];
+  const skipDates = [fileDate];
+  if (stateCopy && stateCopy !== t) {
+    stateCopy.completed = t.completed;
+    stateCopy.completedAt = t.completedAt;
+    stateCopy.project = t.project;
+    stateCopy.task = t.task;
+    stateCopy.dueDate = t.dueDate;
+    stateCopy.alarmTime = t.alarmTime;
+    stateCopy.updatedAt = t.updatedAt;
+    stateSyncs.push(saveTasks());
+    skipDates.push(getToday());
+  } else if (!stateCopy && !t.completed) {
+    // 在历史日历中取消完成时恢复为当前待办，避免从日历消失却不回到任务列表
+    const { _fileDate, ...currentCopy } = t;
+    currentCopy.sortOrder = state.tasks.reduce((max, x) => Math.max(max, x.sortOrder ?? -1), -1) + 1;
+    state.tasks.push(currentCopy);
+    stateSyncs.push(saveTasks());
+    skipDates.push(getToday());
+  }
+  return Promise.all([
+    window.electronAPI.saveTasksByDate(fileDate, arr),
+    ...stateSyncs,
+    ...syncTaskCopies(t, prevKey, skipDates),
+  ]).then(() => {
     taskFileCacheLoaded.add(fileDate);
     // 视图同步:更新 calendarDayTasks 中同名对象,避免重渲染时被旧文件状态覆盖
     if (state.calendarDayTasks) {
@@ -2620,9 +2942,10 @@ function persistTask(t, prevKey) {
 
 // 同步所有文件里的同身份副本(按 id 或 任务+项目,支持旧身份键 prevKey 匹配改名/改项目前的副本)
 // 返回写盘 promise 数组
-function syncTaskCopies(t, prevKey, saveTodayToo) {
+function syncTaskCopies(t, prevKey, skipDates) {
   if (!window.electronAPI) return [];
   const syncs = [];
+  const skipped = new Set(Array.isArray(skipDates) ? skipDates : [skipDates].filter(Boolean));
   const matchesKey = (x) => {
     if (x.id && t.id && x.id === t.id) return true;
     if (x.task === t.task && (x.project || '') === (t.project || '')) return true;
@@ -2630,6 +2953,7 @@ function syncTaskCopies(t, prevKey, saveTodayToo) {
     return false;
   };
   for (const [d, fileArr] of taskFileCache) {
+    if (skipped.has(d)) continue;
     if (!fileArr) continue;
     let changed = false;
     for (let i = 0; i < fileArr.length; i++) {
@@ -2640,32 +2964,49 @@ function syncTaskCopies(t, prevKey, saveTodayToo) {
         x.completedAt = t.completedAt;
         x.project = t.project;
         x.task = t.task;
+        x.dueDate = t.dueDate;
+        x.alarmTime = t.alarmTime;
         x.updatedAt = t.updatedAt;
         changed = true;
       }
     }
     if (changed) syncs.push(window.electronAPI.saveTasksByDate(d, fileArr));
   }
-  if (saveTodayToo && state.tasks.length) {
-    syncs.push(window.electronAPI.saveTasks(state.tasks));
-  }
   return syncs;
 }
 
-// 历史任务从文件删除:删除所有文件里的同身份副本(id 或 任务+项目)
-function removeTaskFromFile(t) {
-  if (!window.electronAPI) return Promise.resolve();
+// 删除任务:同时清除当天 state.tasks 与全部历史文件中的同身份副本(id 或 任务+项目)
+async function removeTaskFromFile(t) {
+  if (!t) return;
+  const matchesTask = (x) => x === t
+    || (x.id && t.id && x.id === t.id)
+    || (x.task === t.task && (x.project || '') === (t.project || ''));
+
+  if (!window.electronAPI) {
+    state.tasks = state.tasks.filter(x => !matchesTask(x));
+    await saveTasks();
+    return;
+  }
+
+  await ensureTaskFilesLoaded(); // 删除必须覆盖尚未打开过的历史日期文件
   const syncs = [];
+  const today = getToday();
+  const todayRest = state.tasks.filter(x => !matchesTask(x));
+  if (todayRest.length !== state.tasks.length) {
+    state.tasks = todayRest;
+    syncs.push(saveTasks());
+  }
   for (const [d, fileArr] of taskFileCache) {
+    if (d === today) continue; // 今天文件由 state.tasks 作为唯一数据源写入
     if (!fileArr) continue;
-    const rest = fileArr.filter(x => x !== t && x.id !== t.id && !(x.task === t.task && (x.project || '') === (t.project || '')));
+    const rest = fileArr.filter(x => !matchesTask(x));
     if (rest.length !== fileArr.length) {
       taskFileCache.set(d, rest);
       taskFileCacheLoaded.add(d);
       syncs.push(window.electronAPI.saveTasksByDate(d, rest));
     }
   }
-  return Promise.all(syncs).catch(() => { /* ignore */ });
+  await Promise.all(syncs).catch(() => { /* ignore */ });
 }
 
 // 某日期全部任务:完全按日期胶囊(dueDate)归属,不按文件日期
@@ -2695,52 +3036,61 @@ async function ensureTaskFilesLoaded() {
   } catch (e) { /* ignore */ }
 }
 
-// 纯函数:按 dueDate 构建日期索引(无日期胶囊任务不收录;同名按 任务+项目 去重,保留 updatedAt 最新版本)
+// 纯函数:先跨数据源选出每个任务的最新副本,再完全按该副本的 dueDate 归属
+// 当前列表提供全部活动任务;历史文件只补充已完成记录,历史未完成孤立副本不再显示为幽灵任务
+// 无日期胶囊任务不收录;同名按 任务+项目 去重,保留 updatedAt 最新版本
 function buildDueDateIndex(todayTasks, cachedFiles) {
+  const latest = new Map();
+  const currentKeys = new Set();
   const index = new Map();
-  const add = (t) => {
-    if (!t || typeof t.dueDate !== 'string') return;
+  const add = (t, isCurrent = false) => {
+    if (!t) return;
     const key = t.task + '|' + (t.project || '');
-    const list = index.get(t.dueDate);
-    if (!list) { index.set(t.dueDate, [t]); return; }
-    const i = list.findIndex(x => x.task + '|' + (x.project || '') === key);
-    if (i === -1) { list.push(t); return; }
+    if (isCurrent) currentKeys.add(key);
+    const cur = latest.get(key);
+    if (!cur) { latest.set(key, t); return; }
+    if (!isCurrent && currentKeys.has(key)) return; // 当前列表状态是活动任务的权威版本
     // 同名副本:保留 updatedAt 最新;同时间戳时 done=true 优先(旧数据无 updatedAt 时勾选副本视为最新)
-    const cur = list[i];
     const tNew = (t.updatedAt || t.createdAt || '');
     const curNew = (cur.updatedAt || cur.createdAt || '');
-    if (tNew > curNew) list[i] = t;
-    else if (tNew === curNew && t.completed && !cur.completed) list[i] = t;
+    if (tNew > curNew) latest.set(key, t);
+    else if (tNew === curNew && t.completed && !cur.completed) latest.set(key, t);
   };
-  for (const t of todayTasks) add(t);
-  for (const arr of cachedFiles) for (const t of arr) add(t);
+  for (const t of todayTasks) add(t, true);
+  for (const arr of cachedFiles) for (const t of arr) if (t.completed) add(t);
+  for (const t of latest.values()) {
+    if (typeof t.dueDate !== 'string') continue;
+    const list = index.get(t.dueDate);
+    if (list) list.push(t);
+    else index.set(t.dueDate, [t]);
+  }
   return index;
 }
 
 async function loadTasksForDate(dateStr) {
   await ensureTaskFilesLoaded();
-  const todayOnes = state.tasks.filter(t => t.dueDate === dateStr);
-  const hist = [];
-  for (const arr of taskFileCache.values()) {
-    for (const t of arr) if (t.dueDate === dateStr) hist.push(t);
-  }
-  return mergeDayTasks(todayOnes, hist); // 历史对象自带 _fileDate(缓存加载时打标),今天对象走 state.tasks
+  const dueIndex = buildDueDateIndex(state.tasks, taskFileCache.values());
+  return dueIndex.get(dateStr) || []; // 历史对象自带 _fileDate(缓存加载时打标),今天对象走 state.tasks
 }
 
 async function renderDayTasks(shouldAnimate = false, stagger = false) {
   const seq = ++dayTasksSeq;
   const dateStr = state.calendarDayDate;
-  const oldPos = shouldAnimate ? snapshotPositions(calDayTasks) : null; // 清空前记旧位置
-  calDayTasks.innerHTML = '';
-  const list = document.createElement('div');
-  list.id = 'cal-day-list';
+  const oldPos = shouldAnimate ? snapshotPositions(calDayTasks) : null;
   const tasks = (await loadTasksForDate(dateStr)).sort((a, b) => {
     if (a.completed !== b.completed) return a.completed ? 1 : -1;
     return (a.sortOrder ?? 0) - (b.sortOrder ?? 0);
   });
   if (seq !== dayTasksSeq) return; // 期间已切换到其他日期,丢弃本次渲染
+  // 数据就绪后再替换旧列表，避免异步加载期间出现一帧空白（取消勾选重排时尤为明显）。
+  calDayTasks.innerHTML = '';
+  const list = document.createElement('div');
+  list.id = 'cal-day-list';
+  const fadeEmptyState = pendingDayEmptyFadeDate === dateStr;
+  if (pendingDayEmptyFadeDate) pendingDayEmptyFadeDate = null;
   state.calendarDayTasks = tasks;
 
+  let emptyState = null;
   if (tasks.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
@@ -2753,6 +3103,7 @@ async function renderDayTasks(shouldAnimate = false, stagger = false) {
     title.textContent = '当天暂无任务';
     empty.append(icon, title);
     list.appendChild(empty);
+    emptyState = empty;
   } else {
     // 负 idx 用唯一负序列号(-1,-2,...),渲染时记录 idx→任务 映射,点击经 taskByIdx 精确取对象
     // 不能用 -i-1(排序后下标):合并/去重数组顺序可能与渲染行不一致,导致勾选连带误改
@@ -2767,10 +3118,19 @@ async function renderDayTasks(shouldAnimate = false, stagger = false) {
         idx = -(++neg);
         state.calendarDayIdMap.set(idx, task);
       }
-      list.appendChild(buildTaskRow(task, idx, { noHoverBar: true }));
+      const row = buildTaskRow(task, idx);
+      row.classList.add('cal-day-task-item');
+      list.appendChild(row);
     });
   }
   calDayTasks.appendChild(list);
+
+  if (emptyState && fadeEmptyState) {
+    emptyState.animate([
+      { opacity: 0, transform: 'translateY(4px)' },
+      { opacity: 1, transform: 'translateY(0)' }
+    ], { duration: 180, easing: 'ease-out', fill: 'both' });
+  }
 
   // FLIP 动画:与主列表一致(记旧位置 → 重建 → 计算位移 → translateY 滑动归位)
   if (oldPos) {
@@ -3081,17 +3441,22 @@ function toggleNoteSearch() {
 function openNoteSearch() {
   noteSearchBar.classList.remove('hidden');
   noteSearchInput.value = '';
-  noteSearchStatus.textContent = '';
-  noteSearchStatus.classList.remove('noresult');
+  clearNoteSearchStatus();
   state.noteSearch = null;
   noteSearchInput.focus();
 }
 
 function closeNoteSearch() {
-  if (noteSearchBar.classList.contains('hidden')) return;
+  const wasOpen = !noteSearchBar.classList.contains('hidden');
   noteSearchBar.classList.add('hidden');
-  clearNoteSearchMarks();
+  clearNoteSearchStatus();
+  if (wasOpen) clearNoteSearchMarks();
   state.noteSearch = null;
+}
+
+function clearNoteSearchStatus() {
+  noteSearchStatus.textContent = '';
+  noteSearchStatus.classList.remove('noresult');
 }
 
 function clearNoteSearchMarks() {
@@ -3101,8 +3466,7 @@ function clearNoteSearchMarks() {
 function doNoteSearch() {
   const query = noteSearchInput.value.trim().toLowerCase();
   clearNoteSearchMarks();
-  noteSearchStatus.textContent = '';
-  noteSearchStatus.classList.remove('noresult');
+  clearNoteSearchStatus();
   if (!query) { state.noteSearch = null; return; }
   // 先收集文本节点,处理时替换节点不影响遍历
   const textNodes = [];
