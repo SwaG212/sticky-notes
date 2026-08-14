@@ -4,6 +4,9 @@ const fs = require('fs');
 const { execSync } = require('child_process');
 const os = require('os');
 const { pathToFileURL } = require('url');
+const { HarnessManager } = require('./harness/manager');
+
+const APP_ICON = path.join(__dirname, 'assets', 'icon.png');
 
 // ========== 性能优化 ==========
 app.disableHardwareAcceleration();
@@ -12,6 +15,7 @@ app.commandLine.appendSwitch('disable-software-rasterizer');
 // ========== 透明窗口必需参数 ==========
 app.commandLine.appendSwitch('enable-transparent-visuals');
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=128');
+if (process.platform === 'win32') app.setAppUserModelId('com.stickynotes.app');
 
 // ========== 单实例锁 ==========
 const gotLock = app.requestSingleInstanceLock();
@@ -35,6 +39,7 @@ let winFixed = true;
 let savedWinX = null;
 let savedWinY = null;
 let moveSaveTimer = null;
+let harnessManager = null;
 const userDataPath = app.getPath('userData');
 const configPath = path.join(userDataPath, 'config.enc');
 const windowStatePath = path.join(userDataPath, 'window-state.json');
@@ -66,6 +71,14 @@ function escapeHtml(s) {
 // ========== 配置管理（加密存储 + 内存缓存） ==========
 let cachedConfig = null;
 
+function normalizeToolsEnabled(value, harness = {}) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    translate: typeof source.translate === 'boolean' ? source.translate : true,
+    harness: typeof source.harness === 'boolean' ? source.harness : harness.enabled !== false,
+  };
+}
+
 function loadConfig() {
   if (cachedConfig) return cachedConfig;
   try {
@@ -76,6 +89,9 @@ function loadConfig() {
       if (!cachedConfig.projectNames) cachedConfig.projectNames = [];
       if (!cachedConfig.notesDirHistory) cachedConfig.notesDirHistory = [];
       if (!cachedConfig.blurHide) cachedConfig.blurHide = { tasks: true, notepad: true, tools: true };
+      if (!cachedConfig.harness) cachedConfig.harness = {};
+      cachedConfig.harness = sanitizeHarnessSettings(cachedConfig.harness, cachedConfig.harness);
+      cachedConfig.toolsEnabled = normalizeToolsEnabled(cachedConfig.toolsEnabled, cachedConfig.harness);
       // 迁移：把当前 notesDir 加入历史（修复旧版本遗留数据）
       if (cachedConfig.notesDir && cachedConfig.notesDir.trim() && !cachedConfig.notesDirHistory.includes(cachedConfig.notesDir.trim())) {
         cachedConfig.notesDirHistory = [cachedConfig.notesDir.trim(), ...cachedConfig.notesDirHistory].slice(0, 5);
@@ -83,7 +99,7 @@ function loadConfig() {
       return cachedConfig;
     }
   } catch (e) { /* ignore */ }
-  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', notesDirHistory: [], projectNames: [], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2', switchTools: 'Alt+3' }, pagesEnabled: { tasks: true, tools: true }, blurHide: { tasks: true, notepad: true, tools: true } };
+  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', notesDirHistory: [], projectNames: [], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2', switchTools: 'Alt+3' }, pagesEnabled: { tasks: true, tools: true }, toolsEnabled: { translate: true, harness: true }, blurHide: { tasks: true, notepad: true, tools: true }, harness: {} };
   return cachedConfig;
 }
 
@@ -100,6 +116,28 @@ function saveConfig(cfg) {
   const encrypted = safeStorage.encryptString(json);
   fs.writeFileSync(configPath, encrypted);
   registerToggleShortcut(cfg.shortcuts?.toggle || 'Alt+`');
+}
+
+function sanitizeHarnessSettings(value, current = {}) {
+  const source = value && typeof value === 'object' ? value : {};
+  const permission = source.permission === 'read-only' ? 'read-only' : 'workspace-write';
+  const mode = source.mode === 'minimal' ? 'minimal' : 'standard';
+  const model = ['deepseek-v4-pro', 'deepseek-v4-flash'].includes(source.model)
+    ? source.model
+    : ['deepseek-v4-pro', 'deepseek-v4-flash'].includes(current.model) ? current.model : 'deepseek-v4-flash';
+  const reasoningEffort = ['off', 'high', 'max'].includes(source.reasoningEffort)
+    ? source.reasoningEffort
+    : ['off', 'high', 'max'].includes(current.reasoningEffort) ? current.reasoningEffort : 'high';
+  return {
+    enabled: source.enabled !== false,
+    installDir: typeof source.installDir === 'string' ? source.installDir.trim() : String(current.installDir || ''),
+    nodePath: typeof source.nodePath === 'string' ? source.nodePath.trim() : String(current.nodePath || ''),
+    workspace: typeof source.workspace === 'string' ? source.workspace.trim() : String(current.workspace || ''),
+    mode,
+    model,
+    reasoningEffort,
+    permission,
+  };
 }
 
 function loadWindowState() {
@@ -730,6 +768,10 @@ function validateAiInput(text, images) {
   for (const d of images) validateImageDataUrl(d);
 }
 
+function emitHarnessEvent(event) {
+  if (win && !win.isDestroyed()) win.webContents.send('harness:event', event);
+}
+
 // ========== IPC 处理 ==========
 function setupIPC() {
   ipcMain.handle('organize-request', async (_event, { text, images, project }) => {
@@ -773,9 +815,15 @@ function setupIPC() {
     for (const key of CONFIG_WHITELIST) {
       if (cfg && cfg[key] !== undefined) merged[key] = cfg[key];
     }
+    if (cfg && cfg.toolsEnabled !== undefined) {
+      merged.toolsEnabled = normalizeToolsEnabled(cfg.toolsEnabled, cur.harness);
+    }
     // API Key:渲染层拿不到旧 Key;仅显式输入新 Key 才更新,留空/占位则保留旧 Key
     if (cfg && typeof cfg.apiKey === 'string' && cfg.apiKey.trim() && !cfg.apiKey.trim().startsWith('*')) {
       merged.apiKey = cfg.apiKey.trim();
+    }
+    if (cfg && cfg.harness !== undefined) {
+      merged.harness = sanitizeHarnessSettings(cfg.harness, cur.harness);
     }
     // 笔记目录变更需主进程确认(防受控渲染层替换受信任根目录)
     const newDir = String(merged.notesDir || '').trim();
@@ -795,7 +843,9 @@ function setupIPC() {
         merged.notesDir = cur.notesDir; // 弹窗失败保守拒绝
       }
     }
+    const harnessChanged = JSON.stringify(cur.harness || {}) !== JSON.stringify(merged.harness || {});
     saveConfig(merged);
+    if (harnessChanged) harnessManager?.reset();
     return { success: true };
   });
   ipcMain.handle('get-login-settings', (_e) => { if (!isTrustedSender(_e)) return false; return app.getLoginItemSettings().openAtLogin; });
@@ -836,6 +886,7 @@ function setupIPC() {
   });
 
   ipcMain.handle('set-page', (_e, page) => { if (isTrustedSender(_e)) currentPage = page; });
+  ipcMain.handle('get-page', (_e) => isTrustedSender(_e) ? currentPage : 'main');
   ipcMain.handle('list-notes', (_e) => { if (!isTrustedSender(_e)) return []; return listNotes(); });
   ipcMain.handle('get-pinned-notes', (_e) => { if (!isTrustedSender(_e)) return []; return getPinnedNotes(); });
   ipcMain.handle('toggle-pin-note', (_e, filename) => { if (!isTrustedSender(_e)) return getPinnedNotes(); return togglePinNote(filename); });
@@ -965,6 +1016,87 @@ function setupIPC() {
       return { success: false, error: msg };
     }
   });
+
+  ipcMain.handle('harness-snapshot', (_event) => {
+    if (!isTrustedSender(_event) || !harnessManager) return null;
+    return harnessManager.snapshot();
+  });
+  ipcMain.handle('harness-list-sessions', (_event) => {
+    if (!isTrustedSender(_event) || !harnessManager) return [];
+    return harnessManager.listSessions();
+  });
+  ipcMain.handle('harness-load-session', (_event, sessionId) => {
+    if (!isTrustedSender(_event) || !harnessManager || typeof sessionId !== 'string') return null;
+    return harnessManager.loadSession(sessionId);
+  });
+  ipcMain.handle('harness-select-workspace', async (_event) => {
+    if (!isTrustedSender(_event)) return { success: false, error: 'FORBIDDEN' };
+    const cfg = loadConfig();
+    const current = sanitizeHarnessSettings(cfg.harness);
+    const result = await dialog.showOpenDialog(win, {
+      title: '选择 Harness 工作目录',
+      defaultPath: current.workspace || __dirname,
+      properties: ['openDirectory'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return { success: false, cancelled: true };
+    cfg.harness = { ...current, workspace: result.filePaths[0] };
+    saveConfig(cfg);
+    harnessManager?.reset();
+    return { success: true, workspace: cfg.harness.workspace };
+  });
+  ipcMain.handle('harness-update-options', (_event, payload) => {
+    try {
+      if (!isTrustedSender(_event) || !harnessManager) return { success: false, error: 'FORBIDDEN' };
+      if (['starting', 'running', 'stopping'].includes(harnessManager.snapshot().status)) {
+        return { success: false, error: '任务执行期间无法切换模型或推理等级' };
+      }
+      const cfg = loadConfig();
+      const current = sanitizeHarnessSettings(cfg.harness);
+      const next = sanitizeHarnessSettings({
+        ...current,
+        model: payload && payload.model,
+        reasoningEffort: payload && payload.reasoningEffort,
+      }, current);
+      const changed = current.model !== next.model || current.reasoningEffort !== next.reasoningEffort;
+      cfg.harness = next;
+      saveConfig(cfg);
+      if (changed) harnessManager.reset();
+      return { success: true, model: next.model, reasoningEffort: next.reasoningEffort };
+    } catch (error) {
+      return { success: false, error: error.message || '保存 Harness 选项失败' };
+    }
+  });
+  ipcMain.handle('harness-start', async (_event, payload) => {
+    if (!isTrustedSender(_event) || !harnessManager) return { success: false, error: 'FORBIDDEN' };
+    const text = payload && typeof payload.text === 'string' ? payload.text : '';
+    const sessionId = payload && typeof payload.sessionId === 'string' ? payload.sessionId : null;
+    const snapshot = harnessManager.snapshot();
+    if (!snapshot.configured) return { success: false, error: snapshot.configError };
+    if (!text.trim() || text.length > 8000) {
+      return { success: false, error: text.trim() ? '任务内容过长' : '请输入任务内容' };
+    }
+    const cfg = sanitizeHarnessSettings(loadConfig().harness);
+    if (cfg.permission === 'workspace-write') {
+      const { response } = await dialog.showMessageBox(win, {
+        type: 'question',
+        buttons: ['运行任务', '取消'],
+        defaultId: 1,
+        cancelId: 1,
+        message: '允许 Harness 修改工作目录？',
+        detail: `${cfg.workspace || '尚未选择目录'}\n\nHarness 可以读取并修改此目录中的文件。`,
+      });
+      if (response !== 0) return { success: false, cancelled: true };
+    }
+    return harnessManager.run(text, sessionId);
+  });
+  ipcMain.handle('harness-stop', async (_event) => {
+    if (!isTrustedSender(_event) || !harnessManager) return { success: false, error: 'FORBIDDEN' };
+    return harnessManager.stop();
+  });
+  ipcMain.handle('harness-new-session', (_event) => {
+    if (!isTrustedSender(_event) || !harnessManager) return { success: false, error: 'FORBIDDEN' };
+    return harnessManager.newSession();
+  });
 }
 
 // ========== 窗口管理 ==========
@@ -985,11 +1117,12 @@ function createWindow() {
   const { x, y, width, height } = getWindowPosition();
   win = new BrowserWindow({
     width, height, x, y,
+    icon: APP_ICON,
     frame: false,
     resizable: false,
     movable: true,
     alwaysOnTop: true,
-    skipTaskbar: true,
+    skipTaskbar: false,
     show: false,
     transparent: true,
     backgroundColor: '#00000000',
@@ -1091,18 +1224,7 @@ function toggleWindow() {
 
 // ========== 托盘 ==========
 function createTrayIcon() {
-  const size = 16;
-  const buf = Buffer.alloc(size * size * 4);
-  for (let i = 0; i < size * size; i++) {
-    const x = i % size, y = Math.floor(i / size), offset = i * 4;
-    const inner = x >= 1 && x < size - 1 && y >= 1 && y < size - 1;
-    const edgeX = (x === 0 || x === size - 1) && y >= 4 && y < size - 4;
-    const edgeY = (y === 0 || y === size - 1) && x >= 4 && x < size - 4;
-    if (inner || edgeX || edgeY) {
-      buf[offset] = 255; buf[offset + 1] = 210; buf[offset + 2] = 60; buf[offset + 3] = 255;
-    }
-  }
-  return nativeImage.createFromBuffer(buf, { width: size, height: size });
+  return nativeImage.createFromPath(APP_ICON);
 }
 
 function createTray() {
@@ -1153,6 +1275,12 @@ app.whenReady().then(() => {
     }
   });
 
+  harnessManager = new HarnessManager({
+    appRoot: __dirname,
+    userDataPath,
+    getConfig: loadConfig,
+    emit: emitHarnessEvent,
+  });
   setupIPC();
   createTray();
 
@@ -1173,7 +1301,10 @@ app.whenReady().then(() => {
   // 有 Key 时延迟创建窗口，等待用户首次 Alt+` 唤出（Lazy Window）
 });
 
-app.on('before-quit', () => { app.isQuitting = true; });
+app.on('before-quit', () => {
+  app.isQuitting = true;
+  harnessManager?.dispose();
+});
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   clearTimeout(ocrIdleTimer);

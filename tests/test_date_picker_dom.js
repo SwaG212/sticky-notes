@@ -30,6 +30,27 @@ app.whenReady().then(async () => {
   `);
   await wait(40);
 
+  const actionBarLayout = JSON.parse(await run(`(() => {
+    state.showCalendar = true;
+    state.showDailyReport = true;
+    applyCalendarVisibility();
+    applyDailyReportVisibility();
+    dailyReportHint.textContent = '日报内容已复制至剪切板';
+    dailyReportHint.classList.add('show');
+    const bar = inputActions.getBoundingClientRect();
+    const left = document.querySelector('.input-left-group').getBoundingClientRect();
+    const right = document.querySelector('.input-buttons').getBoundingClientRect();
+    return JSON.stringify({
+      inside: right.right <= bar.right + 0.5,
+      separated: left.right <= right.left + 0.5,
+      calendarVisible: getComputedStyle(btnCalendar).display !== 'none',
+      reportVisible: getComputedStyle(btnDailyReport).display !== 'none',
+    });
+  })()`));
+  assert(actionBarLayout.calendarVisible && actionBarLayout.reportVisible, '日历和日报按钮可同时显示');
+  assert(actionBarLayout.inside && actionBarLayout.separated, '长日报提示不会把重排和右滑按钮挤出屏幕');
+  await run(`dailyReportHint.classList.remove('show'); dailyReportHint.textContent = '';`);
+
   console.log('\n--- 任务列表日期选择器 ---');
   const mainPicker = JSON.parse(await run(`(() => {
     const picker = document.querySelector('.date-picker');
@@ -150,7 +171,11 @@ app.whenReady().then(async () => {
   assert(!committed.pickerOpen && !committed.scrimOpen, '日视图选择日期后选择器和遮罩同步关闭');
 
   const dateProtection = JSON.parse(await run(`(async () => {
+    updateOrganizeButton();
+    const organizeBefore = !btnOrganize.disabled;
     openCalendar();
+    const organizeDuring = btnOrganize.disabled;
+    const organizeTransition = getComputedStyle(btnOrganize).transitionDuration;
     await new Promise(resolve => setTimeout(resolve, 360));
     const monthDay = document.querySelector('.cal-day');
     const monthUserSelect = monthDay ? getComputedStyle(monthDay).userSelect : null;
@@ -161,6 +186,9 @@ app.whenReady().then(async () => {
     pickerProbe.className = 'dp-date-option';
     document.body.appendChild(pickerProbe);
     const result = {
+      organizeBefore,
+      organizeDuring,
+      organizeTransition,
       monthUserSelect,
       monthLabelUserSelect: getComputedStyle(document.querySelector('#cal-monthlabel')).userSelect,
       weekUserSelect: weekDay ? getComputedStyle(weekDay).userSelect : null,
@@ -169,10 +197,15 @@ app.whenReady().then(async () => {
     pickerProbe.remove();
     return JSON.stringify(result);
   })()`));
+  assert(dateProtection.organizeBefore && dateProtection.organizeDuring, '打开日历时重排按钮沿用项目页签的置灰状态');
+  assert(dateProtection.organizeTransition !== '0s', '打开日历时重排按钮保留原有过渡动画');
   assert(dateProtection.monthUserSelect === 'none', '月历中的每个日期禁止选中文字');
   assert(dateProtection.monthLabelUserSelect === 'none', '日历顶部年月标题禁止选中文字');
   assert(dateProtection.weekUserSelect === 'none', '日视图周栏中的每个日期禁止选中文字');
   assert(dateProtection.pickerUserSelect === 'none', '任务日期选择器中的每个日期禁止选中文字');
+
+  const organizeAfterCalendar = await run(`(() => { closeCalendar(); return !btnOrganize.disabled; })()`);
+  assert(organizeAfterCalendar, '关闭日历后重排按钮恢复可用状态');
 
   console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   await win.close();

@@ -74,7 +74,6 @@
 
     <!-- 记事本页面 -->
     <div class="page page-notepad">
-      <div class="drag-handle"></div>
       <button id="btn-settings" title="设置">⚙</button>
       <div class="notepad-toolbar">
         <button id="btn-note-list">☰</button>
@@ -104,13 +103,15 @@
 
     <!-- 工具箱页面（第三页） -->
     <div class="page page-tools">
-      <div class="drag-handle"></div>
       <div id="tools-cards"></div>
       <div class="notepad-footer">
         <button id="btn-tools-back">←</button>
       </div>
     </div>
   </div>
+
+  <!-- 原生窗口拖动区必须位于滑动页面容器外，刷新后才能稳定命中。 -->
+  <div id="window-drag-handle"></div>
 
   <!-- 设置页面遮罩 -->
   <div id="settings-overlay" class="hidden">
@@ -194,13 +195,37 @@
             <label class="checkbox-label page-col"><input type="checkbox" id="settings-tools-page"></label>
             <label class="checkbox-label page-col"><input type="checkbox" id="settings-blurhide-tools" checked></label>
           </div>
+          <div class="page-row page-row-sub">
+            <span class="page-row-name">翻译</span>
+            <label class="checkbox-label page-col"><input type="checkbox" id="settings-translate-enabled"></label>
+            <span class="page-col"></span>
+          </div>
+          <div class="page-row page-row-sub">
+            <span class="page-row-name">DeepSeek Harness</span>
+            <label class="checkbox-label page-col"><input type="checkbox" id="settings-harness-enabled"></label>
+            <span class="page-col"></span>
+          </div>
         </div>
         <div class="settings-card">
-          <div class="settings-card-title">API</div>
+          <div class="settings-card-title">DeepSeek Harness</div>
           <label>API Key</label>
           <input type="password" id="settings-apikey" placeholder="sk-xxxxxxxxxxxxxxxxxxxx">
           <label>API 地址（默认 DeepSeek）</label>
           <input type="text" id="settings-baseurl" placeholder="https://api.deepseek.com">
+          <label>安装目录</label>
+          <input type="text" id="settings-harness-dir" placeholder="F:\Tools\deepseek-harness">
+          <label>Node.js</label>
+          <input type="text" id="settings-harness-node" placeholder="C:\Program Files\nodejs\node.exe">
+          <label>运行模式</label>
+          <select id="settings-harness-mode">
+            <option value="standard">标准模式</option>
+            <option value="minimal">极简模式</option>
+          </select>
+          <label>默认权限</label>
+          <select id="settings-harness-permission">
+            <option value="read-only">只读</option>
+            <option value="workspace-write">允许修改工作目录</option>
+          </select>
         </div>
         <div class="settings-card">
           <div class="settings-card-title">快捷键</div>

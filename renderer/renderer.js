@@ -25,7 +25,12 @@ const state = {
   calendarDayTasks: null, // 当日视图渲染的任务数组(历史日期含文件任务,负 idx 操作映射)
   calendarDayIdMap: null, // 负 idx → 任务 的精确映射(点击操作按 id 定位,防排序错位)
   calendarWeek: null, // 周条当前显示的周(基准日,可独立于选中日期切周)
-  toolsEnabled: { translate: true },
+  toolsEnabled: { translate: true, harness: true },
+  harness: {
+    status: 'idle', sessionId: null, workspace: '', permission: 'workspace-write', mode: 'standard',
+    model: 'deepseek-v4-flash', reasoningEffort: 'high', configured: false, configError: '',
+    messages: [], sessions: [], todos: [], diffs: [], sessionTitle: '', toolGroupExpanded: false,
+  },
   hoveredImage: null,
   activeSheet: 'all',
   noteSearch: null,
@@ -79,13 +84,17 @@ const noteSearchStatus = $('#note-search-status');
 // ========== 初始化 ==========
 async function init() {
   await loadShortcutsFromConfig();
+  initializeSettingsSelects();
+  if (window.electronAPI?.onHarnessEvent) window.electronAPI.onHarnessEvent(handleHarnessEvent);
+  await refreshHarnessSnapshot();
+  await refreshHarnessSessions(true);
+  const restoredPage = window.electronAPI?.getPage ? await window.electronAPI.getPage() : 'main';
   if (state.pagesEnabled.tasks) {
     await loadTasks();
     renderTasks();
-  } else {
-    state.currentPage = 'notepad';
-    pagesContainer.classList.add('on-notepad');
   }
+  if (restoredPage === 'tools' && isToolsPageEnabled()) await switchToTools();
+  else if (restoredPage === 'notepad' || !state.pagesEnabled.tasks) await switchToNotepad();
   updateOrganizeButton();
   updateTasksPageVisibility();
   updateToolsPageVisibility();
@@ -1774,7 +1783,7 @@ function hasContent() {
 function updateOrganizeButton() {
   // 重排仅对任务汇总页生效：汇总页且有未完成任务时可点击
   const hasPending = state.tasks.some(t => !t.completed);
-  btnOrganize.disabled = state.activeSheet !== 'all' || !hasPending || state.organizing;
+  btnOrganize.disabled = state.calendarOpen || state.activeSheet !== 'all' || !hasPending || state.organizing;
 }
 
 function handlePaste(e) {
@@ -1821,7 +1830,7 @@ function renderImages() {
 
 // ========== 任务重排（汇总页整理按钮） ==========
 function rearrangeTasks() {
-  if (state.activeSheet !== 'all' || state.organizing) return;
+  if (state.calendarOpen || state.activeSheet !== 'all' || state.organizing) return;
   if (state.tasks.every(t => t.completed)) return;
 
   const undone = state.tasks.filter(t => !t.completed);
@@ -2147,6 +2156,10 @@ async function loadShortcutsFromConfig() {
     if (cfg.pagesEnabled) {
       state.pagesEnabled = { ...state.pagesEnabled, ...cfg.pagesEnabled };
     }
+    state.toolsEnabled = {
+      translate: cfg.toolsEnabled?.translate !== false,
+      harness: cfg.toolsEnabled?.harness ?? cfg.harness?.enabled ?? true,
+    };
     // 项目白名单:启动即加载,弹出胶囊选项 = 白名单 ∪ 任务历史项目
     if (cfg.projectNames) {
       state.projectNames = [...cfg.projectNames];
@@ -2180,10 +2193,17 @@ async function openSettings() {
     const cfg = await window.electronAPI.getConfig();
     // API Key 不回填(主进程隔离):已配置时显示占位提示,留空提交则保持旧 Key
     const hasKey = await window.electronAPI.hasApiKey();
-    $('#settings-apikey').value = '';
+    $('#settings-apikey').value = hasKey ? '************************' : '';
     $('#settings-apikey').placeholder = hasKey ? '已配置，留空保持不变' : 'sk-xxxxxxxxxxxxxxxxxxxx';
     $('#settings-baseurl').value = cfg.baseUrl || 'https://api.deepseek.com';
     $('#settings-reportname').value = cfg.reportName || '';
+    const harness = cfg.harness || {};
+    $('#settings-translate-enabled').checked = cfg.toolsEnabled?.translate !== false;
+    $('#settings-harness-enabled').checked = cfg.toolsEnabled?.harness ?? harness.enabled ?? true;
+    $('#settings-harness-dir').value = harness.installDir || 'F:\\Tools\\deepseek-harness';
+    $('#settings-harness-node').value = harness.nodePath || 'C:\\Program Files\\nodejs\\node.exe';
+    $('#settings-harness-mode').value = harness.mode === 'minimal' ? 'minimal' : 'standard';
+    $('#settings-harness-permission').value = harness.permission === 'read-only' ? 'read-only' : 'workspace-write';
 
     // 填充文件路径下拉菜单
     const currentDir = cfg.notesDir || '';
@@ -2234,10 +2254,9 @@ async function openSettings() {
     state.projectNames = [...(cfg.projectNames || [])];
     renderProjectTags();
   }
+  syncSettingsSelects();
   renderShortcutInputs();
   settingsOverlay.classList.remove('hidden');
-  $('#settings-apikey').focus();
-  // 聚焦后浏览器会自动滚动到输入框位置，重置到顶部
   $('.settings-body').scrollTop = 0;
 }
 
@@ -2270,8 +2289,17 @@ async function confirmSettings() {
   const reportName = $('#settings-reportname').value.trim();
   const notesDir = $('#settings-notesdir').value.trim();
 
-  // 检测文件位置是否变更
+  // 检测文件位置是否变更，并保留卡片中选择的 Harness 工作目录
   const oldCfg = window.electronAPI ? await window.electronAPI.getConfig() : {};
+  const harness = {
+    enabled: $('#settings-harness-enabled').checked,
+    installDir: $('#settings-harness-dir').value.trim(),
+    nodePath: $('#settings-harness-node').value.trim(),
+    workspace: oldCfg?.harness?.workspace || '',
+    mode: $('#settings-harness-mode').value === 'minimal' ? 'minimal' : 'standard',
+    model: oldCfg?.harness?.model || 'deepseek-v4-flash',
+    permission: $('#settings-harness-permission').value === 'read-only' ? 'read-only' : 'workspace-write',
+  };
   const dirChanged = notesDir !== (oldCfg.notesDir || '');
 
   collectShortcutsFromInputs();
@@ -2282,13 +2310,18 @@ async function confirmSettings() {
   const showCalendar = $('#settings-calendar').checked;
   const tasksEnabled = $('#settings-tasks-page').checked;
   const toolsEnabled = $('#settings-tools-page').checked;
+  const toolFeatures = {
+    translate: $('#settings-translate-enabled').checked,
+    harness: $('#settings-harness-enabled').checked,
+  };
   const pagesEnabled = { tasks: tasksEnabled, tools: toolsEnabled };
   const blurHide = {
     tasks: $('#settings-blurhide-tasks').checked,
     notepad: $('#settings-blurhide-notepad').checked,
     tools: $('#settings-blurhide-tools').checked,
   };
-  const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, showSheetBar, showProjectBadge, showDailyReport, showCalendar, pagesEnabled, blurHide };
+  harness.workspace = oldCfg?.harness?.workspace || '';
+  const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, showSheetBar, showProjectBadge, showDailyReport, showCalendar, pagesEnabled, toolsEnabled: toolFeatures, blurHide, harness };
 
   if (window.electronAPI) {
     await window.electronAPI.saveConfig(cfg);
@@ -2322,6 +2355,9 @@ async function confirmSettings() {
   if (!toolsEnabled && state.currentPage === 'tools') {
     switchToMain();
   }
+  state.toolsEnabled = toolFeatures;
+  await refreshHarnessSnapshot();
+  if (state.currentPage === 'tools') renderToolsPage();
 
   // 文件位置变更后，刷新笔记列表
   if (dirChanged && window.electronAPI) {
@@ -2823,6 +2859,7 @@ function openCalendar() {
   const now = new Date();
   state.calendarMonth = { y: now.getFullYear(), m: now.getMonth() };
   state.calendarOpen = true;
+  updateOrganizeButton(); // 复用项目页签切换时的置灰过渡
   btnCalendar.textContent = '列表'; // 日历状态:按钮切换为「列表」
   taskArea.classList.add('dimmed'); // 任务区淡出(识别框不动)
   calendarView.classList.remove('hidden'); // 日历就位(仍 opacity 0)
@@ -2836,6 +2873,7 @@ function closeCalendar() {
   cancelDayDateExit();
   cleanupMonthFade();
   state.calendarOpen = false;
+  updateOrganizeButton();
   btnCalendar.textContent = '日历'; // 切回任务列表:按钮文字恢复
   state.calendarSelected = null;
   state.calendarDayDate = null;
@@ -3179,6 +3217,737 @@ function renderToolsPage() {
   toolsCards.innerHTML = '';
   // 只渲染启用的功能卡;未启用不创建 DOM、不绑定事件
   if (state.toolsEnabled.translate) renderTranslateCard();
+  if (state.toolsEnabled.harness) renderHarnessCard();
+}
+
+// ========== 工具箱:DeepSeek Harness 卡 ==========
+const HARNESS_STATUS_LABELS = {
+  idle: '就绪', ready: '就绪', starting: '启动中', running: '执行中',
+  stopping: '停止中', stopped: '已停止', completed: '已完成', error: '失败',
+};
+
+async function refreshHarnessSnapshot() {
+  if (!window.electronAPI?.harnessSnapshot) return;
+  const snapshot = await window.electronAPI.harnessSnapshot();
+  if (!snapshot) return;
+  state.harness = {
+    ...state.harness,
+    ...snapshot,
+    toolGroupExpanded: ['starting', 'running', 'stopping'].includes(snapshot.status),
+  };
+  updateHarnessCard();
+}
+
+async function refreshHarnessSessions(restoreLatest = false) {
+  if (!window.electronAPI?.harnessListSessions || !state.harness.workspace) return;
+  const sessions = await window.electronAPI.harnessListSessions();
+  state.harness.sessions = Array.isArray(sessions) ? sessions : [];
+  if (restoreLatest && !state.harness.sessionId && state.harness.sessions[0]) {
+    await loadHarnessSession(state.harness.sessions[0].id);
+    return;
+  }
+  updateHarnessCard();
+}
+
+async function loadHarnessSession(sessionId) {
+  if (!window.electronAPI?.harnessLoadSession || !sessionId) return;
+  const session = await window.electronAPI.harnessLoadSession(sessionId);
+  if (!session) return;
+  state.harness.sessionId = session.id;
+  state.harness.sessionTitle = session.title || '';
+  state.harness.messages = Array.isArray(session.messages) ? session.messages : [];
+  state.harness.todos = Array.isArray(session.todos) ? session.todos : [];
+  state.harness.diffs = Array.isArray(session.diffs) ? session.diffs : [];
+  state.harness.toolGroupExpanded = false;
+  state.harness.status = session.outcome === 'completed' ? 'completed'
+    : ['aborted', 'interrupted'].includes(session.outcome) ? 'stopped'
+      : session.outcome === 'idle' ? 'idle' : 'error';
+  updateHarnessCard();
+}
+
+function addHarnessMessage(role, text, extra = {}) {
+  const value = String(text || '').trim();
+  if (!value) return;
+  state.harness.messages.push({ role, text: value.slice(0, 12000), ...extra });
+  if (state.harness.messages.length > 100) state.harness.messages.splice(0, state.harness.messages.length - 100);
+}
+
+function handleHarnessEvent(event) {
+  if (!event || typeof event !== 'object') return;
+  if (event.type === 'snapshot' && event.snapshot) {
+    state.harness = { ...state.harness, ...event.snapshot };
+    state.harness.toolGroupExpanded = ['starting', 'running', 'stopping'].includes(state.harness.status);
+  } else if (event.type === 'status') {
+    state.harness.status = event.status || state.harness.status;
+    state.harness.toolGroupExpanded = ['starting', 'running', 'stopping'].includes(state.harness.status);
+    if (event.sessionId) state.harness.sessionId = event.sessionId;
+  } else if (event.type === 'message' && event.role === 'assistant') {
+    const streamed = event.streamKey
+      ? [...state.harness.messages].reverse().find(message => message.role === 'assistant' && message.streamKey === event.streamKey)
+      : null;
+    if (event.delta) {
+      if (streamed) streamed.text = (streamed.text + event.text).slice(-12000);
+      else state.harness.messages.push({ role: 'assistant', text: String(event.text || ''), streamKey: event.streamKey, streaming: true });
+    } else if (streamed) {
+      streamed.text = String(event.text || streamed.text).slice(0, 12000);
+      streamed.streaming = false;
+    } else {
+      const last = state.harness.messages[state.harness.messages.length - 1];
+      if (!last || last.role !== 'assistant' || last.text !== event.text) addHarnessMessage('assistant', event.text);
+    }
+  } else if (event.type === 'tool') {
+    if (event.phase === 'start') {
+      state.harness.toolGroupExpanded = true;
+      addHarnessMessage('tool', event.name || '工具', { callId: event.callId, detail: event.detail || '', pending: true });
+    } else {
+      const row = [...state.harness.messages].reverse().find(m => m.role === 'tool' && m.callId === event.callId);
+      if (row) {
+        row.pending = false;
+        row.failed = !!event.failed;
+        row.output = event.output || '';
+      }
+      if (Array.isArray(event.diffs)) state.harness.diffs.push(...event.diffs);
+      if (state.harness.diffs.length > 50) state.harness.diffs.splice(0, state.harness.diffs.length - 50);
+    }
+  } else if (event.type === 'todos') {
+    state.harness.todos = Array.isArray(event.todos) ? event.todos : [];
+  } else if (event.type === 'subagent') {
+    addHarnessMessage('tool', `子任务${event.status === 'finished' ? '已完成' : '已启动'}`, { pending: event.status !== 'finished' });
+  } else if (event.type === 'result') {
+    const last = state.harness.messages[state.harness.messages.length - 1];
+    if (event.text && (!last || last.role !== 'assistant' || last.text !== event.text)) {
+      addHarnessMessage('assistant', event.text);
+    }
+    state.harness.status = 'completed';
+    state.harness.toolGroupExpanded = false;
+    setTimeout(async () => {
+      await refreshHarnessSessions();
+      if (state.harness.sessionId) await loadHarnessSession(state.harness.sessionId);
+    }, 300);
+  } else if (event.type === 'error') {
+    state.harness.status = 'error';
+    state.harness.toolGroupExpanded = false;
+    state.harness.error = event.message || 'Harness 执行失败';
+    addHarnessMessage('error', state.harness.error);
+  }
+  updateHarnessCard();
+}
+
+function syncHarnessInputCompact(card) {
+  const input = card?.querySelector('.harness-input');
+  if (!input) return;
+  const compact = !input.value.trim() && input !== document.activeElement;
+  input.classList.toggle('harness-input-compact', compact);
+  card.classList.toggle('harness-input-compact', compact);
+}
+
+function renderHarnessCard() {
+  const card = document.createElement('section');
+  card.className = 'tool-card harness-card';
+  card.dataset.tool = 'harness';
+
+  const header = document.createElement('div');
+  header.className = 'harness-header';
+  const title = document.createElement('button');
+  title.type = 'button';
+  title.className = 'tool-card-title harness-title-trigger';
+  title.textContent = 'DeepSeek Harness';
+  title.setAttribute('aria-expanded', 'false');
+  const badge = document.createElement('span');
+  badge.className = 'harness-status';
+  badge.dataset.harnessStatus = state.harness.status;
+
+  const headingControl = document.createElement('div');
+  headingControl.className = 'harness-heading-control';
+
+  const workspaceButton = document.createElement('button');
+  workspaceButton.type = 'button';
+  workspaceButton.className = 'harness-workspace harness-quick-btn';
+  workspaceButton.title = '选择工作目录';
+
+  const historyButton = document.createElement('button');
+  historyButton.type = 'button';
+  historyButton.className = 'harness-history-btn harness-quick-btn';
+  historyButton.textContent = '◷ 历史会话';
+
+  const quickActions = document.createElement('div');
+  quickActions.className = 'harness-quick-actions';
+
+  const sessionSelect = document.createElement('select');
+  sessionSelect.className = 'harness-session-select';
+  sessionSelect.setAttribute('aria-label', '历史会话');
+  quickActions.append(workspaceButton, historyButton, sessionSelect);
+  headingControl.append(title, quickActions);
+  header.append(headingControl, badge);
+  sessionSelect.addEventListener('change', () => {
+    closeHarnessQuickActions(card);
+    return sessionSelect.value ? loadHarnessSession(sessionSelect.value) : newHarnessSession();
+  });
+  title.addEventListener('click', () => openHarnessQuickActions(card));
+  workspaceButton.addEventListener('click', async () => {
+    await selectHarnessWorkspace();
+    closeHarnessQuickActions(card);
+  });
+  historyButton.addEventListener('click', () => {
+    card.classList.toggle('harness-history-open');
+    updateHarnessWorkspaceButton(card);
+    if (card.classList.contains('harness-history-open')) sessionSelect.focus({ preventScroll: true });
+  });
+
+  const todos = document.createElement('div');
+  todos.className = 'harness-todos';
+
+  const history = document.createElement('div');
+  history.className = 'harness-history';
+  history.setAttribute('aria-live', 'polite');
+
+  const artifacts = document.createElement('details');
+  artifacts.className = 'harness-artifacts';
+  const artifactsSummary = document.createElement('summary');
+  const artifactsBody = document.createElement('div');
+  artifactsBody.className = 'harness-artifacts-body';
+  artifacts.append(artifactsSummary, artifactsBody);
+
+  const input = document.createElement('textarea');
+  input.className = 'harness-input';
+  input.rows = 3;
+  input.maxLength = 8000;
+  input.placeholder = '描述要完成的任务…';
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      submitHarnessTask(card);
+    }
+  });
+  input.addEventListener('focus', () => syncHarnessInputCompact(card));
+  input.addEventListener('blur', () => syncHarnessInputCompact(card));
+  input.addEventListener('input', () => syncHarnessInputCompact(card));
+
+  const actions = document.createElement('div');
+  actions.className = 'harness-actions';
+  const options = document.createElement('div');
+  options.className = 'harness-run-options';
+  const optionsTrigger = document.createElement('button');
+  optionsTrigger.type = 'button';
+  optionsTrigger.className = 'harness-options-trigger';
+  optionsTrigger.setAttribute('aria-label', '选择模型和推理等级');
+  optionsTrigger.setAttribute('aria-expanded', 'false');
+  const optionsPanel = document.createElement('div');
+  optionsPanel.className = 'harness-options-panel';
+  optionsPanel.setAttribute('role', 'dialog');
+  optionsPanel.setAttribute('aria-label', '模型和推理等级');
+  const optionRows = [
+    ['模型', [['Flash', 'deepseek-v4-flash'], ['Pro', 'deepseek-v4-pro']]],
+    ['推理', [['Off', 'off'], ['High', 'high'], ['Max', 'max']]],
+  ];
+  for (const [labelText, choices] of optionRows) {
+    const row = document.createElement('div');
+    row.className = 'harness-option-row';
+    const label = document.createElement('span');
+    label.textContent = labelText;
+    const choicesBox = document.createElement('div');
+    choicesBox.className = 'harness-option-choices';
+    for (const [text, value] of choices) {
+      const choice = document.createElement('button');
+      choice.type = 'button';
+      choice.textContent = text;
+      choice.dataset.value = value;
+      choice.dataset.kind = labelText === '模型' ? 'model' : 'effort';
+      choice.addEventListener('click', () => {
+        const model = choice.dataset.kind === 'model' ? value : state.harness.model;
+        const effort = choice.dataset.kind === 'effort' ? value : state.harness.reasoningEffort;
+        updateHarnessRunOptions(card, model, effort);
+      });
+      choicesBox.appendChild(choice);
+    }
+    row.append(label, choicesBox);
+    optionsPanel.appendChild(row);
+  }
+  optionsTrigger.addEventListener('click', () => {
+    const open = options.classList.toggle('open');
+    optionsTrigger.setAttribute('aria-expanded', String(open));
+  });
+  options.append(optionsTrigger, optionsPanel);
+  const buttons = document.createElement('div');
+  buttons.className = 'harness-action-buttons';
+  const newButton = document.createElement('button');
+  newButton.type = 'button';
+  newButton.className = 'harness-secondary-btn harness-new-btn';
+  newButton.textContent = '+';
+  newButton.title = '新会话';
+  newButton.setAttribute('aria-label', '新会话');
+  newButton.addEventListener('click', newHarnessSession);
+  const runButton = document.createElement('button');
+  runButton.type = 'button';
+  runButton.className = 'harness-send-btn harness-run-stop-btn';
+  const runIcon = document.createElement('span');
+  runIcon.className = 'harness-run-stop-icon';
+  runIcon.setAttribute('aria-hidden', 'true');
+  const runLabel = document.createElement('span');
+  runLabel.className = 'harness-run-stop-label';
+  runLabel.textContent = '运行';
+  runButton.append(runIcon, runLabel);
+  runButton.addEventListener('click', () => {
+    const busy = ['starting', 'running', 'stopping'].includes(state.harness.status);
+    if (busy) stopHarnessTask();
+    else submitHarnessTask(card);
+  });
+  buttons.append(newButton, runButton);
+  actions.append(options, buttons);
+
+  card.append(header, todos, history, artifacts, input, actions);
+  toolsCards.appendChild(card);
+  updateHarnessCard();
+}
+
+function compactHarnessPath(value) {
+  const full = String(value || '').trim();
+  if (!full) return '选择目录';
+  const parts = full.split(/[\\/]+/).filter(Boolean);
+  return parts.length > 2 ? `…\\${parts.slice(-2).join('\\')}` : full;
+}
+
+function updateHarnessWorkspaceButton(card) {
+  const workspace = card?.querySelector('.harness-workspace');
+  if (!workspace) return;
+  workspace.textContent = card.classList.contains('harness-history-open')
+    ? '📁'
+    : `📁 ${compactHarnessPath(state.harness.workspace)}`;
+  workspace.title = state.harness.workspace || '选择工作目录';
+}
+
+function openHarnessQuickActions(card) {
+  card.classList.add('harness-actions-open');
+  card.querySelector('.harness-title-trigger')?.setAttribute('aria-expanded', 'true');
+}
+
+function closeHarnessQuickActions(card) {
+  if (!card) return;
+  card.classList.remove('harness-actions-open', 'harness-history-open');
+  card.querySelector('.harness-title-trigger')?.setAttribute('aria-expanded', 'false');
+  updateHarnessWorkspaceButton(card);
+}
+
+document.addEventListener('pointerdown', (event) => {
+  const card = toolsCards?.querySelector('.harness-card.harness-actions-open');
+  if (!card || event.target.closest('.harness-title-trigger, .harness-quick-actions, .harness-session-select')) return;
+  closeHarnessQuickActions(card);
+});
+document.addEventListener('pointerdown', (event) => {
+  const options = toolsCards?.querySelector('.harness-run-options.open');
+  if (!options || event.target.closest('.harness-run-options')) return;
+  closeHarnessRunOptions(options);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  closeHarnessQuickActions(toolsCards?.querySelector('.harness-card'));
+  closeHarnessRunOptions(toolsCards?.querySelector('.harness-run-options'));
+});
+
+function closeHarnessRunOptions(options) {
+  if (!options) return;
+  options.classList.remove('open');
+  options.querySelector('.harness-options-trigger')?.setAttribute('aria-expanded', 'false');
+}
+
+function closeSettingsSelect(wrapper) {
+  if (!wrapper) return;
+  wrapper.classList.remove('open');
+  wrapper.querySelector('.settings-select-trigger')?.setAttribute('aria-expanded', 'false');
+  wrapper.querySelector('.combo-dropdown')?.classList.add('hidden');
+}
+
+function syncSettingsSelects() {
+  document.querySelectorAll('.settings-select').forEach(wrapper => {
+    const select = wrapper.querySelector('select');
+    const selected = select?.selectedOptions[0];
+    const trigger = wrapper.querySelector('.settings-select-trigger');
+    if (trigger) trigger.textContent = selected?.textContent || '';
+    wrapper.querySelectorAll('.settings-select-option').forEach(option => {
+      option.setAttribute('aria-selected', String(option.dataset.value === select?.value));
+    });
+  });
+}
+
+function initializeSettingsSelects() {
+  settingsOverlay.querySelectorAll('.settings-card select').forEach((select, index) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'settings-select';
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'settings-select-trigger';
+    trigger.setAttribute('role', 'combobox');
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.setAttribute('aria-label', select.previousElementSibling?.textContent?.trim() || '选择选项');
+    const menu = document.createElement('div');
+    menu.id = `settings-select-menu-${index}`;
+    menu.className = 'combo-dropdown settings-select-menu hidden';
+    menu.setAttribute('role', 'listbox');
+    trigger.setAttribute('aria-controls', menu.id);
+
+    [...select.options].forEach(option => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'combo-dropdown-item settings-select-option';
+      item.dataset.value = option.value;
+      item.textContent = option.textContent;
+      item.setAttribute('role', 'option');
+      item.addEventListener('click', () => {
+        select.value = option.value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        syncSettingsSelects();
+        closeSettingsSelect(wrapper);
+        trigger.focus({ preventScroll: true });
+      });
+      menu.appendChild(item);
+    });
+
+    select.before(wrapper);
+    select.classList.add('settings-native-select');
+    select.addEventListener('change', syncSettingsSelects);
+    wrapper.append(select, trigger, menu);
+
+    const open = () => {
+      document.querySelectorAll('.settings-select.open').forEach(other => {
+        if (other !== wrapper) closeSettingsSelect(other);
+      });
+      wrapper.classList.add('open');
+      trigger.setAttribute('aria-expanded', 'true');
+      menu.classList.remove('hidden', 'open-up');
+      const triggerRect = trigger.getBoundingClientRect();
+      const bodyRect = $('.settings-body').getBoundingClientRect();
+      if (bodyRect.bottom - triggerRect.bottom < menu.scrollHeight + 4) menu.classList.add('open-up');
+    };
+    trigger.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (wrapper.classList.contains('open')) closeSettingsSelect(wrapper);
+      else open();
+    });
+    trigger.addEventListener('keydown', (event) => {
+      if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+      event.preventDefault();
+      if (!wrapper.classList.contains('open')) open();
+      const items = [...menu.querySelectorAll('.settings-select-option')];
+      const selectedIndex = Math.max(0, items.findIndex(item => item.dataset.value === select.value));
+      items[event.key === 'ArrowDown' ? selectedIndex : Math.max(0, selectedIndex - 1)]?.focus();
+    });
+    menu.addEventListener('keydown', (event) => {
+      const items = [...menu.querySelectorAll('.settings-select-option')];
+      const current = items.indexOf(document.activeElement);
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeSettingsSelect(wrapper);
+        trigger.focus({ preventScroll: true });
+      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const offset = event.key === 'ArrowDown' ? 1 : -1;
+        items[(current + offset + items.length) % items.length]?.focus();
+      }
+    });
+    wrapper.addEventListener('focusout', () => {
+      setTimeout(() => {
+        if (!wrapper.contains(document.activeElement)) closeSettingsSelect(wrapper);
+      });
+    });
+  });
+  document.addEventListener('click', () => {
+    document.querySelectorAll('.settings-select.open').forEach(closeSettingsSelect);
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') document.querySelectorAll('.settings-select.open').forEach(closeSettingsSelect);
+  });
+  syncSettingsSelects();
+}
+
+function buildHarnessMessageRow(message) {
+  const row = document.createElement('div');
+  row.className = `harness-message ${message.role}${message.failed ? ' failed' : ''}`;
+  const label = document.createElement('span');
+  label.className = 'harness-message-label';
+  label.textContent = message.role === 'user' ? '你' : message.role === 'assistant' ? 'Harness' : message.role === 'tool' ? '·' : '!';
+  let body;
+  if (message.role === 'tool') {
+    body = document.createElement('details');
+    body.className = 'harness-message-body harness-tool-detail';
+    const summary = document.createElement('summary');
+    summary.textContent = `${message.text} · ${message.pending ? '执行中' : message.failed ? '失败' : '完成'}`;
+    body.appendChild(summary);
+    if (message.detail) {
+      const args = document.createElement('pre');
+      args.textContent = message.detail;
+      body.appendChild(args);
+    }
+    if (message.output) {
+      const output = document.createElement('pre');
+      output.textContent = message.output;
+      body.appendChild(output);
+    }
+  } else {
+    body = document.createElement('span');
+    body.className = 'harness-message-body';
+    body.textContent = message.text;
+  }
+  if (message.role !== 'user' && message.role !== 'assistant') row.appendChild(label);
+  row.appendChild(body);
+  return row;
+}
+
+function appendHarnessMessages(container, messages, toolGroupOpen) {
+  let toolGroup = null;
+  for (const message of messages) {
+    if (message.role === 'tool' && !toolGroup) {
+      const group = document.createElement('details');
+      group.className = 'harness-tool-group';
+      group.open = toolGroupOpen;
+      const summary = document.createElement('summary');
+      const body = document.createElement('div');
+      body.className = 'harness-tool-group-body';
+      group.append(summary, body);
+      container.appendChild(group);
+      toolGroup = { summary, body, count: 0, failed: 0, pending: 0 };
+    } else if (message.role !== 'tool') {
+      toolGroup = null;
+    }
+    const row = buildHarnessMessageRow(message);
+    if (message.role === 'tool' && toolGroup) {
+      toolGroup.count++;
+      if (message.failed) toolGroup.failed++;
+      if (message.pending) toolGroup.pending++;
+      const suffix = toolGroup.pending ? '执行中' : toolGroup.failed ? `${toolGroup.failed} 项失败` : '已完成';
+      toolGroup.summary.textContent = `执行过程 · ${toolGroup.count} 项 · ${suffix}`;
+      toolGroup.body.appendChild(row);
+    } else {
+      container.appendChild(row);
+    }
+  }
+}
+
+function renderHarnessHistory(card) {
+  const history = card.querySelector('.harness-history');
+  history.innerHTML = '';
+  const messages = state.harness.messages;
+  const isEmpty = messages.length === 0;
+  history.classList.toggle('harness-empty-state', isEmpty);
+  if (isEmpty) {
+    const empty = document.createElement('div');
+    empty.className = 'harness-empty';
+    const icon = document.createElement('img');
+    icon.className = 'harness-empty-icon';
+    icon.src = 'deepseek-whale.png';
+    icon.alt = '';
+    icon.setAttribute('aria-hidden', 'true');
+    empty.append(icon);
+    if (state.harness.configError) {
+      const error = document.createElement('span');
+      error.className = 'harness-empty-error';
+      error.textContent = state.harness.configError;
+      empty.appendChild(error);
+    }
+    history.appendChild(empty);
+    return;
+  }
+
+  // 完成后：把过程内容折叠到一个组里，只显示最终结果（最终结果 = 最后一条 assistant 消息）
+  if (state.harness.status === 'completed') {
+    let finalIndex = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant') { finalIndex = i; break; }
+    }
+    if (finalIndex > 0) {
+      const process = messages.slice(0, finalIndex);
+      const group = document.createElement('details');
+      group.className = 'harness-process-group';
+      group.open = false;
+      const summary = document.createElement('summary');
+      summary.textContent = `执行过程 · ${process.length} 条消息`;
+      const body = document.createElement('div');
+      body.className = 'harness-process-body';
+      group.append(summary, body);
+      history.appendChild(group);
+      appendHarnessMessages(body, process, false);
+      appendHarnessMessages(history, [messages[finalIndex]], false);
+      history.scrollTop = history.scrollHeight;
+      return;
+    }
+  }
+
+  appendHarnessMessages(history, messages, state.harness.toolGroupExpanded);
+  history.scrollTop = history.scrollHeight;
+}
+
+function renderHarnessSessions(card) {
+  const select = card.querySelector('.harness-session-select');
+  select.innerHTML = '';
+  // 无选中会话时显示空白占位（隐藏于下拉列表），下拉列表只列历史会话
+  const placeholder = new Option('', '');
+  placeholder.hidden = true;
+  placeholder.disabled = true;
+  placeholder.selected = !state.harness.sessionId;
+  select.add(placeholder);
+  for (const session of state.harness.sessions) {
+    const option = new Option(session.title, session.id);
+    option.selected = session.id === state.harness.sessionId;
+    select.add(option);
+  }
+}
+
+function renderHarnessTodos(card) {
+  const container = card.querySelector('.harness-todos');
+  container.innerHTML = '';
+  container.classList.toggle('hidden', state.harness.todos.length === 0);
+  for (const todo of state.harness.todos.slice(0, 5)) {
+    const row = document.createElement('div');
+    row.className = `harness-todo ${todo.status}`;
+    const mark = todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '●' : '○';
+    row.textContent = `${mark} ${todo.content}`;
+    container.appendChild(row);
+  }
+}
+
+function renderHarnessDiffs(card) {
+  const details = card.querySelector('.harness-artifacts');
+  details.classList.toggle('hidden', state.harness.diffs.length === 0);
+  details.querySelector('summary').textContent = `文件变更 · ${new Set(state.harness.diffs.map(diff => diff.path)).size}`;
+  const body = details.querySelector('.harness-artifacts-body');
+  body.innerHTML = '';
+  for (const diff of state.harness.diffs) {
+    const section = document.createElement('section');
+    section.className = 'harness-diff';
+    const title = document.createElement('div');
+    title.className = 'harness-diff-path';
+    title.textContent = diff.path;
+    const content = document.createElement('pre');
+    const oldText = diff.oldText === null ? '' : diff.oldText.split('\n').map(line => `- ${line}`).join('\n');
+    const newText = diff.newText.split('\n').map(line => `+ ${line}`).join('\n');
+    content.textContent = [oldText, newText].filter(Boolean).join('\n');
+    section.append(title, content);
+    body.appendChild(section);
+  }
+}
+
+function updateHarnessCard() {
+  const card = toolsCards?.querySelector('[data-tool="harness"]');
+  if (!card) return;
+  const busy = ['starting', 'running', 'stopping'].includes(state.harness.status);
+  const badge = card.querySelector('.harness-status');
+  badge.textContent = HARNESS_STATUS_LABELS[state.harness.status] || state.harness.status || '就绪';
+  badge.dataset.harnessStatus = state.harness.status || 'idle';
+  const workspace = card.querySelector('.harness-workspace');
+  updateHarnessWorkspaceButton(card);
+  card.querySelector('.harness-input').disabled = busy || !state.harness.configured;
+  syncHarnessInputCompact(card);
+  const runButton = card.querySelector('.harness-run-stop-btn');
+  runButton.disabled = !state.harness.configured && !busy;
+  runButton.classList.toggle('harness-running', busy);
+  runButton.querySelector('.harness-run-stop-icon').textContent = busy ? '⏸' : '▶';
+  runButton.querySelector('.harness-run-stop-label').textContent = busy ? '停止' : '运行';
+  card.querySelector('.harness-new-btn').disabled = busy;
+  const model = state.harness.model === 'deepseek-v4-pro' ? 'Pro' : 'Flash';
+  const effort = ['off', 'max'].includes(state.harness.reasoningEffort) ? state.harness.reasoningEffort : 'high';
+  const optionsTrigger = card.querySelector('.harness-options-trigger');
+  optionsTrigger.textContent = `${model}-${effort[0].toUpperCase()}${effort.slice(1)}`;
+  optionsTrigger.disabled = busy;
+  card.querySelectorAll('.harness-option-choices button').forEach(button => {
+    const selected = button.dataset.kind === 'model'
+      ? button.dataset.value === state.harness.model
+      : button.dataset.value === effort;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
+    button.disabled = busy;
+  });
+  card.querySelectorAll('.harness-option-choices').forEach(choices => {
+    const buttons = [...choices.querySelectorAll('button')];
+    const selectedIndex = Math.max(0, buttons.findIndex(button => button.classList.contains('selected')));
+    choices.style.setProperty('--option-count', buttons.length);
+    choices.style.setProperty('--option-index', selectedIndex);
+  });
+  if (busy) closeHarnessRunOptions(card.querySelector('.harness-run-options'));
+  card.querySelector('.harness-session-select').disabled = busy || state.harness.sessions.length === 0;
+  card.querySelector('.harness-workspace').disabled = busy;
+  card.querySelector('.harness-history-btn').disabled = busy || state.harness.sessions.length === 0;
+  renderHarnessSessions(card);
+  renderHarnessTodos(card);
+  renderHarnessHistory(card);
+  renderHarnessDiffs(card);
+}
+
+let harnessOptionsRequestSeq = 0;
+async function updateHarnessRunOptions(card, model, reasoningEffort) {
+  const requestSeq = ++harnessOptionsRequestSeq;
+  state.harness.model = model;
+  state.harness.reasoningEffort = reasoningEffort;
+  updateHarnessCard();
+  if (!window.electronAPI?.harnessUpdateOptions) {
+    return;
+  }
+  try {
+    const result = await window.electronAPI.harnessUpdateOptions({ model, reasoningEffort });
+    if (requestSeq !== harnessOptionsRequestSeq) return;
+    if (!result?.success) throw new Error(result?.error || '保存 Harness 选项失败');
+    state.harness.model = result.model;
+    state.harness.reasoningEffort = result.reasoningEffort;
+  } catch (error) {
+    if (requestSeq === harnessOptionsRequestSeq) await refreshHarnessSnapshot();
+  } finally {
+    if (requestSeq === harnessOptionsRequestSeq) updateHarnessCard();
+  }
+}
+
+async function selectHarnessWorkspace() {
+  if (!window.electronAPI?.harnessSelectWorkspace) return;
+  const result = await window.electronAPI.harnessSelectWorkspace();
+  if (result?.success) {
+    state.harness.workspace = result.workspace;
+    await refreshHarnessSnapshot();
+    state.harness.sessionId = null;
+    state.harness.sessionTitle = '';
+    state.harness.messages = [];
+    state.harness.todos = [];
+    state.harness.diffs = [];
+    await refreshHarnessSessions(true);
+  }
+}
+
+async function submitHarnessTask(card) {
+  const input = card.querySelector('.harness-input');
+  const text = input.value.trim();
+  if (!text || !window.electronAPI?.harnessStart) return;
+  const result = await window.electronAPI.harnessStart({ text, sessionId: state.harness.sessionId });
+  if (result?.success) {
+    state.harness.sessionId = result.sessionId;
+    state.harness.status = 'starting';
+    state.harness.toolGroupExpanded = true;
+    addHarnessMessage('user', text);
+    input.value = '';
+  } else if (!result?.cancelled) {
+    addHarnessMessage('error', result?.error || '无法启动 Harness');
+    state.harness.status = 'error';
+    state.harness.toolGroupExpanded = false;
+  }
+  updateHarnessCard();
+}
+
+async function stopHarnessTask() {
+  if (!window.electronAPI?.harnessStop) return;
+  state.harness.status = 'stopping';
+  updateHarnessCard();
+  await window.electronAPI.harnessStop();
+}
+
+async function newHarnessSession() {
+  if (!window.electronAPI?.harnessNewSession) return;
+  const result = await window.electronAPI.harnessNewSession();
+  if (!result?.success) return;
+  state.harness.sessionId = null;
+  state.harness.status = 'idle';
+  state.harness.toolGroupExpanded = false;
+  state.harness.error = null;
+  state.harness.messages = [];
+  state.harness.todos = [];
+  state.harness.diffs = [];
+  state.harness.sessionTitle = '';
+  updateHarnessCard();
 }
 
 // ========== 工具箱:翻译卡 ==========

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'">
+  <title>小智桌面助手（原型）</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">小智</span>
+      <span class="phase">原型 · 文字闭环</span>
+    </div>
+    <div class="status-area">
+      <span id="mic-indicator" class="mic off" title="麦克风待机状态（阶段 2 启用）">🎙 待机</span>
+      <span id="state-badge" class="state-badge">IDLE</span>
+    </div>
+  </header>
+
+  <div id="config-warning" class="config-warning hidden">
+    未配置 DEEPSEEK_API_KEY —— 请复制 <code>.env.example</code> 为 <code>.env</code> 并填入密钥后重启。
+  </div>
+
+  <main class="layout">
+    <section class="panel dialog-panel">
+      <h2>对话</h2>
+      <div id="dialog-history" class="dialog-history">
+        <div class="empty-hint">输入文字开始对话，例如："明天下午三点提醒我发合同给王总"</div>
+      </div>
+      <div id="last-recognition" class="last-recognition hidden"></div>
+    </section>
+
+    <section class="panel side-panel">
+      <div class="plan-box">
+        <h2>计划草案</h2>
+        <div id="plan-goal" class="plan-goal empty">—</div>
+        <ul id="plan-actions" class="plan-actions"></ul>
+        <div id="plan-missing" class="plan-meta"></div>
+        <div id="plan-assumptions" class="plan-meta"></div>
+      </div>
+      <div class="exec-box">
+        <h2>执行状态</h2>
+        <ul id="exec-steps" class="exec-steps"></ul>
+        <div id="exec-summary" class="exec-summary"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="inputbar">
+    <button id="btn-pause" class="btn" disabled>暂停</button>
+    <button id="btn-resume" class="btn" disabled>继续</button>
+    <button id="btn-stop" class="btn danger" disabled>停止</button>
+    <input id="text-input" type="text" placeholder="输入指令……（Enter 发送）" autocomplete="off">
+    <button id="btn-send" class="btn primary">发送</button>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 页面切换
   setPage: (page) => ipcRenderer.invoke('set-page', page),
+  getPage: () => ipcRenderer.invoke('get-page'),
 
   // 笔记操作
   listNotes: () => ipcRenderer.invoke('list-notes'),
@@ -52,4 +53,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 翻译
   translateRequest: (payload) => ipcRenderer.invoke('translate', payload),
+
+  // DeepSeek Harness
+  harnessSnapshot: () => ipcRenderer.invoke('harness-snapshot'),
+  harnessListSessions: () => ipcRenderer.invoke('harness-list-sessions'),
+  harnessLoadSession: (sessionId) => ipcRenderer.invoke('harness-load-session', sessionId),
+  harnessSelectWorkspace: () => ipcRenderer.invoke('harness-select-workspace'),
+  harnessUpdateOptions: (payload) => ipcRenderer.invoke('harness-update-options', payload),
+  harnessStart: (payload) => ipcRenderer.invoke('harness-start', payload),
+  harnessStop: () => ipcRenderer.invoke('harness-stop'),
+  harnessNewSession: () => ipcRenderer.invoke('harness-new-session'),
+  onHarnessEvent: (cb) => {
+    const handler = (_event, payload) => cb(payload);
+    ipcRenderer.on('harness:event', handler);
+    return () => ipcRenderer.removeListener('harness:event', handler);
+  },
 });

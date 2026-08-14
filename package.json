@@ -23,6 +23,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "harness/**/*",
       "renderer/**/*",
       "assets/**/*",
       "node_modules/**/*",
@@ -44,8 +45,8 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.png",
-      "signAndEditExecutable": false
+      "icon": "assets/icon.ico",
+      "signAndEditExecutable": true
     },
     "nsis": {
       "oneClick": false,

@@ -1,0 +1,16 @@
+'use strict';
+
+const { ACTION_SCHEMAS } = require('../../planning/plan-schema');
+const { callHost } = require('./common');
+
+module.exports = {
+  type: 'complete_task',
+  risk: 'low',
+  cancellable: true,
+  idempotent: true,
+  readOnly: false,
+  schema: ACTION_SCHEMAS.complete_task,
+  execute({ args, host, signal, context }) {
+    return callHost(host.completeTask.bind(host), args, { signal, actionRunId: context.actionRunId });
+  },
+};

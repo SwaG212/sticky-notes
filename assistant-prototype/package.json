@@ -1,0 +1,23 @@
+{
+  "name": "assistant-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "description": "小智桌面助手原型（阶段 0+1：骨架与文字闭环）",
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"test/**/*.test.js\"",
+    "test:unit": "node --test \"test/unit/*.test.js\"",
+    "test:integration": "node --test \"test/integration/*.test.js\"",
+    "test:scenarios": "node --test \"test/scenarios/*.test.js\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}
