@@ -1,5 +1,6 @@
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const readline = require('readline');
 const crypto = require('crypto');
@@ -9,7 +10,14 @@ const DEFAULT_INSTALL_DIR = 'F:\\Tools\\deepseek-harness';
 const DEFAULT_NODE_PATH = 'C:\\Program Files\\nodejs\\node.exe';
 const MAX_STDERR_CHARS = 4000;
 const MAX_PATH_CHARS = 1024;
-const SESSION_ID_PATTERN = /^sticky-[a-zA-Z0-9-]{1,80}$/;
+const SESSION_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,80}$/;
+
+// 共享会话目录：与 `dsh web` 一致（$DSH_HOME 优先，否则 ~/.dsh），
+// 两边读写同一批 session.jsonl 才能互通。
+function dshSessionsRoot() {
+  const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+  return path.join(home, 'sessions');
+}
 
 function harnessConfig(config, appRoot) {
   const source = config?.harness || {};
@@ -64,11 +72,12 @@ function validateHarnessConfig(config, { requireApiKey = true } = {}) {
 }
 
 class HarnessManager {
-  constructor({ appRoot, userDataPath, getConfig, emit }) {
+  constructor({ appRoot, userDataPath, getConfig, emit, sessionRoot }) {
     this.appRoot = appRoot;
     this.userDataPath = userDataPath;
     this.getConfig = getConfig;
     this.emit = emit;
+    this.sharedSessionRoot = sessionRoot;
     this.child = null;
     this.lines = null;
     this.pending = new Map();
@@ -95,7 +104,7 @@ class HarnessManager {
   }
 
   sessionRoot() {
-    return path.join(this.userDataPath, 'harness-sessions');
+    return this.sharedSessionRoot || dshSessionsRoot();
   }
 
   listSessions() {
@@ -158,9 +167,11 @@ class HarnessManager {
     return { success: true };
   }
 
-  reset() {
+  reset({ emitSnapshot = true } = {}) {
     this.dispose();
-    this.setState({ status: 'idle', sessionId: null, error: null });
+    const idle = { status: 'idle', sessionId: null, error: null };
+    if (emitSnapshot) this.setState(idle);
+    else this.state = { ...this.state, ...idle };
   }
 
   async ensureBridge(cfg) {
@@ -289,4 +300,5 @@ module.exports = {
   isBroadWriteWorkspace,
   validateHarnessConfig,
   SESSION_ID_PATTERN,
+  dshSessionsRoot,
 };

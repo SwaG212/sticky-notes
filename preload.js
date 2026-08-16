@@ -63,6 +63,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   harnessStart: (payload) => ipcRenderer.invoke('harness-start', payload),
   harnessStop: () => ipcRenderer.invoke('harness-stop'),
   harnessNewSession: () => ipcRenderer.invoke('harness-new-session'),
+  harnessResetWorkspaceApproval: () => ipcRenderer.invoke('harness-reset-workspace-approval'),
+  harnessOpenWeb: () => ipcRenderer.invoke('harness-open-web'),
   onHarnessEvent: (cb) => {
     const handler = (_event, payload) => cb(payload);
     ipcRenderer.on('harness:event', handler);

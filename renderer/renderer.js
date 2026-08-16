@@ -29,11 +29,13 @@ const state = {
   harness: {
     status: 'idle', sessionId: null, workspace: '', permission: 'workspace-write', mode: 'standard',
     model: 'deepseek-v4-flash', reasoningEffort: 'high', configured: false, configError: '',
-    messages: [], sessions: [], todos: [], diffs: [], sessionTitle: '', toolGroupExpanded: false,
+    messages: [], sessions: [], todos: [], diffs: [], sessionTitle: '', toolGroupExpanded: false, todosExpanded: false,
+    runStartedAt: null, runElapsedMs: null, runTokens: null,
   },
   hoveredImage: null,
   activeSheet: 'all',
   noteSearch: null,
+  windowVisible: false,
 };
 
 // ========== DOM 引用 ==========
@@ -110,6 +112,19 @@ async function init() {
   $('#btn-settings-confirm').addEventListener('click', confirmSettings);
   $('#btn-settings-back').addEventListener('click', cancelSettings);
   $('#btn-settings').addEventListener('click', openSettings);
+  $('#settings-harness-reset-approval').addEventListener('click', async () => {
+    if (window.electronAPI?.harnessResetWorkspaceApproval) {
+      await window.electronAPI.harnessResetWorkspaceApproval();
+    }
+    const hint = $('#settings-reset-approval-hint');
+    hint.textContent = '目录授权已重置';
+    hint.classList.add('show');
+    clearTimeout(hint._resetTimer);
+    hint._resetTimer = setTimeout(() => {
+      hint.classList.remove('show');
+      setTimeout(() => { hint.textContent = ''; }, 200);
+    }, 2000);
+  });
   // 文件路径下拉按钮
   $('#notesdir-dropdown-btn').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -292,6 +307,7 @@ async function init() {
   if (window.electronAPI) {
     window.electronAPI.onOpenConfig(() => openSettings());
     window.electronAPI.onWindowShown(async () => {
+      state.windowVisible = true;
       app.style.opacity = '0';
       app.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 350, easing: 'ease', fill: 'forwards' });
       if (state.currentPage === 'notepad') {
@@ -307,6 +323,7 @@ async function init() {
       }
     });
     window.electronAPI.onWindowWillHide(() => {
+      state.windowVisible = false;
       const anim = app.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 350, easing: 'ease', fill: 'forwards' });
       anim.finished.then(() => { /* 动画完成，元素停在 opacity:0 */ });
       if (state.currentPage === 'notepad') {
@@ -2040,52 +2057,104 @@ function cacheImageData(relativePath, dataUrl) {
 
 function loadMarkdown(md) {
   if (!md) return '';
-  const lines = md.split('\n');
-  return lines.map(line => {
-    if (!line.trim()) return '<div><br></div>';
-    const parts = line.split(/(!\[[^\]]*\]\([^)]+\))/g);
-    return '<div>' + parts.map(part => {
-      const m = part.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-      if (m) return `<img src="note-image://${escapeHtml(m[2])}" alt="${escapeHtml(m[1] || '')}">`;
-      return escapeHtml(part);
-    }).join('') + '</div>';
-  }).join('');
+  const html = renderMarkdown(md);
+  // 把相对路径的 markdown 图片统一挂到便利贴的 note-image:// 协议下（网络/已有协议图片保持原样）
+  const div = document.createElement('div');
+  div.innerHTML = html;
+  div.querySelectorAll('img').forEach(img => {
+    const src = img.getAttribute('src') || '';
+    if (src && !/^(https?:|data:|note-image:)/i.test(src)) {
+      img.setAttribute('src', `note-image://${src}`);
+    }
+  });
+  return div.innerHTML;
 }
 
 function htmlToMarkdown(html) {
   if (!html) return '';
-  const div = document.createElement('div');
-  div.innerHTML = html;
-  // 清理 br 标签
-  div.querySelectorAll('br').forEach(br => br.remove());
-  // 图片 → markdown
-  div.querySelectorAll('img').forEach(img => {
-    const src = img.getAttribute('src') || '';
-    if (src.startsWith('note-image://')) {
-      img.replaceWith(document.createTextNode(`![](${src.replace('note-image://', '')})`));
-    }
-  });
-  // 按块级元素分行(兼容 div/p/li 混合),空块保留为空行
-  const lines = [];
-  const BLOCK_TAGS = new Set(['DIV', 'P', 'LI', 'BLOCKQUOTE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'TR', 'UL', 'OL', 'DL', 'SECTION']);
-  function walk(node) {
-    if (node.nodeType === Node.TEXT_NODE) {
-      const t = node.textContent.trim();
-      if (t) lines.push(t);
-      return;
-    }
-    if (node.nodeType !== Node.ELEMENT_NODE) return;
-    const kids = Array.from(node.childNodes);
-    const hasBlockChild = kids.some(k => k.nodeType === Node.ELEMENT_NODE && BLOCK_TAGS.has(k.tagName));
-    if (hasBlockChild) {
-      kids.forEach(walk);
-    } else {
-      lines.push((node.textContent || '').trim());
+  const root = document.createElement('div');
+  root.innerHTML = html;
+
+  // 行内节点序列化为 markdown（块级结构在下方 collect 处理）
+  function childrenInline(node) {
+    let s = '';
+    for (const c of node.childNodes) s += inline(c);
+    return s;
+  }
+  function inline(node) {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+    switch (node.tagName) {
+      case 'BR': return '\n';
+      case 'STRONG': case 'B': return `**${childrenInline(node)}**`;
+      case 'EM': case 'I': return `*${childrenInline(node)}*`;
+      case 'DEL': case 'S': case 'STRIKE': return `~~${childrenInline(node)}~~`;
+      case 'CODE': return `\`${node.textContent}\``;
+      case 'A': {
+        const href = node.getAttribute('href') || '';
+        return `[${childrenInline(node)}](${href})`;
+      }
+      case 'IMG': {
+        const src = node.getAttribute('src') || '';
+        if (src.startsWith('note-image://')) return `![](${src.slice('note-image://'.length)})`;
+        if (src) return `![](${src})`;
+        return '';
+      }
+      case 'MARK': return node.textContent; // 搜索高亮标记还原为纯文本
+      default: return childrenInline(node);
     }
   }
-  walk(div);
-  while (lines.length && lines[lines.length - 1] === '') lines.pop();
-  return lines.join('\n');
+
+  const blocks = [];
+  const BLOCK = new Set(['DIV', 'P', 'UL', 'OL', 'BLOCKQUOTE', 'PRE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HR', 'LI']);
+
+  function collect(node) {
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        const t = child.textContent.trim();
+        if (t) blocks.push([t]);
+        continue;
+      }
+      if (child.nodeType !== Node.ELEMENT_NODE) continue;
+      const tag = child.tagName;
+      if (tag === 'PRE') {
+        const code = child.querySelector('code');
+        const lang = (code?.className || '').match(/language-([\w-]+)/)?.[1] || '';
+        const text = (code?.textContent ?? child.textContent ?? '').replace(/\n+$/, '');
+        blocks.push(['```' + lang, ...text.split('\n'), '```']);
+      } else if (tag === 'UL' || tag === 'OL') {
+        const ordered = tag === 'OL';
+        const items = [];
+        let n = 1;
+        for (const li of child.children) {
+          if (li.tagName !== 'LI') continue;
+          items.push(ordered ? `${n++}. ${childrenInline(li).trim()}` : `- ${childrenInline(li).trim()}`);
+        }
+        if (items.length) blocks.push(items);
+      } else if (tag === 'BLOCKQUOTE') {
+        const text = childrenInline(child).trim();
+        if (text) blocks.push(text.split('\n').map(l => `> ${l}`));
+      } else if (tag === 'HR') {
+        blocks.push(['---']);
+      } else if (/^H[1-6]$/.test(tag)) {
+        blocks.push(['#'.repeat(+tag[1]) + ' ' + childrenInline(child).trim()]);
+      } else if (tag === 'LI') {
+        blocks.push(['- ' + childrenInline(child).trim()]);
+      } else {
+        const hasBlockChild = Array.from(child.children).some(c => BLOCK.has(c.tagName));
+        if (hasBlockChild) {
+          collect(child);
+        } else {
+          const text = childrenInline(child).trim();
+          if (text) blocks.push(text.split('\n'));
+        }
+      }
+    }
+  }
+
+  collect(root);
+  const cleaned = blocks.filter(b => b.length && b.some(l => l.trim() !== ''));
+  return cleaned.map(b => b.join('\n')).join('\n\n');
 }
 
 function insertImageAtCursor(relativePath) {
@@ -3226,6 +3295,85 @@ const HARNESS_STATUS_LABELS = {
   stopping: '停止中', stopped: '已停止', completed: '已完成', error: '失败',
 };
 
+let harnessStatusTimer = null;
+
+function formatHarnessClock(ms) {
+  const totalSeconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (value) => String(value).padStart(2, '0');
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${minutes}:${pad(seconds)}`;
+}
+
+function formatHarnessDuration(ms) {
+  const totalSeconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${String(minutes % 60).padStart(2, '0')}m`;
+}
+
+function formatHarnessTokens(usage) {
+  const total = Number(usage?.totalTokens);
+  if (!Number.isFinite(total) || total <= 0) return '';
+  if (total >= 1000000) return `${(total / 1000000).toFixed(1)}M`;
+  if (total >= 1000) return `${(total / 1000).toFixed(total >= 10000 ? 0 : 1)}k`;
+  return String(Math.round(total));
+}
+
+function getHarnessStatusParts() {
+  const status = state.harness.status || 'idle';
+  const label = HARNESS_STATUS_LABELS[status] || status || '就绪';
+  let meta = '';
+  if (['starting', 'running', 'stopping'].includes(status) && state.harness.runStartedAt) {
+    meta = formatHarnessClock(Date.now() - state.harness.runStartedAt);
+  } else if (status === 'completed') {
+    const parts = [];
+    if (Number.isFinite(state.harness.runElapsedMs)) {
+      parts.push(`耗时 ${formatHarnessDuration(state.harness.runElapsedMs)}`);
+    }
+    const tokens = formatHarnessTokens(state.harness.runTokens);
+    if (tokens) parts.push(`${tokens} tokens`);
+    meta = parts.join(' · ');
+  }
+  return { label, meta };
+}
+
+function updateHarnessStatusBadge() {
+  const badge = toolsCards?.querySelector('[data-tool="harness"] .harness-status');
+  if (!badge) return;
+  const { label, meta } = getHarnessStatusParts();
+  let statusLine = badge.querySelector('.harness-status-line');
+  let metaLine = badge.querySelector('.harness-status-meta');
+  if (!statusLine) {
+    statusLine = document.createElement('span');
+    statusLine.className = 'harness-status-line';
+    badge.appendChild(statusLine);
+  }
+  if (!metaLine) {
+    metaLine = document.createElement('span');
+    metaLine.className = 'harness-status-meta';
+    badge.appendChild(metaLine);
+  }
+  statusLine.textContent = label;
+  metaLine.textContent = meta;
+  metaLine.classList.toggle('hidden', !meta);
+  badge.dataset.harnessStatus = state.harness.status || 'idle';
+}
+
+function syncHarnessStatusTimer() {
+  const shouldTick = ['starting', 'running', 'stopping'].includes(state.harness.status);
+  if (shouldTick && !harnessStatusTimer) {
+    harnessStatusTimer = setInterval(updateHarnessStatusBadge, 500);
+  } else if (!shouldTick && harnessStatusTimer) {
+    clearInterval(harnessStatusTimer);
+    harnessStatusTimer = null;
+  }
+}
+
 async function refreshHarnessSnapshot() {
   if (!window.electronAPI?.harnessSnapshot) return;
   const snapshot = await window.electronAPI.harnessSnapshot();
@@ -3242,26 +3390,67 @@ async function refreshHarnessSessions(restoreLatest = false) {
   if (!window.electronAPI?.harnessListSessions || !state.harness.workspace) return;
   const sessions = await window.electronAPI.harnessListSessions();
   state.harness.sessions = Array.isArray(sessions) ? sessions : [];
-  if (restoreLatest && !state.harness.sessionId && state.harness.sessions[0]) {
+  const currentId = state.harness.sessionId;
+  // 渲染层重载后内存里的消息会被清空，但快照已把当前会话 id 恢复回来。此时也要
+  // 从磁盘把当前会话的消息补回来，否则会出现“任务跑着跑着对话全没了”的现象。
+  if (currentId && state.harness.messages.length === 0) {
+    await loadHarnessSession(currentId);
+    return;
+  }
+  if (restoreLatest && !currentId && state.harness.sessions[0]) {
     await loadHarnessSession(state.harness.sessions[0].id);
     return;
   }
   updateHarnessCard();
 }
 
-async function loadHarnessSession(sessionId) {
+async function loadHarnessSession(sessionId, preserveStats = false) {
   if (!window.electronAPI?.harnessLoadSession || !sessionId) return;
   const session = await window.electronAPI.harnessLoadSession(sessionId);
   if (!session) return;
+  const busy = ['starting', 'running', 'stopping'].includes(state.harness.status);
+  const loaded = Array.isArray(session.messages) ? session.messages : [];
   state.harness.sessionId = session.id;
   state.harness.sessionTitle = session.title || '';
-  state.harness.messages = Array.isArray(session.messages) ? session.messages : [];
+  // 用空/不完整的读取结果覆盖正在展示的实时对话，是“对话消失”的主要来源。
+  // 任务刚结束时持久化仍在批量落盘，此时读到的磁盘存档可能缺少结尾的最终答复；
+  // 只要本地实时对话以最终答复收尾、而磁盘存档里找不到这条答复，就保留实时对话，
+  // 等下一次能读到完整存档时（重载页面/切换目录/再次刷新）再换成磁盘版本。
+  const liveMessages = state.harness.messages;
+  const liveLast = liveMessages.length > 0 ? liveMessages[liveMessages.length - 1] : null;
+  const diskMissingLiveAnswer = liveLast?.role === 'assistant'
+    && !loaded.some(message => message.role === 'assistant' && message.text === liveLast.text);
+  if (liveMessages.length === 0 || (loaded.length > 0 && !diskMissingLiveAnswer)) {
+    state.harness.messages = loaded;
+  }
   state.harness.todos = Array.isArray(session.todos) ? session.todos : [];
   state.harness.diffs = Array.isArray(session.diffs) ? session.diffs : [];
   state.harness.toolGroupExpanded = false;
-  state.harness.status = session.outcome === 'completed' ? 'completed'
-    : ['aborted', 'interrupted'].includes(session.outcome) ? 'stopped'
-      : session.outcome === 'idle' ? 'idle' : 'error';
+  if (!preserveStats) {
+    state.harness.runStartedAt = null;
+    state.harness.runElapsedMs = null;
+    state.harness.runTokens = null;
+  }
+    const sessionElapsedMs = Number.isFinite(session.elapsedMs) ? session.elapsedMs : null;
+    const sessionTokens = Number.isFinite(session.usage?.totalTokens) ? session.usage : null;
+    if (preserveStats) {
+      // 网页会话实时刷新时不要清掉已有统计；若当前没有，则从磁盘补齐 token/耗时。
+      if (!Number.isFinite(state.harness.runElapsedMs) && sessionElapsedMs !== null) {
+        state.harness.runElapsedMs = sessionElapsedMs;
+      }
+      if (!state.harness.runTokens && sessionTokens) {
+        state.harness.runTokens = sessionTokens;
+      }
+    } else {
+      state.harness.runElapsedMs = sessionElapsedMs;
+      state.harness.runTokens = sessionTokens;
+    }
+  // 任务执行期间从磁盘补历史时，不要用文件里的“已完成/空闲”结果覆盖掉运行状态。
+  if (!busy) {
+    state.harness.status = session.outcome === 'completed' ? 'completed'
+      : ['aborted', 'interrupted'].includes(session.outcome) ? 'stopped'
+        : session.outcome === 'idle' ? 'idle' : 'error';
+  }
   updateHarnessCard();
 }
 
@@ -3269,7 +3458,86 @@ function addHarnessMessage(role, text, extra = {}) {
   const value = String(text || '').trim();
   if (!value) return;
   state.harness.messages.push({ role, text: value.slice(0, 12000), ...extra });
-  if (state.harness.messages.length > 100) state.harness.messages.splice(0, state.harness.messages.length - 100);
+  // 数量上限只裁最旧的非用户消息：用户发言永远保留，长任务不会把开头提问挤出窗口。
+  while (state.harness.messages.length > 100) {
+    const index = state.harness.messages.findIndex(message => message.role !== 'user');
+    if (index === -1) break;
+    state.harness.messages.splice(index, 1);
+  }
+}
+
+let harnessToastTimer = null;
+function showHarnessCompletionToast(success) {
+  if (!state.windowVisible) return; // 窗口未显示：系统通知由主进程负责
+  const host = state.currentPage === 'notepad'
+    ? document.querySelector('.page-notepad .notepad-footer')
+    : state.currentPage === 'tools'
+      ? document.querySelector('.page-tools .notepad-footer')
+      : $('#input-actions');
+  if (!host) return;
+  host.classList.add('harness-toast-host');
+  let toast = host.querySelector('.harness-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.className = 'harness-toast';
+    host.appendChild(toast);
+  }
+  const accent = success ? 'harness-toast-success' : 'harness-toast-error';
+  const dot = document.createElement('span');
+  dot.className = `harness-toast-dot ${accent}`;
+  const tail = document.createElement('span');
+  tail.className = accent;
+  tail.textContent = success ? '已完成' : '失败';
+  toast.innerHTML = '';
+  toast.append(dot, document.createTextNode('Harness任务'), tail);
+  void toast.offsetWidth; // 强制重排，确保连续触发时动画重新播放
+  toast.classList.add('show');
+  clearTimeout(harnessToastTimer);
+  harnessToastTimer = setTimeout(() => toast.classList.remove('show'), 2000);
+}
+
+// 点击 Harness 卡片状态区 → 懒启动 dsh web 并打开浏览器；失败时弹提示。
+async function openHarnessWebPage() {
+  if (typeof window.electronAPI?.harnessOpenWeb !== 'function') {
+    showHarnessWebToast('功能未加载，请重启便利贴后重试');
+    return;
+  }
+  showHarnessWebToast('正在启动…', true);
+  try {
+    const result = await window.electronAPI.harnessOpenWeb();
+    if (result && result.success === false && result.error) {
+      showHarnessWebToast(result.error);
+    }
+  } catch (error) {
+    showHarnessWebToast(error?.message || '打开失败');
+  }
+}
+
+function showHarnessWebToast(message, starting = false) {
+  if (!state.windowVisible) return;
+  const host = state.currentPage === 'tools'
+    ? document.querySelector('.page-tools .notepad-footer')
+    : $('#input-actions');
+  if (!host) return;
+  host.classList.add('harness-toast-host');
+  let toast = host.querySelector('.harness-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.className = 'harness-toast';
+    host.appendChild(toast);
+  }
+  const accent = starting ? 'harness-toast-success' : 'harness-toast-error';
+  const dot = document.createElement('span');
+  dot.className = `harness-toast-dot ${accent}`;
+  const tail = document.createElement('span');
+  tail.className = accent;
+  tail.textContent = String(message || (starting ? '' : '打开失败')).slice(0, 60);
+  toast.innerHTML = '';
+  toast.append(dot, document.createTextNode('Harness网页'), tail);
+  void toast.offsetWidth;
+  toast.classList.add('show');
+  clearTimeout(harnessToastTimer);
+  harnessToastTimer = setTimeout(() => toast.classList.remove('show'), starting ? 8000 : 2600);
 }
 
 function handleHarnessEvent(event) {
@@ -3281,6 +3549,11 @@ function handleHarnessEvent(event) {
     state.harness.status = event.status || state.harness.status;
     state.harness.toolGroupExpanded = ['starting', 'running', 'stopping'].includes(state.harness.status);
     if (event.sessionId) state.harness.sessionId = event.sessionId;
+    if (['starting', 'running'].includes(state.harness.status) && !state.harness.runStartedAt) {
+      state.harness.runStartedAt = Date.now();
+      state.harness.runElapsedMs = null;
+      state.harness.runTokens = null;
+    }
   } else if (event.type === 'message' && event.role === 'assistant') {
     const streamed = event.streamKey
       ? [...state.harness.messages].reverse().find(message => message.role === 'assistant' && message.streamKey === event.streamKey)
@@ -3320,15 +3593,40 @@ function handleHarnessEvent(event) {
     }
     state.harness.status = 'completed';
     state.harness.toolGroupExpanded = false;
+    state.harness.runElapsedMs = Number.isFinite(event.elapsedMs)
+      ? event.elapsedMs
+      : (state.harness.runStartedAt ? Date.now() - state.harness.runStartedAt : null);
+    state.harness.runTokens = event.usage || null;
+    state.harness.runStartedAt = null;
+    showHarnessCompletionToast(true);
     setTimeout(async () => {
       await refreshHarnessSessions();
-      if (state.harness.sessionId) await loadHarnessSession(state.harness.sessionId);
+      if (state.harness.sessionId) await loadHarnessSession(state.harness.sessionId, true);
     }, 300);
   } else if (event.type === 'error') {
     state.harness.status = 'error';
     state.harness.toolGroupExpanded = false;
     state.harness.error = event.message || 'Harness 执行失败';
+    if (!Number.isFinite(state.harness.runElapsedMs) && state.harness.runStartedAt) {
+      state.harness.runElapsedMs = Date.now() - state.harness.runStartedAt;
+    }
+    state.harness.runStartedAt = null;
     addHarnessMessage('error', state.harness.error);
+    showHarnessCompletionToast(false);
+  } else if (event.type === 'external-complete') {
+    // 网页端任务完成：只弹提示，不改动便利贴当前会话状态；同时刷新会话列表让网页会话可见
+    showHarnessCompletionToast(event.success !== false);
+    refreshHarnessSessions();
+  } else if (event.type === 'sessions-changed') {
+    // 网页端会话文件新增/内容变化：实时刷新会话列表，并同步当前查看会话的进行中进度，
+    // 任务未完成也能看到消息/待办/工具调用，无需等待任务结束或手动刷新。
+    refreshHarnessSessions().then(async () => {
+      if (!event.sessionId) return;
+      const currentId = state.harness.sessionId;
+      const isCurrent = currentId === event.sessionId;
+      const isLatestWhenNone = !currentId && state.harness.sessions[0]?.id === event.sessionId;
+      if (isCurrent || isLatestWhenNone) await loadHarnessSession(event.sessionId, true);
+    });
   }
   updateHarnessCard();
 }
@@ -3339,6 +3637,7 @@ function syncHarnessInputCompact(card) {
   const compact = !input.value.trim() && input !== document.activeElement;
   input.classList.toggle('harness-input-compact', compact);
   card.classList.toggle('harness-input-compact', compact);
+  syncHarnessTodosHeight(card); // 任务框基准高度随输入框压缩态变化,同步重算待办补偿
 }
 
 function renderHarnessCard() {
@@ -3356,6 +3655,13 @@ function renderHarnessCard() {
   const badge = document.createElement('span');
   badge.className = 'harness-status';
   badge.dataset.harnessStatus = state.harness.status;
+  badge.title = '打开网页版 (http://127.0.0.1:3080)';
+  badge.setAttribute('role', 'button');
+  badge.tabIndex = 0;
+  badge.addEventListener('click', openHarnessWebPage);
+  badge.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openHarnessWebPage(); }
+  });
 
   const headingControl = document.createElement('div');
   headingControl.className = 'harness-heading-control';
@@ -3369,33 +3675,33 @@ function renderHarnessCard() {
   historyButton.type = 'button';
   historyButton.className = 'harness-history-btn harness-quick-btn';
   historyButton.textContent = '◷ 历史会话';
+  historyButton.setAttribute('aria-expanded', 'false');
 
   const quickActions = document.createElement('div');
   quickActions.className = 'harness-quick-actions';
-
-  const sessionSelect = document.createElement('select');
-  sessionSelect.className = 'harness-session-select';
-  sessionSelect.setAttribute('aria-label', '历史会话');
-  quickActions.append(workspaceButton, historyButton, sessionSelect);
+  quickActions.append(workspaceButton, historyButton);
   headingControl.append(title, quickActions);
-  header.append(headingControl, badge);
-  sessionSelect.addEventListener('change', () => {
-    closeHarnessQuickActions(card);
-    return sessionSelect.value ? loadHarnessSession(sessionSelect.value) : newHarnessSession();
-  });
+
+  const sessionList = document.createElement('div');
+  sessionList.className = 'harness-session-list';
+  sessionList.setAttribute('role', 'listbox');
+  sessionList.setAttribute('aria-label', '历史会话');
+  header.append(headingControl, badge, sessionList);
+
   title.addEventListener('click', () => openHarnessQuickActions(card));
   workspaceButton.addEventListener('click', async () => {
     await selectHarnessWorkspace();
     closeHarnessQuickActions(card);
   });
-  historyButton.addEventListener('click', () => {
-    card.classList.toggle('harness-history-open');
-    updateHarnessWorkspaceButton(card);
-    if (card.classList.contains('harness-history-open')) sessionSelect.focus({ preventScroll: true });
+  historyButton.addEventListener('click', async () => {
+    const open = card.classList.toggle('harness-history-open');
+    historyButton.setAttribute('aria-expanded', String(open));
+    if (open) await refreshHarnessSessions(); // 打开列表时拉取最新会话（含网页端新建的）
   });
 
   const todos = document.createElement('div');
   todos.className = 'harness-todos';
+  todos.dataset.expanded = state.harness.todosExpanded ? '1' : '0'; // 展开/收起动画仅在用户点击时播放
 
   const history = document.createElement('div');
   history.className = 'harness-history';
@@ -3510,9 +3816,7 @@ function compactHarnessPath(value) {
 function updateHarnessWorkspaceButton(card) {
   const workspace = card?.querySelector('.harness-workspace');
   if (!workspace) return;
-  workspace.textContent = card.classList.contains('harness-history-open')
-    ? '📁'
-    : `📁 ${compactHarnessPath(state.harness.workspace)}`;
+  workspace.textContent = `📁 ${compactHarnessPath(state.harness.workspace)}`;
   workspace.title = state.harness.workspace || '选择工作目录';
 }
 
@@ -3530,7 +3834,7 @@ function closeHarnessQuickActions(card) {
 
 document.addEventListener('pointerdown', (event) => {
   const card = toolsCards?.querySelector('.harness-card.harness-actions-open');
-  if (!card || event.target.closest('.harness-title-trigger, .harness-quick-actions, .harness-session-select')) return;
+  if (!card || event.target.closest('.harness-title-trigger, .harness-quick-actions, .harness-session-list')) return;
   closeHarnessQuickActions(card);
 });
 document.addEventListener('pointerdown', (event) => {
@@ -3660,6 +3964,141 @@ function initializeSettingsSelects() {
   syncSettingsSelects();
 }
 
+// 转义 HTML 特殊字符，避免 Harness 输出中的 <>& 被当作标签注入
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+// 行内格式：`code`、**加粗**、*斜体*、~~删除线~~、[链接](url)
+// 输入必须是已 HTML 转义过的文本
+function renderInline(text) {
+  const protectedTokens = [];
+  const protect = (html) => {
+    const index = protectedTokens.length;
+    protectedTokens.push(html);
+    return `\u0000${index}\u0000`;
+  };
+
+  let out = text.replace(/`([^`\n]+)`/g, (match, code) => protect(`<code>${code}</code>`));
+  out = out.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, src) => protect(`<img src="${src}" alt="${alt}">`));
+
+  out = out.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  out = out.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+  out = out.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+  out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  return out.replace(/\u0000(\d+)\u0000/g, (match, index) => protectedTokens[+index]);
+}
+
+// 轻量 Markdown 渲染：标题、代码块、列表、引用、水平线、段落 + 行内格式
+function renderMarkdown(text) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  const out = [];
+  let para = [];
+  let listType = null;
+  let listItems = [];
+
+  const flushPara = () => {
+    if (para.length) {
+      out.push(`<p>${renderInline(escapeHtml(para.join('\n')))}</p>`);
+      para = [];
+    }
+  };
+  const flushList = () => {
+    if (listItems.length) {
+      out.push(`<${listType}>${listItems.join('')}</${listType}>`);
+      listItems = [];
+    }
+    listType = null;
+  };
+  const flushAll = () => { flushPara(); flushList(); };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // 围栏代码块 ``` 或 ~~~
+    const fence = line.match(/^\s*(`{3,}|~{3,})\s*(.*)$/);
+    if (fence) {
+      flushAll();
+      const marker = fence[1][0];
+      const length = fence[1].length;
+      const lang = escapeHtml(fence[2].trim());
+      const codeLines = [];
+      i++;
+      while (i < lines.length) {
+        if (new RegExp(`^\\s*${marker}{${length},}\\s*$`).test(lines[i])) break;
+        codeLines.push(lines[i]);
+        i++;
+      }
+      out.push(`<pre><code${lang ? ` class="language-${lang}"` : ''}>${escapeHtml(codeLines.join('\n'))}\n</code></pre>`);
+      continue;
+    }
+
+    // 水平线 --- / *** / ___
+    if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      flushAll();
+      out.push('<hr>');
+      continue;
+    }
+
+    // 标题 # ~ ######
+    const heading = line.match(/^\s*(#{1,6})\s+(.*)$/);
+    if (heading) {
+      flushAll();
+      const level = heading[1].length;
+      out.push(`<h${level}>${renderInline(escapeHtml(heading[2].trim()))}</h${level}>`);
+      continue;
+    }
+
+    // 无序列表 - * +
+    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (ul) {
+      flushPara();
+      if (listType !== 'ul') { flushList(); listType = 'ul'; }
+      listItems.push(`<li>${renderInline(escapeHtml(ul[1]))}</li>`);
+      continue;
+    }
+
+    // 有序列表 1. 2)
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ol) {
+      flushPara();
+      if (listType !== 'ol') { flushList(); listType = 'ol'; }
+      listItems.push(`<li>${renderInline(escapeHtml(ol[1]))}</li>`);
+      continue;
+    }
+
+    // 引用 >
+    const quote = line.match(/^\s*>\s?(.*)$/);
+    if (quote) {
+      flushAll();
+      const quoteLines = [quote[1]];
+      while (i + 1 < lines.length && /^\s*>\s?/.test(lines[i + 1])) {
+        i++;
+        quoteLines.push(lines[i].replace(/^\s*>\s?/, ''));
+      }
+      out.push(`<blockquote>${renderMarkdown(quoteLines.join('\n'))}</blockquote>`);
+      continue;
+    }
+
+    // 空行
+    if (!line.trim()) {
+      flushAll();
+      continue;
+    }
+
+    // 普通段落
+    flushList();
+    para.push(line);
+  }
+
+  flushAll();
+  return out.join('');
+}
+
 function buildHarnessMessageRow(message) {
   const row = document.createElement('div');
   row.className = `harness-message ${message.role}${message.failed ? ' failed' : ''}`;
@@ -3684,9 +4123,14 @@ function buildHarnessMessageRow(message) {
       body.appendChild(output);
     }
   } else {
-    body = document.createElement('span');
-    body.className = 'harness-message-body';
-    body.textContent = message.text;
+    body = document.createElement('div');
+    const markdown = message.role === 'assistant';
+    body.className = 'harness-message-body' + (markdown ? ' harness-markdown' : '');
+    if (markdown) {
+      body.innerHTML = renderMarkdown(message.text);
+    } else {
+      body.textContent = message.text;
+    }
   }
   if (message.role !== 'user' && message.role !== 'assistant') row.appendChild(label);
   row.appendChild(body);
@@ -3723,6 +4167,30 @@ function appendHarnessMessages(container, messages, toolGroupOpen) {
   }
 }
 
+// 判断每条消息是否属于「执行过程」内容：
+// - tool(工具调用/子任务)一定是过程；
+// - assistant 在其所在「轮」(两条相邻 user 消息之间)里，只有最后一条是最终答复，更早的都是中间输出(过程)。
+// 用户消息、报错永远不是过程。
+function computeProcessFolds(messages) {
+  const folds = messages.map(m => m.role === 'tool');
+  let turnStart = 0;
+  for (let i = 0; i <= messages.length; i++) {
+    if (i === messages.length || messages[i].role === 'user') {
+      // 在 [turnStart, i) 内找最后一条 assistant 作为最终答复；更早的 assistant 记为过程
+      for (let j = i - 1; j >= turnStart; j--) {
+        if (messages[j].role === 'assistant') {
+          for (let k = turnStart; k < j; k++) {
+            if (messages[k].role === 'assistant') folds[k] = true;
+          }
+          break;
+        }
+      }
+      turnStart = i + 1;
+    }
+  }
+  return folds;
+}
+
 function renderHarnessHistory(card) {
   const history = card.querySelector('.harness-history');
   history.innerHTML = '';
@@ -3748,66 +4216,195 @@ function renderHarnessHistory(card) {
     return;
   }
 
-  // 完成后：把过程内容折叠到一个组里，只显示最终结果（最终结果 = 最后一条 assistant 消息）
+  // 完成后：把「过程内容」折叠成可展开的组，用户消息、报错、每轮的最终答复保持可见
   if (state.harness.status === 'completed') {
-    let finalIndex = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === 'assistant') { finalIndex = i; break; }
+    const folds = computeProcessFolds(messages);
+    let processGroup = null;
+    const flushProcessGroup = () => {
+      if (processGroup) {
+        processGroup.summary.textContent = `执行过程 · ${processGroup.count} 项`;
+        processGroup = null;
+      }
+    };
+    for (let i = 0; i < messages.length; i++) {
+      const message = messages[i];
+      const fold = folds[i];
+      if (!fold) flushProcessGroup();
+      if (fold && !processGroup) {
+        const group = document.createElement('details');
+        group.className = 'harness-process-group';
+        group.open = false;
+        const summary = document.createElement('summary');
+        const body = document.createElement('div');
+        body.className = 'harness-process-body';
+        group.append(summary, body);
+        history.appendChild(group);
+        processGroup = { summary, body, count: 0 };
+      }
+      const row = buildHarnessMessageRow(message);
+      if (fold && processGroup) {
+        processGroup.count++;
+        processGroup.body.appendChild(row);
+      } else {
+        history.appendChild(row);
+      }
     }
-    if (finalIndex > 0) {
-      const process = messages.slice(0, finalIndex);
-      const group = document.createElement('details');
-      group.className = 'harness-process-group';
-      group.open = false;
-      const summary = document.createElement('summary');
-      summary.textContent = `执行过程 · ${process.length} 条消息`;
-      const body = document.createElement('div');
-      body.className = 'harness-process-body';
-      group.append(summary, body);
-      history.appendChild(group);
-      appendHarnessMessages(body, process, false);
-      appendHarnessMessages(history, [messages[finalIndex]], false);
-      history.scrollTop = history.scrollHeight;
-      return;
-    }
+    flushProcessGroup();
+  } else {
+    appendHarnessMessages(history, messages, state.harness.toolGroupExpanded);
   }
-
-  appendHarnessMessages(history, messages, state.harness.toolGroupExpanded);
   history.scrollTop = history.scrollHeight;
 }
 
 function renderHarnessSessions(card) {
-  const select = card.querySelector('.harness-session-select');
-  select.innerHTML = '';
-  // 无选中会话时显示空白占位（隐藏于下拉列表），下拉列表只列历史会话
-  const placeholder = new Option('', '');
-  placeholder.hidden = true;
-  placeholder.disabled = true;
-  placeholder.selected = !state.harness.sessionId;
-  select.add(placeholder);
+  const list = card.querySelector('.harness-session-list');
+  if (!list) return;
+  list.innerHTML = '';
   for (const session of state.harness.sessions) {
-    const option = new Option(session.title, session.id);
-    option.selected = session.id === state.harness.sessionId;
-    select.add(option);
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'harness-session-item';
+    item.dataset.sessionId = session.id;
+    item.textContent = session.title;
+    item.classList.toggle('selected', session.id === state.harness.sessionId);
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', String(session.id === state.harness.sessionId));
+    item.addEventListener('click', () => {
+      closeHarnessQuickActions(card);
+      loadHarnessSession(session.id);
+    });
+    list.appendChild(item);
   }
 }
 
+// 待办区:默认折叠为一行摘要,点击展开完整列表
+// 展开时列表多占的高度从任务框(history)里扣除,保证卡片总高度不变
+const HARNESS_TODOS_LIST_MAX = 132; // 展开列表最大高度(px),超出部分内部滚动
+const HARNESS_HISTORY_MIN = 120;    // 任务框最低高度(px),低于此值不再压缩
+
 function renderHarnessTodos(card) {
   const container = card.querySelector('.harness-todos');
+  const expanded = state.harness.todosExpanded && state.harness.todos.length > 0;
+  // 记录上一次展开态,判断本次是否为用户主动切换(仅切换时播放展开/收起动画)
+  const wasExpanded = container.dataset.expanded === '1';
+  container.dataset.expanded = expanded ? '1' : '0';
+  const toggling = wasExpanded !== expanded;
+
   container.innerHTML = '';
   container.classList.toggle('hidden', state.harness.todos.length === 0);
-  for (const todo of state.harness.todos.slice(0, 5)) {
+  container.classList.toggle('harness-todos-open', expanded);
+  if (state.harness.todos.length === 0) {
+    syncHarnessTodosHeight(card);
+    return;
+  }
+
+  // 折叠摘要行:显示待办数量,点击展开/收起
+  const summary = document.createElement('button');
+  summary.type = 'button';
+  summary.className = 'harness-todos-summary';
+  summary.setAttribute('aria-expanded', String(expanded));
+  const count = document.createElement('span');
+  count.className = 'harness-todos-count';
+  count.textContent = `待办 · ${state.harness.todos.length}`;
+  const chevron = document.createElement('span');
+  chevron.className = 'harness-todos-chevron';
+  chevron.setAttribute('aria-hidden', 'true');
+  chevron.textContent = '▾';
+  summary.append(count, chevron);
+  summary.addEventListener('click', () => {
+    state.harness.todosExpanded = !state.harness.todosExpanded;
+    renderHarnessTodos(card);
+  });
+  container.appendChild(summary);
+
+  // 待办列表
+  const list = document.createElement('div');
+  list.className = 'harness-todos-list';
+  for (const todo of state.harness.todos) {
     const row = document.createElement('div');
     row.className = `harness-todo ${todo.status}`;
     const mark = todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '●' : '○';
     row.textContent = `${mark} ${todo.content}`;
-    container.appendChild(row);
+    list.appendChild(row);
+  }
+  container.appendChild(list);
+
+  // 在动画钉住列表高度前先量出内容高度(高度 0 时 scrollHeight 会失真),供高度补偿使用
+  const naturalListHeight = Math.min(list.scrollHeight, HARNESS_TODOS_LIST_MAX);
+  container.dataset.listHeight = String(naturalListHeight); // 存一份,动画期间外部同步也能拿到正确值
+
+  // 切换时播放高度动画,其余更新(运行中状态刷新)直接定格
+  if (toggling) animateHarnessTodosList(list, expanded);
+  else list.hidden = !expanded;
+
+  syncHarnessTodosHeight(card, naturalListHeight);
+}
+
+// 待办列表高度动画:展开 0→实际高度,收起 实际高度→0
+function animateHarnessTodosList(list, expanded) {
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    list.hidden = !expanded;
+    return;
+  }
+  const target = Math.min(list.scrollHeight, HARNESS_TODOS_LIST_MAX);
+  const from = expanded ? 0 : target;
+  list.style.height = from + 'px';
+  list.style.overflow = 'hidden';
+  if (!expanded) list.hidden = false;
+  list.getBoundingClientRect(); // 强制回流,确保起始高度生效
+  const anim = list.animate(
+    [{ height: `${from}px` }, { height: `${target}px` }],
+    { duration: 300, easing: 'ease' }
+  );
+  anim.onfinish = () => {
+    list.style.height = '';
+    list.style.overflow = '';
+    if (!expanded) list.hidden = true;
+  };
+}
+
+// 待办区高度变化时从任务框高度里扣除,与输入框压缩/文件变更共用同一基准,卡片总高不变
+// measuredListHeight: 可选,由调用方传入展开列表内容高度(动画钉住高度时外部测量更可靠)
+function syncHarnessTodosHeight(card, measuredListHeight) {
+  const history = card?.querySelector('.harness-history');
+  const container = card?.querySelector('.harness-todos');
+  if (!history || !container) return;
+  let listHeight = 0;
+  if (state.harness.todos.length > 0 && state.harness.todosExpanded) {
+    if (measuredListHeight !== undefined) {
+      listHeight = measuredListHeight;
+    } else {
+      // 优先用最近一次渲染时量出的内容高度(动画期间 scrollHeight 会失真)
+      const stored = parseFloat(container.dataset.listHeight);
+      listHeight = Number.isFinite(stored) ? stored : 0;
+      if (listHeight === 0) {
+        const list = container.querySelector('.harness-todos-list');
+        if (list) listHeight = Math.min(list.scrollHeight, HARNESS_TODOS_LIST_MAX);
+      }
+    }
+    // 折叠时待办区只有摘要行,展开后还多出摘要与列表之间的 gap,需一并从任务框扣除
+    const gap = parseFloat(getComputedStyle(container).gap) || 0;
+    listHeight += gap;
+  }
+  const base = parseFloat(getComputedStyle(card).getPropertyValue('--harness-history-base')) || 249;
+  const target = Math.max(HARNESS_HISTORY_MIN, base - listHeight);
+  if (listHeight === 0) {
+    // 折叠/无待办:交给 CSS 状态规则,不残留内联高度
+    history.style.height = '';
+    history.style.minHeight = '';
+    history.style.maxHeight = '';
+  } else {
+    history.style.height = target + 'px';
+    history.style.minHeight = target + 'px';
+    history.style.maxHeight = target + 'px';
   }
 }
 
 function renderHarnessDiffs(card) {
   const details = card.querySelector('.harness-artifacts');
-  details.classList.toggle('hidden', state.harness.diffs.length === 0);
+  const hasDiffs = state.harness.diffs.length > 0;
+  details.classList.toggle('hidden', !hasDiffs);
+  card.classList.toggle('has-diffs', hasDiffs);
   details.querySelector('summary').textContent = `文件变更 · ${new Set(state.harness.diffs.map(diff => diff.path)).size}`;
   const body = details.querySelector('.harness-artifacts-body');
   body.innerHTML = '';
@@ -3830,9 +4427,8 @@ function updateHarnessCard() {
   const card = toolsCards?.querySelector('[data-tool="harness"]');
   if (!card) return;
   const busy = ['starting', 'running', 'stopping'].includes(state.harness.status);
-  const badge = card.querySelector('.harness-status');
-  badge.textContent = HARNESS_STATUS_LABELS[state.harness.status] || state.harness.status || '就绪';
-  badge.dataset.harnessStatus = state.harness.status || 'idle';
+  updateHarnessStatusBadge();
+  syncHarnessStatusTimer();
   const workspace = card.querySelector('.harness-workspace');
   updateHarnessWorkspaceButton(card);
   card.querySelector('.harness-input').disabled = busy || !state.harness.configured;
@@ -3840,7 +4436,7 @@ function updateHarnessCard() {
   const runButton = card.querySelector('.harness-run-stop-btn');
   runButton.disabled = !state.harness.configured && !busy;
   runButton.classList.toggle('harness-running', busy);
-  runButton.querySelector('.harness-run-stop-icon').textContent = busy ? '⏸' : '▶';
+  runButton.querySelector('.harness-run-stop-icon').textContent = busy ? '' : '▶';
   runButton.querySelector('.harness-run-stop-label').textContent = busy ? '停止' : '运行';
   card.querySelector('.harness-new-btn').disabled = busy;
   const model = state.harness.model === 'deepseek-v4-pro' ? 'Pro' : 'Flash';
@@ -3863,13 +4459,13 @@ function updateHarnessCard() {
     choices.style.setProperty('--option-index', selectedIndex);
   });
   if (busy) closeHarnessRunOptions(card.querySelector('.harness-run-options'));
-  card.querySelector('.harness-session-select').disabled = busy || state.harness.sessions.length === 0;
   card.querySelector('.harness-workspace').disabled = busy;
   card.querySelector('.harness-history-btn').disabled = busy || state.harness.sessions.length === 0;
   renderHarnessSessions(card);
   renderHarnessTodos(card);
   renderHarnessHistory(card);
   renderHarnessDiffs(card);
+  syncHarnessTodosHeight(card); // 文件变更/输入框压缩态变化后,按最新基准重算待办补偿
 }
 
 let harnessOptionsRequestSeq = 0;
@@ -3905,6 +4501,9 @@ async function selectHarnessWorkspace() {
     state.harness.messages = [];
     state.harness.todos = [];
     state.harness.diffs = [];
+    state.harness.runStartedAt = null;
+    state.harness.runElapsedMs = null;
+    state.harness.runTokens = null;
     await refreshHarnessSessions(true);
   }
 }
@@ -3918,6 +4517,9 @@ async function submitHarnessTask(card) {
     state.harness.sessionId = result.sessionId;
     state.harness.status = 'starting';
     state.harness.toolGroupExpanded = true;
+    state.harness.runStartedAt = Date.now();
+    state.harness.runElapsedMs = null;
+    state.harness.runTokens = null;
     addHarnessMessage('user', text);
     input.value = '';
   } else if (!result?.cancelled) {
@@ -3947,6 +4549,9 @@ async function newHarnessSession() {
   state.harness.todos = [];
   state.harness.diffs = [];
   state.harness.sessionTitle = '';
+  state.harness.runStartedAt = null;
+  state.harness.runElapsedMs = null;
+  state.harness.runTokens = null;
   updateHarnessCard();
 }
 

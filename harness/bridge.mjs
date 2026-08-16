@@ -22,7 +22,7 @@ let harness = null;
 let running = false;
 let stopping = false;
 let generation = 0;
-const SESSION_ID_PATTERN = /^sticky-[a-zA-Z0-9-]{1,80}$/;
+const SESSION_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,80}$/;
 const streamBuffers = new Map();
 
 function send(message) {
@@ -58,6 +58,31 @@ function textFromBlocks(blocks) {
     .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
     .map((block) => block.text)
     .join('');
+}
+
+function numericUsageField(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function summarizeUsage(events) {
+  const usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+  };
+  for (const event of events || []) {
+    if (event?.type !== 'assistant/message' || !event.data?.usage) continue;
+    const next = event.data.usage;
+    usage.inputTokens += numericUsageField(next.inputTokens);
+    usage.outputTokens += numericUsageField(next.outputTokens);
+    usage.cacheReadTokens += numericUsageField(next.cacheReadTokens);
+    usage.cacheWriteTokens += numericUsageField(next.cacheWriteTokens);
+    usage.reasoningTokens += numericUsageField(next.reasoningTokens);
+  }
+  usage.totalTokens = usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
+  return usage;
 }
 
 function toolResultText(message) {
@@ -179,6 +204,7 @@ async function runTask(message) {
     ? message.sessionId
     : `sticky-${randomUUID().replaceAll('-', '')}`;
   const runGeneration = ++generation;
+  const startedAt = Date.now();
   running = true;
   stopping = false;
   send({ id: message.id, ok: true, data: { sessionId } });
@@ -198,7 +224,16 @@ async function runTask(message) {
       },
     });
     if (runGeneration === generation) {
-      send({ event: { type: 'result', status: 'completed', sessionId, text: result.finalResponse } });
+      send({
+        event: {
+          type: 'result',
+          status: 'completed',
+          sessionId,
+          text: result.finalResponse,
+          elapsedMs: Date.now() - startedAt,
+          usage: summarizeUsage(result.events),
+        },
+      });
     }
   } catch (error) {
     if (runGeneration === generation && !stopping) {

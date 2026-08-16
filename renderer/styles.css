@@ -11,6 +11,7 @@
   --accent: #5b5be0;
   --accent-hover: #4848d0;
   --danger: #e05570;
+  --success: #1fae5a;
   --border: #e2e2ec;
   --border-strong: #d2d2e0;
   --shadow: 0 8px 32px rgba(0,0,0,0.12);
@@ -92,6 +93,7 @@ body {
 .page-tools ::-webkit-scrollbar,
 .settings-body::-webkit-scrollbar {
   width: 4px;
+  height: 4px;
 }
 
 #task-list::-webkit-scrollbar-track,
@@ -116,6 +118,22 @@ body {
 #notepad-textarea::-webkit-scrollbar-thumb:hover,
 .page-tools ::-webkit-scrollbar-thumb:hover,
 .settings-body::-webkit-scrollbar-thumb:hover {
+  background: #8a8a98;
+}
+
+/* 笔记页内部（代码块等）滚动条：与统一滚动条同款 */
+#notepad-textarea ::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+#notepad-textarea ::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+#notepad-textarea ::-webkit-scrollbar-thumb {
+  background: #b0b0bc;
+  border-radius: 2px;
+}
+#notepad-textarea ::-webkit-scrollbar-thumb:hover {
   background: #8a8a98;
 }
 
@@ -1564,6 +1582,32 @@ body {
 .settings-card select:focus,
 .settings-select-trigger:focus-visible { border-color: var(--accent); }
 .settings-card input::placeholder { color: var(--text-dim); opacity: 0.4; }
+.settings-reset-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.settings-action-btn {
+  padding: 5px 14px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s;
+  background: var(--accent);
+  color: white;
+  white-space: nowrap;
+}
+.settings-action-btn:hover { background: var(--accent-hover); }
+.settings-reset-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.settings-reset-hint.show { opacity: 1; }
 /* 文件路径 combobox */
 .notesdir-combo {
   position: relative;
@@ -1942,6 +1986,64 @@ body {
 #notepad-textarea div {
   min-height: 1.2em;
 }
+
+/* Markdown 渲染样式（笔记页 md 内容） */
+#notepad-textarea > :first-child { margin-top: 0; }
+#notepad-textarea > :last-child { margin-bottom: 0; }
+#notepad-textarea p { margin: 0 0 6px; }
+#notepad-textarea h1,
+#notepad-textarea h2,
+#notepad-textarea h3,
+#notepad-textarea h4,
+#notepad-textarea h5,
+#notepad-textarea h6 {
+  margin: 10px 0 4px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+#notepad-textarea h1 { font-size: 1.6em; }
+#notepad-textarea h2 { font-size: 1.4em; }
+#notepad-textarea h3 { font-size: 1.25em; }
+#notepad-textarea h4 { font-size: 1.1em; }
+#notepad-textarea h5,
+#notepad-textarea h6 { font-size: 1em; }
+#notepad-textarea ul,
+#notepad-textarea ol { margin: 0 0 6px; padding-left: 22px; }
+#notepad-textarea li { margin: 2px 0; }
+#notepad-textarea code {
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  font-size: 0.9em;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+#notepad-textarea pre {
+  margin: 6px 0;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-x: auto;
+  white-space: pre;
+}
+#notepad-textarea pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+#notepad-textarea blockquote {
+  margin: 6px 0;
+  padding: 2px 10px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-dim);
+}
+#notepad-textarea a { color: var(--accent); text-decoration: none; }
+#notepad-textarea a:hover { text-decoration: underline; }
+#notepad-textarea hr { border: 0; border-top: 1px solid var(--border); margin: 10px 0; }
+#notepad-textarea strong { font-weight: 700; }
+#notepad-textarea em { font-style: italic; }
+#notepad-textarea del { text-decoration: line-through; }
 
 .notepad-footer {
   display: flex;
@@ -2372,8 +2474,14 @@ body {
 /* DeepSeek Harness */
 .harness-card {
   padding-bottom: 12px;
+  /* 任务框(history)基准高度:待办展开/输入框压缩/文件变更共用同一基准,互相让位,卡片总高不变 */
+  --harness-history-base: 249px;
 }
+.harness-card.harness-input-compact { --harness-history-base: 285px; }
+.harness-card.has-diffs { --harness-history-base: 220px; }
+.harness-card.has-diffs.harness-input-compact { --harness-history-base: 256px; }
 .harness-header {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2437,16 +2545,77 @@ body {
 .harness-quick-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .harness-quick-btn:not(:disabled):hover { border-color: var(--accent); }
 .harness-history-btn { flex: 0 0 78px; }
+/* 历史会话下拉列表：样式对齐设置页 combo-dropdown */
+.harness-session-list {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  display: none;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow-y: auto;
+  max-height: 200px;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+.harness-card.harness-history-open .harness-session-list { display: block; }
+.harness-session-item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.harness-session-item:hover {
+  background: var(--accent);
+  color: #fff;
+}
+.harness-session-item.selected {
+  color: var(--accent);
+  font-weight: 600;
+}
+.harness-session-item.selected:hover { color: #fff; }
 .harness-status {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.25;
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  border-radius: 5px;
+  padding: 2px 4px;
+  margin: -2px -4px; /* 内边距视觉外扩，不改变头部布局高度 */
+  transition: background 0.12s ease;
+}
+.harness-status:hover,
+.harness-status:focus-visible {
+  background: var(--bg-secondary);
+  outline: none;
+}
+.harness-status:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.harness-status-line {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: var(--text-dim);
-  font-size: 11px;
   white-space: nowrap;
-  flex: 0 0 auto;
 }
-.harness-status::before {
+.harness-status-line::before {
   content: '';
   width: 6px;
   height: 6px;
@@ -2457,6 +2626,13 @@ body {
 .harness-status[data-harness-status="starting"] { color: var(--accent); }
 .harness-status[data-harness-status="completed"] { color: #2f8f55; }
 .harness-status[data-harness-status="error"] { color: var(--danger); }
+.harness-status-meta {
+  color: var(--text-dim);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.harness-status-meta.hidden { display: none; }
+.harness-card.harness-actions-open .harness-status-meta { display: none; }
 .harness-workspace {
   flex: 1 1 0;
   width: auto;
@@ -2466,71 +2642,74 @@ body {
   text-overflow: ellipsis;
   transition: width 130ms ease-out, flex-basis 130ms ease-out, padding 130ms ease-out;
 }
-.harness-card.harness-history-open .harness-workspace {
-  flex: 0 0 30px;
-  width: 30px;
-  padding-inline: 6px;
-  text-align: center;
-}
 .harness-workspace:hover { color: var(--text); }
 .harness-workspace:focus-visible,
-.harness-session-select:focus-visible,
 .harness-input:focus-visible,
 .harness-actions button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
-.harness-session-select {
-  flex: 1 1 0;
-  min-width: 0;
-  width: 0;
-  max-width: 0;
-  height: 28px;
-  padding: 3px 0;
-  border: 0 solid var(--border);
+@media (prefers-reduced-motion: reduce) {
+  .harness-title-trigger,
+  .harness-quick-actions,
+  .harness-workspace { transition: none; }
+}
+.harness-todos {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.harness-todos.hidden,
+.harness-artifacts.hidden { display: none; }
+/* 待办折叠摘要行:默认一行,点击展开完整列表 */
+.harness-todos-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 26px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-input);
   color: var(--text-dim);
   font: inherit;
   font-size: 11px;
   text-align: left;
-  outline: none;
-  appearance: none;
-  -webkit-appearance: none;
-  opacity: 0;
-  margin-left: -6px;
-  pointer-events: none;
-  transition: max-width 130ms ease-out, padding 130ms ease-out, border-width 130ms ease-out, margin-left 130ms ease-out, opacity 90ms ease-out;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 120ms ease, color 120ms ease;
 }
-.harness-card.harness-history-open .harness-session-select {
-  max-width: 160px;
-  padding: 3px 22px 3px 8px;
-  border-width: 1px;
-  background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='10'%20height='10'%20viewBox='0%200%2010%2010'%3E%3Cpath%20d='M2%203.5%205%206.5%208%203.5'%20fill='none'%20stroke='%239a9aac'%20stroke-width='1.4'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 7px center;
-  background-size: 10px 10px;
-  opacity: 1;
-  margin-left: 0;
-  pointer-events: auto;
+.harness-todos-summary:hover { border-color: var(--accent); color: var(--text); }
+.harness-todos-summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
-.harness-session-select:disabled { opacity: 0.55; }
-@media (prefers-reduced-motion: reduce) {
-  .harness-title-trigger,
-  .harness-quick-actions,
-  .harness-workspace,
-  .harness-session-select { transition: none; }
+.harness-todos-count {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.harness-todos {
+.harness-todos-chevron {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  transition: transform 250ms ease;
+}
+.harness-todos-open .harness-todos-chevron { transform: rotate(180deg); }
+/* 展开后的待办列表:超出 132px 内部滚动,防止撑高卡片 */
+.harness-todos-list {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  max-height: 132px;
+  overflow-y: auto;
   padding: 2px 1px;
-  color: var(--text-dim);
-  font-size: 11px;
 }
-.harness-todos.hidden,
-.harness-artifacts.hidden { display: none; }
+.harness-todos-list[hidden] { display: none; }
 .harness-todo {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2539,8 +2718,8 @@ body {
 .harness-todo.in_progress { color: var(--accent); }
 .harness-todo.completed { text-decoration: line-through; opacity: 0.7; }
 .harness-history {
-  min-height: 246px;
-  max-height: 246px;
+  min-height: var(--harness-history-base, 249px);
+  max-height: var(--harness-history-base, 249px);
   overflow-y: auto;
   padding: 16px 9px;
   border: 1px solid var(--border);
@@ -2552,8 +2731,8 @@ body {
   transition: height 300ms ease, min-height 300ms ease, max-height 300ms ease;
 }
 .harness-history.harness-empty-state {
-  height: 246px;
-  min-height: 246px;
+  height: var(--harness-history-base, 249px);
+  min-height: var(--harness-history-base, 249px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2621,6 +2800,7 @@ body {
   padding: 4px 0;
   color: var(--text-dim);
 }
+.harness-message + .harness-process-group,
 .harness-process-group + .harness-message {
   margin-top: 8px;
   padding-top: 8px;
@@ -2652,6 +2832,63 @@ body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* Markdown 渲染样式（Harness 返回文本） */
+.harness-markdown > :first-child { margin-top: 0; }
+.harness-markdown > :last-child { margin-bottom: 0; }
+.harness-markdown p { margin: 0 0 6px; }
+.harness-markdown h1,
+.harness-markdown h2,
+.harness-markdown h3,
+.harness-markdown h4,
+.harness-markdown h5,
+.harness-markdown h6 {
+  margin: 10px 0 4px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.harness-markdown h1 { font-size: 1.35em; }
+.harness-markdown h2 { font-size: 1.2em; }
+.harness-markdown h3 { font-size: 1.1em; }
+.harness-markdown h4 { font-size: 1.05em; }
+.harness-markdown h5,
+.harness-markdown h6 { font-size: 1em; }
+.harness-markdown ul,
+.harness-markdown ol { margin: 0 0 6px; padding-left: 20px; }
+.harness-markdown li { margin: 2px 0; }
+.harness-markdown code {
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  font-size: 0.92em;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.harness-markdown pre {
+  margin: 6px 0;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-x: auto;
+  white-space: pre;
+}
+.harness-markdown pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.harness-markdown blockquote {
+  margin: 6px 0;
+  padding: 2px 10px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-dim);
+}
+.harness-markdown a { color: var(--accent); text-decoration: none; }
+.harness-markdown a:hover { text-decoration: underline; }
+.harness-markdown hr { border: 0; border-top: 1px solid var(--border); margin: 10px 0; }
+.harness-markdown strong { font-weight: 700; }
+.harness-markdown em { font-style: italic; }
+.harness-markdown del { text-decoration: line-through; }
 .harness-tool-detail summary,
 .harness-artifacts summary {
   cursor: pointer;
@@ -2712,11 +2949,9 @@ body {
   max-height: 38px !important;
   resize: none !important;
 }
-/* 输入框压缩时把省下的约两行高度补偿给任务框 */
-.harness-card.harness-input-compact .harness-history {
-  min-height: 282px;
-  max-height: 282px;
-}
+/* 任务框高度由 .harness-card 上的 --harness-history-base 按状态统一管理:
+   输入框压缩时 +36px 补偿给任务框;有文件变更时 -29px 让给文件变更区;
+   待办展开时由 JS 按展开高度实时扣除,保证卡片总高不变 */
 .harness-actions {
   display: flex;
   justify-content: space-between;
@@ -2822,7 +3057,9 @@ body {
   .harness-option-choices::before,
   .harness-option-choices button,
   .harness-input,
-  .harness-history { transition: none; }
+  .harness-history,
+  .harness-todos-summary,
+  .harness-todos-chevron { transition: none; }
 }
 .harness-actions button {
   min-height: 28px;
@@ -2855,6 +3092,58 @@ body {
   gap: 5px;
 }
 .harness-run-stop-icon {
+  display: inline-block;
+  position: relative;
   line-height: 1;
   font-size: 10px;
+}
+.harness-run-stop-btn.harness-running .harness-run-stop-icon {
+  width: 10px;
+  height: 12px;
+}
+.harness-run-stop-btn.harness-running .harness-run-stop-icon::before,
+.harness-run-stop-btn.harness-running .harness-run-stop-icon::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: #fff;
+  border-radius: 1px;
+}
+.harness-run-stop-btn.harness-running .harness-run-stop-icon::before { left: 0; }
+.harness-run-stop-btn.harness-running .harness-run-stop-icon::after { right: 0; }
+
+/* Harness 任务完成/失败提示：显示在当前页面下方栏中间，从下往上滑入，2 秒后向下滑出 */
+.harness-toast-host {
+  position: relative;
+  overflow: hidden;
+}
+.harness-toast {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateY(100%);
+  transition: transform 0.3s ease, opacity 0.3s ease;
+}
+.harness-toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+.harness-toast-success { color: var(--success); }
+.harness-toast-error { color: var(--danger); }
+.harness-toast-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+  margin-right: 6px;
 }

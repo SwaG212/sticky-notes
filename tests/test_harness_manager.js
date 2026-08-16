@@ -35,6 +35,7 @@ async function main() {
     /根目录/,
   );
   assert.strictEqual(SESSION_ID_PATTERN.test('sticky-abc-123'), true);
+  assert.strictEqual(SESSION_ID_PATTERN.test('session-8c76cf3b-9fe4-40bf-8ed2-0fad5724eebb'), true);
   assert.strictEqual(SESSION_ID_PATTERN.test('../foreign-session'), false);
 
   const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), 'sticky-harness-manager-test-'));
@@ -43,6 +44,7 @@ async function main() {
     userDataPath,
     getConfig: () => ({ apiKey: 'test-key', harness: config }),
     emit: () => {},
+    sessionRoot: path.join(userDataPath, 'harness-sessions'),
   });
   try {
     const transcriptDir = path.join(userDataPath, 'harness-sessions', '--fixture--', 'sticky-fixture');
@@ -79,6 +81,7 @@ async function main() {
     userDataPath,
     getConfig: () => ({ apiKey: 'test-key', harness: standardConfig }),
     emit: () => {},
+    sessionRoot: path.join(userDataPath, 'harness-sessions'),
   });
   try {
     await standardManager.ensureBridge({ ...standardConfig, apiKey: 'test-key' });
