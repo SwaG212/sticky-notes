@@ -22,6 +22,8 @@
     "afterPack": "./scripts/clean-locales.js",
     "files": [
       "main.js",
+      "atomic-write.js",
+      "window-bounds.js",
       "preload.js",
       "harness/**/*",
       "renderer/**/*",
@@ -56,8 +58,8 @@
     }
   },
   "devDependencies": {
-    "electron": "^33.0.0",
-    "electron-builder": "^25.0.0"
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3"
   },
   "dependencies": {
     "tesseract.js": "^5.1.1"

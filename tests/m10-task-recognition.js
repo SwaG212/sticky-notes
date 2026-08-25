@@ -295,14 +295,12 @@ const pr6 = prependProject([{ task: '买咖啡' }], null);
 assert(pr6[0].task === '买咖啡', '无项目: task不变');
 assert(!pr6[0].project, '无项目: 无project字段');
 
-// ========== 5. addTasks 去重逻辑（project 字段不影响去重） ==========
-console.log('\n--- addTasks 去重 + project ---');
+// ========== 5. addTasks 允许重复任务 ==========
+console.log('\n--- addTasks 允许重复任务 + project ---');
 
 function addTasks(existing, incoming) {
-  const existingTexts = new Set(existing.map(t => t.task));
-  const unique = incoming.filter(t => !existingTexts.has(t.task));
-  if (unique.length === 0) return { added: [], tasks: [...existing] };
-  const items = unique.map((t, i) => ({
+  if (incoming.length === 0) return { added: [], tasks: [...existing] };
+  const items = incoming.map((t, i) => ({
     id: 't_' + i,
     task: t.task,
     project: t.project || null,
@@ -315,12 +313,13 @@ function addTasks(existing, incoming) {
   return { added: items, tasks: [...items, ...existing] };
 }
 
-// 5.1 project 不影响去重（去重只看 task 字段）
+// 5.1 已存在同名任务时仍可添加
 const r51 = addTasks(
   [{ id: 'old', task: '本地环境测试', project: null }],
   [{ task: '本地环境测试', project: '国寿' }]
 );
-assert(r51.added.length === 0, '去重: 同task不同project视为重复');
+assert(r51.added.length === 1, '重复任务: 同task仍可添加');
+assert(r51.tasks.length === 2, '重复任务: 新旧任务同时保留');
 
 // 5.2 正常添加
 const r52 = addTasks([], [{ task: '巡检', project: '中加' }]);

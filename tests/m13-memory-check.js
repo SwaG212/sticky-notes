@@ -4,7 +4,7 @@ const path = require('path');
 
 app.whenReady().then(async () => {
   const win = new BrowserWindow({ show: false, width: 600, height: 800 });
-  await win.loadFile('renderer/index.html');
+  await win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   const r = (code) => win.webContents.executeJavaScript(code);
 
   const mainStart = Math.round(process.memoryUsage().rss / 1024);

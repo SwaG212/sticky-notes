@@ -86,7 +86,7 @@
           <span id="note-search-status"></span>
           <input type="text" id="note-search-input" placeholder="搜索笔记...">
         </div>
-        <button id="btn-notepad-forward" title="工具箱">→</button>
+        <button id="btn-notepad-forward" title="卡片页">→</button>
       </div>
       <div id="note-list-overlay" class="hidden">
         <div id="note-list-search-box">
@@ -104,6 +104,12 @@
     <!-- 工具箱页面（第三页） -->
     <div class="page page-tools">
       <div id="tools-cards"></div>
+      <!-- 新增功能卡统一通过 createToolCard() 克隆此模板。 -->
+      <template id="tool-card-template">
+        <section class="tool-card">
+          <div class="tool-card-body"></div>
+        </section>
+      </template>
       <div class="notepad-footer">
         <button id="btn-tools-back">←</button>
       </div>
@@ -191,7 +197,7 @@
             <label class="checkbox-label page-col"><input type="checkbox" id="settings-blurhide-notepad" checked></label>
           </div>
           <div class="page-row">
-            <span class="page-row-name">工具箱页</span>
+            <span class="page-row-name">卡片页</span>
             <label class="checkbox-label page-col"><input type="checkbox" id="settings-tools-page"></label>
             <label class="checkbox-label page-col"><input type="checkbox" id="settings-blurhide-tools" checked></label>
           </div>
@@ -250,7 +256,7 @@
             <span class="shortcut-kbd" id="shortcut-switchNotepad" tabindex="0"></span>
           </div>
           <div class="shortcut-row">
-            <span class="shortcut-label">切换工具箱页</span>
+            <span class="shortcut-label">切换卡片页</span>
             <span class="shortcut-kbd" id="shortcut-switchTools" tabindex="0"></span>
           </div>
         </div>

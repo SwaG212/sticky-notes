@@ -59,6 +59,7 @@ const btnNotepadBack = $('#btn-notepad-back');
 const btnNotepadForward = $('#btn-notepad-forward');
 const btnToolsBack = $('#btn-tools-back');
 const toolsCards = $('#tools-cards');
+const toolCardTemplate = $('#tool-card-template');
 const notepadTextarea = $('#notepad-textarea');
 const noteListOverlay = $('#note-list-overlay');
 const noteListItems = $('#note-list-items');
@@ -332,6 +333,14 @@ async function init() {
         setTimeout(() => { organize(); }, 50);
       }
     });
+    window.electronAPI.onAppBeforeQuit(async () => {
+      let saved = false;
+      try {
+        saved = await saveCurrentNote();
+      } finally {
+        window.electronAPI.rendererReadyToQuit(saved);
+      }
+    });
   }
 }
 
@@ -384,10 +393,28 @@ async function loadTasks() {
 }
 
 async function saveTasks() {
-  if (window.electronAPI) {
-    await window.electronAPI.saveTasks(state.tasks);
-  } else {
-    localStorage.setItem(`tasks_${getToday()}`, JSON.stringify(state.tasks));
+  try {
+    if (window.electronAPI) {
+      const result = await window.electronAPI.saveTasks(state.tasks);
+      if (result?.success === false) throw new Error(result.error || 'WRITE_FAILED');
+    } else {
+      localStorage.setItem(`tasks_${getToday()}`, JSON.stringify(state.tasks));
+    }
+    return true;
+  } catch (error) {
+    showError('任务保存失败，请检查磁盘空间或文件权限');
+    return false;
+  }
+}
+
+async function saveTasksByDate(dateStr, tasks) {
+  try {
+    const result = await window.electronAPI.saveTasksByDate(dateStr, tasks);
+    if (result?.success === false) throw new Error(result.error || 'WRITE_FAILED');
+    return true;
+  } catch (error) {
+    showError('历史任务保存失败，请检查磁盘空间或文件权限');
+    return false;
   }
 }
 
@@ -1094,14 +1121,11 @@ function enterEditMode(row, idx) {
 }
 
 function addTasks(newTasks) {
-  // 去重保护：跳过已存在的同名任务
-  const existingTexts = new Set(state.tasks.map(t => t.task));
-  const unique = newTasks.filter(t => !existingTexts.has(t.task));
-  if (unique.length === 0) return;
+  if (newTasks.length === 0) return;
 
   const now = new Date().toISOString();
   const maxOrder = state.tasks.reduce((max, t) => Math.max(max, t.sortOrder ?? 0), -1);
-  const items = unique.map((t, i) => ({
+  const items = newTasks.map((t, i) => ({
     id: genId(), task: t.task, project: t.project || null, completed: false, createdAt: now, completedAt: null,
     alarmTime: null, dueDate: t.dueDate || null, sortOrder: maxOrder + 1 + i,
   }));
@@ -2016,7 +2040,10 @@ async function persistProjectNames() {
   if (window.electronAPI) {
     const cfg = await window.electronAPI.getConfig();
     cfg.projectNames = [...state.projectNames];
-    await window.electronAPI.saveConfig(cfg);
+    let result;
+    try { result = await window.electronAPI.saveConfig(cfg); }
+    catch (error) { result = { success: false }; }
+    if (result?.success === false) showError('设置保存失败，请检查磁盘空间或文件权限');
   } else {
     const cfg = JSON.parse(localStorage.getItem('sticky_config') || '{}');
     cfg.projectNames = [...state.projectNames];
@@ -2393,7 +2420,13 @@ async function confirmSettings() {
   const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, showSheetBar, showProjectBadge, showDailyReport, showCalendar, pagesEnabled, toolsEnabled: toolFeatures, blurHide, harness };
 
   if (window.electronAPI) {
-    await window.electronAPI.saveConfig(cfg);
+    let saveResult;
+    try { saveResult = await window.electronAPI.saveConfig(cfg); }
+    catch (error) { saveResult = { success: false }; }
+    if (saveResult?.success === false) {
+      showError('设置保存失败，请检查磁盘空间或文件权限');
+      return;
+    }
     await window.electronAPI.setLoginSettings($('#settings-autostart').checked);
     await window.electronAPI.setWindowFixed(winFixed);
     app.classList.toggle('win-fixed', winFixed);
@@ -3030,7 +3063,7 @@ async function persistTask(t, prevKey) {
     skipDates.push(getToday());
   }
   return Promise.all([
-    window.electronAPI.saveTasksByDate(fileDate, arr),
+    saveTasksByDate(fileDate, arr),
     ...stateSyncs,
     ...syncTaskCopies(t, prevKey, skipDates),
   ]).then(() => {
@@ -3077,7 +3110,7 @@ function syncTaskCopies(t, prevKey, skipDates) {
         changed = true;
       }
     }
-    if (changed) syncs.push(window.electronAPI.saveTasksByDate(d, fileArr));
+    if (changed) syncs.push(saveTasksByDate(d, fileArr));
   }
   return syncs;
 }
@@ -3110,7 +3143,7 @@ async function removeTaskFromFile(t) {
     if (rest.length !== fileArr.length) {
       taskFileCache.set(d, rest);
       taskFileCacheLoaded.add(d);
-      syncs.push(window.electronAPI.saveTasksByDate(d, rest));
+      syncs.push(saveTasksByDate(d, rest));
     }
   }
   await Promise.all(syncs).catch(() => { /* ignore */ });
@@ -3280,6 +3313,14 @@ function updateToolsPageVisibility() {
 
 function isToolsPageEnabled() {
   return state.pagesEnabled.tools && Object.values(state.toolsEnabled).some(v => v);
+}
+
+// 所有功能卡只从这一个模板创建；卡片自身只负责填充 body。
+function createToolCard(tool, ...classNames) {
+  const card = toolCardTemplate.content.firstElementChild.cloneNode(true);
+  card.dataset.tool = tool;
+  if (classNames.length) card.classList.add(...classNames);
+  return { card, body: card.querySelector('.tool-card-body') };
 }
 
 function renderToolsPage() {
@@ -3641,9 +3682,7 @@ function syncHarnessInputCompact(card) {
 }
 
 function renderHarnessCard() {
-  const card = document.createElement('section');
-  card.className = 'tool-card harness-card';
-  card.dataset.tool = 'harness';
+  const { card, body } = createToolCard('harness', 'harness-card');
 
   const header = document.createElement('div');
   header.className = 'harness-header';
@@ -3801,7 +3840,7 @@ function renderHarnessCard() {
   buttons.append(newButton, runButton);
   actions.append(options, buttons);
 
-  card.append(header, todos, history, artifacts, input, actions);
+  body.append(header, todos, history, artifacts, input, actions);
   toolsCards.appendChild(card);
   updateHarnessCard();
 }
@@ -4560,9 +4599,7 @@ let translateDebounce = null;
 let translateReqSeq = 0;
 
 function renderTranslateCard() {
-  const card = document.createElement('div');
-  card.className = 'tool-card';
-  card.dataset.tool = 'translate';
+  const { card, body } = createToolCard('translate');
 
   const title = document.createElement('div');
   title.className = 'tool-card-title';
@@ -4596,7 +4633,7 @@ function renderTranslateCard() {
   backText.className = 'tool-card-back-text hidden';
 
   result.append(forwardText, backSep, backText);
-  card.append(title, input, result, status);
+  body.append(title, input, result, status);
   toolsCards.appendChild(card);
 
   const isEmpty = () => !input.textContent.trim() && input.querySelectorAll('img').length === 0;
@@ -4772,7 +4809,7 @@ async function switchToMain() {
   if (state.currentPage === 'main') return;
   if (!state.pagesEnabled.tasks) return;
   // 保存当前笔记
-  saveCurrentNote();
+  if (!await saveCurrentNote()) return;
   state.currentPage = 'main';
   // 日历状态切页保持:切回任务页时保留上次视图(日历/选中日期/当日模式),与隐藏再显示一致
   if (window.electronAPI) window.electronAPI.setPage('main');
@@ -4785,7 +4822,7 @@ async function switchToTools() {
   if (!isToolsPageEnabled()) return;
   // 日历状态切页:不播关闭动画,日历随任务页直接右滑(同 switchToNotepad)
   // 保存当前笔记
-  saveCurrentNote();
+  if (!await saveCurrentNote()) return;
   state.currentPage = 'tools';
   if (window.electronAPI) window.electronAPI.setPage('tools');
   renderToolsPage();
@@ -4959,6 +4996,7 @@ async function openNote(filename) {
   const prevFile = state.currentNoteFile;
   const prevContent = state.noteContent;
   const prevOriginal = state.noteOriginalContent;
+  if (prevFile && !await persistPreviousNote(prevFile, prevContent, prevOriginal)) return;
   state.currentNoteFile = filename;
   closeNoteSearch();
   if (!window.electronAPI) return;
@@ -4968,32 +5006,47 @@ async function openNote(filename) {
   notepadTextarea.classList.toggle('is-empty', !state.noteContent);
   populateImageCache();
   closeNoteList();
-  if (prevFile) persistPreviousNote(prevFile, prevContent, prevOriginal);
 }
 
 async function persistPreviousNote(prevFile, prevContent, prevOriginal) {
-  if (!window.electronAPI) return;
-  if (prevContent !== prevOriginal) {
-    await window.electronAPI.saveNote(prevFile, prevContent);
-    state.notes = await window.electronAPI.listNotes();
-  }
-  const isNewFile = /^untitled_\d+\.md$/.test(prevFile);
-  if (!isNewFile) return;
-  if (prevContent.trim()) {
-    triggerAiName(prevFile, prevContent);
-  } else {
-    await window.electronAPI.deleteNote(prevFile);
-    state.notes = await window.electronAPI.listNotes();
+  if (!window.electronAPI) return true;
+  try {
+    if (prevContent !== prevOriginal) {
+      const result = await window.electronAPI.saveNote(prevFile, prevContent);
+      if (result?.success === false) throw new Error(result.error || 'WRITE_FAILED');
+      state.notes = await window.electronAPI.listNotes();
+    }
+    const isNewFile = /^untitled_\d+\.md$/.test(prevFile);
+    if (!isNewFile) return true;
+    if (prevContent.trim()) {
+      triggerAiName(prevFile, prevContent);
+    } else {
+      await window.electronAPI.deleteNote(prevFile);
+      state.notes = await window.electronAPI.listNotes();
+    }
+    return true;
+  } catch (error) {
+    showError('笔记保存失败，请检查磁盘空间或文件权限');
+    return false;
   }
 }
 
-async function saveCurrentNote() {
-  if (!window.electronAPI || !state.currentNoteFile) return;
+let noteSaveQueue = Promise.resolve(true);
+
+function saveCurrentNote() {
+  noteSaveQueue = noteSaveQueue.then(saveCurrentNoteNow, saveCurrentNoteNow);
+  return noteSaveQueue;
+}
+
+async function saveCurrentNoteNow() {
+  if (!window.electronAPI || !state.currentNoteFile) return true;
+  try {
   // 从 DOM 直接取当前内容，而不是用 state.noteContent
   // 因为删除 img 元素时 contenteditable 可能不触发 input 事件
   const content = htmlToMarkdown(notepadTextarea.innerHTML);
   if (content !== state.noteOriginalContent) {
-    await window.electronAPI.saveNote(state.currentNoteFile, content);
+    const result = await window.electronAPI.saveNote(state.currentNoteFile, content);
+    if (result?.success === false) throw new Error(result.error || 'WRITE_FAILED');
     // 清理已删除的图片文件
     const oldPaths = extractImagePaths(state.noteOriginalContent);
     const newPaths = extractImagePaths(content);
@@ -5009,7 +5062,7 @@ async function saveCurrentNote() {
   }
 
   const isNewFile = /^untitled_\d+\.md$/.test(state.currentNoteFile);
-  if (!isNewFile) return;
+  if (!isNewFile) return true;
 
   if (content.trim()) {
     triggerAiName(state.currentNoteFile, content);
@@ -5019,6 +5072,11 @@ async function saveCurrentNote() {
     state.noteContent = '';
     state.noteOriginalContent = '';
     state.notes = await window.electronAPI.listNotes();
+  }
+  return true;
+  } catch (error) {
+    showError('笔记保存失败，请检查磁盘空间或文件权限');
+    return false;
   }
 }
 
@@ -5170,7 +5228,10 @@ async function renderNoteList() {
         progressEl: row, // 红线固定覆盖整行宽(终止于右侧日期),不随文件名长度变化
         holdMs: DELETE_HOLD_MS_NOTE, // 文件删除 2 秒,任务删除保持 1 秒
         text: note.filename.replace(/\.md$/, ''),
-        onComplete: () => deleteNoteHandler(note.filename)
+        onComplete: () => {
+          row.remove();
+          deleteNoteHandler(note.filename);
+        }
       });
     });
     row.addEventListener('mouseup', cancelDeleteHold);

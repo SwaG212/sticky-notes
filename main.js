@@ -7,6 +7,8 @@ const nodeNet = require('net');
 const { pathToFileURL } = require('url');
 const { HarnessManager, dshSessionsRoot, harnessConfig } = require('./harness/manager');
 const { parseSessionFile } = require('./harness/session-store');
+const { atomicWriteFileSync } = require('./atomic-write');
+const { fitBoundsToWorkArea } = require('./window-bounds');
 
 const APP_ICON = path.join(__dirname, 'assets', 'icon.png');
 
@@ -44,6 +46,9 @@ let moveSaveTimer = null;
 let harnessManager = null;
 let harnessWebChild = null;
 let harnessWebStderr = '';
+let quitSavePending = false;
+let quitSaveReady = false;
+let quitSaveTimer = null;
 const userDataPath = app.getPath('userData');
 const configPath = path.join(userDataPath, 'config.enc');
 const windowStatePath = path.join(userDataPath, 'window-state.json');
@@ -63,8 +68,7 @@ function readJSON(filePath) {
 }
 
 function writeJSON(filePath, data) {
-  ensureDir(path.dirname(filePath));
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+  atomicWriteFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
 function escapeHtml(s) {
@@ -115,10 +119,10 @@ function saveConfig(cfg) {
     const filtered = history.filter(d => d !== dir);
     cfg.notesDirHistory = [dir, ...filtered].slice(0, 5);
   }
-  cachedConfig = cfg;
   const json = JSON.stringify(cfg);
   const encrypted = safeStorage.encryptString(json);
-  fs.writeFileSync(configPath, encrypted);
+  atomicWriteFileSync(configPath, encrypted);
+  cachedConfig = cfg;
   registerToggleShortcut(cfg.shortcuts?.toggle || 'Alt+`');
 }
 
@@ -554,7 +558,7 @@ function saveNote(filename, content) {
   if (!validateNoteName(filename)) throw new Error('INVALID_PATH');
   const dir = getNotesDir();
   ensureDir(dir);
-  fs.writeFileSync(safeJoin(dir, filename), content, 'utf-8');
+  atomicWriteFileSync(safeJoin(dir, filename), content, 'utf-8');
 }
 
 function createNote() {
@@ -1076,7 +1080,8 @@ function setupIPC() {
       }
     }
     const harnessChanged = JSON.stringify(cur.harness || {}) !== JSON.stringify(merged.harness || {});
-    saveConfig(merged);
+    try { saveConfig(merged); }
+    catch (e) { return { success: false, error: 'WRITE_FAILED' }; }
     if (harnessChanged) harnessManager?.reset();
     return { success: true };
   });
@@ -1087,7 +1092,8 @@ function setupIPC() {
     if (!isTrustedSender(_event)) return { success: false, error: 'FORBIDDEN' };
     try { validateTasks(tasks); }
     catch (e) { return { success: false, error: e.message }; }
-    saveTasksToFile(tasks); return { success: true };
+    try { saveTasksToFile(tasks); return { success: true }; }
+    catch (e) { return { success: false, error: 'WRITE_FAILED' }; }
   });
   // 按日期读/写历史任务文件(day 视图显示该日期全部任务,含已完成);日期格式校验防目录穿越
   const TASK_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -1105,8 +1111,24 @@ function setupIPC() {
     if (!isTrustedSender(_e) || !TASK_DATE_RE.test(dateStr || '')) return { success: false, error: 'FORBIDDEN' };
     try { validateTasks(tasks); }
     catch (e) { return { success: false, error: e.message }; }
-    writeJSON(path.join(userDataPath, 'tasks', `${dateStr}.json`), tasks);
-    return { success: true };
+    try {
+      writeJSON(path.join(userDataPath, 'tasks', `${dateStr}.json`), tasks);
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: 'WRITE_FAILED' };
+    }
+  });
+
+  ipcMain.on('renderer-ready-to-quit', (_event, saved) => {
+    if (!isTrustedSender(_event) || !quitSavePending) return;
+    if (saved !== true) {
+      quitSavePending = false;
+      clearTimeout(quitSaveTimer);
+      quitSaveTimer = null;
+      showWindow();
+      return;
+    }
+    finishQuitAfterRendererSave();
   });
   ipcMain.handle('set-window-fixed', (_e, fixed) => {
     if (!isTrustedSender(_e)) return;
@@ -1356,13 +1378,14 @@ function setupIPC() {
 
 // ========== 窗口管理 ==========
 function getWindowPosition() {
-  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+  const primaryWorkArea = screen.getPrimaryDisplay().workArea;
   if (!winFixed && savedWinX != null && savedWinY != null) {
-    return { x: savedWinX, y: savedWinY, width: 360, height: 500 };
+    const bounds = { x: savedWinX, y: savedWinY, width: 360, height: 500 };
+    return fitBoundsToWorkArea(bounds, screen.getDisplayMatching(bounds).workArea);
   }
   return {
-    x: width - 360 - 8,
-    y: height - 500,
+    x: primaryWorkArea.x + primaryWorkArea.width - 360 - 8,
+    y: primaryWorkArea.y + primaryWorkArea.height - 500,
     width: 360,
     height: 500,
   };
@@ -1399,19 +1422,6 @@ function createWindow() {
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
-  // 物理裁切圆角（CSS border-radius 在透明窗口无效）
-  win.once('ready-to-show', () => {
-    const R = 16;
-    const rects = [];
-    for (let y = 0; y < height; y++) {
-      let i = 0;
-      if (y < R) i = R - Math.round(Math.sqrt(R * R - (R - y) ** 2));
-      else if (y >= height - R) i = R - Math.round(Math.sqrt(R * R - (y - (height - R)) ** 2));
-      rects.push({ x: i, y, width: width - i * 2, height: 1 });
-    }
-    win.setShape(rects);
-  });
-
   win.on('blur', () => {
     if (win && !win.isDestroyed() && !animating && !settingsOpen) {
       // 按当前页查失焦隐藏开关；main 页对应配置里的 tasks
@@ -1428,8 +1438,10 @@ function createWindow() {
     clearTimeout(moveSaveTimer);
     moveSaveTimer = setTimeout(() => {
       if (win && !win.isDestroyed() && !winFixed) {
-        const [x, y] = win.getPosition();
-        saveWindowState(x, y);
+        const bounds = win.getBounds();
+        const fitted = fitBoundsToWorkArea(bounds, screen.getDisplayMatching(bounds).workArea);
+        if (fitted.x !== bounds.x || fitted.y !== bounds.y) win.setBounds(fitted);
+        saveWindowState(fitted.x, fitted.y);
       }
     }, 500);
   });
@@ -1496,7 +1508,7 @@ function createTray() {
       click: (mi) => app.setLoginItemSettings({ openAtLogin: mi.checked }),
     },
     { type: 'separator' },
-    { label: '退出便利贴', click: () => { app.isQuitting = true; app.quit(); } },
+    { label: '退出便利贴', click: () => app.quit() },
   ]));
   tray.on('click', toggleWindow);
 }
@@ -1559,7 +1571,27 @@ app.whenReady().then(() => {
   // 有 Key 时延迟创建窗口，等待用户首次 Alt+` 唤出（Lazy Window）
 });
 
-app.on('before-quit', () => {
+function finishQuitAfterRendererSave() {
+  if (quitSaveReady) return;
+  quitSaveReady = true;
+  quitSavePending = false;
+  clearTimeout(quitSaveTimer);
+  quitSaveTimer = null;
+  app.isQuitting = true;
+  app.quit();
+}
+
+app.on('before-quit', (event) => {
+  if (!quitSaveReady && win && !win.isDestroyed()) {
+    event.preventDefault();
+    if (!quitSavePending) {
+      quitSavePending = true;
+      win.webContents.send('app-before-quit');
+      // 渲染进程异常时不能让应用永久无法退出。
+      quitSaveTimer = setTimeout(finishQuitAfterRendererSave, 3000);
+    }
+    return;
+  }
   app.isQuitting = true;
   harnessManager?.dispose();
   if (harnessWebChild && harnessWebChild.exitCode === null) {

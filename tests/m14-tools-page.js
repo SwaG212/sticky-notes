@@ -25,6 +25,7 @@ app.whenReady().then(async () => {
       const out = {};
       out.hasToolsPage = !!document.querySelector('.page-tools');
       out.hasCards = !!document.querySelector('#tools-cards');
+      out.hasCardTemplate = !!document.querySelector('#tool-card-template')?.content.querySelector('.tool-card > .tool-card-body');
       out.hasBackBtn = !!document.querySelector('#btn-tools-back');
       out.hasForwardBtn = !!document.querySelector('#btn-notepad-forward');
       out.toolsSettings = document.querySelectorAll('.page-tools #btn-settings').length;
@@ -37,7 +38,7 @@ app.whenReady().then(async () => {
     })()
   `);
   const st = JSON.parse(structure);
-  assert(st.hasToolsPage && st.hasCards && st.hasBackBtn && st.hasForwardBtn, 'T1 工具箱页 DOM 结构完整');
+  assert(st.hasToolsPage && st.hasCards && st.hasCardTemplate && st.hasBackBtn && st.hasForwardBtn, 'T1 卡片页 DOM 与功能卡模板结构完整');
   assert(st.toolsSettings === 0, 'T1b 工具箱页无设置按钮');
   assert(st.toolsBackInFooter, 'T1c 工具箱页 ← 按钮在页脚栏');
   const containerPx = parseFloat(st.pagesWidth);
@@ -92,6 +93,7 @@ app.whenReady().then(async () => {
       if (!card) return JSON.stringify({ exists: false });
       return JSON.stringify({
         exists: true,
+        usesTemplate: !!card.querySelector(':scope > .tool-card-body'),
         title: card.querySelector('.tool-card-title').textContent,
         hasInput: !!card.querySelector('.tool-card-input'),
         hasResult: !!card.querySelector('.tool-card-result'),
@@ -102,6 +104,7 @@ app.whenReady().then(async () => {
   `);
   const ci = JSON.parse(cardInfo);
   assert(ci.exists, 'TR1 翻译卡已渲染');
+  assert(ci.usesTemplate, 'TR1b 翻译卡由统一模板创建');
   assert(ci.title === '翻译', `TR2 卡片标题极简为"翻译"(实际 ${ci.title})`);
   assert(ci.hasInput && ci.hasResult && ci.hasStatus, 'TR3 卡片结构完整(输入/结果/状态)');
   assert(!ci.hasCopy, 'TR3b 无复制按钮');

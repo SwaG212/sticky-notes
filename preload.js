@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onWindowShown: (cb) => ipcRenderer.on('window-shown', cb),
   onWindowBlur: (cb) => ipcRenderer.on('window-blur', cb),
   onWindowWillHide: (cb) => ipcRenderer.on('window-will-hide', cb),
+  onAppBeforeQuit: (cb) => ipcRenderer.on('app-before-quit', cb),
   onOpenConfig: (cb) => ipcRenderer.on('open-config', cb),
   removeAllListeners: (ch) => ipcRenderer.removeAllListeners(ch),
 
@@ -18,6 +19,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setSettingsOpen: (open) => ipcRenderer.invoke('set-settings-open', open),
   getLoginSettings: () => ipcRenderer.invoke('get-login-settings'),
   setLoginSettings: (enabled) => ipcRenderer.invoke('set-login-settings', enabled),
+  rendererReadyToQuit: (saved) => ipcRenderer.send('renderer-ready-to-quit', saved),
 
   // 任务存储
   loadTasks: () => ipcRenderer.invoke('load-tasks'),
