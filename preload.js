@@ -56,6 +56,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 翻译
   translateRequest: (payload) => ipcRenderer.invoke('translate', payload),
 
+  // 视频下载
+  selectVideoDownloadDirectory: () => ipcRenderer.invoke('video-download-select-directory'),
+  startVideoDownload: (payload) => ipcRenderer.invoke('video-download-start', payload),
+  openVideoDownloadDirectory: () => ipcRenderer.invoke('video-download-open-directory'),
+  onVideoDownloadProgress: (cb) => {
+    const handler = (_event, payload) => cb(payload);
+    ipcRenderer.on('video-download:progress', handler);
+    return () => ipcRenderer.removeListener('video-download:progress', handler);
+  },
+  onVideoDownloadFocus: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on('video-download:focus', handler);
+    return () => ipcRenderer.removeListener('video-download:focus', handler);
+  },
+
   // DeepSeek Harness
   harnessSnapshot: () => ipcRenderer.invoke('harness-snapshot'),
   harnessListSessions: () => ipcRenderer.invoke('harness-list-sessions'),

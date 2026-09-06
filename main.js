@@ -4,6 +4,8 @@ const fs = require('fs');
 const { execSync, spawnSync, spawn } = require('child_process');
 const os = require('os');
 const nodeNet = require('net');
+const { Readable, Transform } = require('stream');
+const { pipeline } = require('stream/promises');
 const { pathToFileURL } = require('url');
 const { HarnessManager, dshSessionsRoot, harnessConfig } = require('./harness/manager');
 const { parseSessionFile } = require('./harness/session-store');
@@ -49,6 +51,8 @@ let harnessWebStderr = '';
 let quitSavePending = false;
 let quitSaveReady = false;
 let quitSaveTimer = null;
+let activeVideoDownload = null;
+let lastCompletedVideoPath = '';
 const userDataPath = app.getPath('userData');
 const configPath = path.join(userDataPath, 'config.enc');
 const windowStatePath = path.join(userDataPath, 'window-state.json');
@@ -83,6 +87,7 @@ function normalizeToolsEnabled(value, harness = {}) {
   const source = value && typeof value === 'object' ? value : {};
   return {
     translate: typeof source.translate === 'boolean' ? source.translate : true,
+    videoDownload: typeof source.videoDownload === 'boolean' ? source.videoDownload : true,
     harness: typeof source.harness === 'boolean' ? source.harness : harness.enabled !== false,
   };
 }
@@ -96,6 +101,8 @@ function loadConfig() {
       cachedConfig = JSON.parse(decrypted);
       if (!cachedConfig.projectNames) cachedConfig.projectNames = [];
       if (!cachedConfig.notesDirHistory) cachedConfig.notesDirHistory = [];
+      if (typeof cachedConfig.videoDownloadDir !== 'string') cachedConfig.videoDownloadDir = '';
+      if (!Array.isArray(cachedConfig.videoDownloadDirHistory)) cachedConfig.videoDownloadDirHistory = [];
       if (!cachedConfig.blurHide) cachedConfig.blurHide = { tasks: true, notepad: true, tools: true };
       if (!cachedConfig.harness) cachedConfig.harness = {};
       cachedConfig.harness = sanitizeHarnessSettings(cachedConfig.harness, cachedConfig.harness);
@@ -104,10 +111,13 @@ function loadConfig() {
       if (cachedConfig.notesDir && cachedConfig.notesDir.trim() && !cachedConfig.notesDirHistory.includes(cachedConfig.notesDir.trim())) {
         cachedConfig.notesDirHistory = [cachedConfig.notesDir.trim(), ...cachedConfig.notesDirHistory].slice(0, 5);
       }
+      if (cachedConfig.videoDownloadDir.trim() && !cachedConfig.videoDownloadDirHistory.includes(cachedConfig.videoDownloadDir.trim())) {
+        cachedConfig.videoDownloadDirHistory = [cachedConfig.videoDownloadDir.trim(), ...cachedConfig.videoDownloadDirHistory].slice(0, 5);
+      }
       return cachedConfig;
     }
   } catch (e) { /* ignore */ }
-  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', notesDirHistory: [], projectNames: [], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2', switchTools: 'Alt+3' }, pagesEnabled: { tasks: true, tools: true }, toolsEnabled: { translate: true, harness: true }, blurHide: { tasks: true, notepad: true, tools: true }, harness: {} };
+  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', notesDirHistory: [], videoDownloadDir: '', videoDownloadDirHistory: [], projectNames: [], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2', switchTools: 'Alt+3' }, pagesEnabled: { tasks: true, tools: true }, toolsEnabled: { translate: true, videoDownload: true, harness: true }, blurHide: { tasks: true, notepad: true, tools: true }, harness: {} };
   return cachedConfig;
 }
 
@@ -118,6 +128,11 @@ function saveConfig(cfg) {
     const history = cfg.notesDirHistory || [];
     const filtered = history.filter(d => d !== dir);
     cfg.notesDirHistory = [dir, ...filtered].slice(0, 5);
+  }
+  if (cfg.videoDownloadDir && cfg.videoDownloadDir.trim()) {
+    const dir = cfg.videoDownloadDir.trim();
+    const history = Array.isArray(cfg.videoDownloadDirHistory) ? cfg.videoDownloadDirHistory : [];
+    cfg.videoDownloadDirHistory = [dir, ...history.filter(d => d !== dir)].slice(0, 5);
   }
   const json = JSON.stringify(cfg);
   const encrypted = safeStorage.encryptString(json);
@@ -796,6 +811,230 @@ function showHarnessNotification(success) {
   notification.show();
 }
 
+// ========== 视频下载 ==========
+const VIDEO_DOWNLOAD_URL_MAX_LENGTH = 16 * 1024;
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov', '.mkv', '.avi', '.m4v', '.mpeg', '.mpg', '.ts']);
+const VIDEO_MIME_EXTENSIONS = {
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
+  'video/quicktime': '.mov',
+  'video/x-matroska': '.mkv',
+  'video/x-msvideo': '.avi',
+  'video/mpeg': '.mpeg',
+  'video/mp2t': '.ts',
+};
+
+function emitVideoDownloadProgress(payload) {
+  if (win && !win.isDestroyed()) win.webContents.send('video-download:progress', payload);
+}
+
+function videoDownloadErrorMessage(error) {
+  if (error?.code === 'ENOSPC') return '磁盘空间不足';
+  if (error?.message === 'TOO_MANY_DUPLICATES') return '同名文件过多，请清理下载目录后重试';
+  if (['EACCES', 'EPERM', 'EROFS'].includes(error?.code)) return '下载目录没有写入权限';
+  if (error?.code === 'EEXIST') return '目标文件已存在，请清理下载目录后重试';
+  if (error?.code === 'ENOENT') return '下载目录不存在';
+  if (error?.message === 'INVALID_VIDEO_URL') return '请输入有效的 HTTP/HTTPS 视频链接';
+  if (error?.message === 'INVALID_DOWNLOAD_DIRECTORY') return '请选择有效的文件下载位置';
+  if (error?.message === 'EMPTY_RESPONSE') return '视频源没有返回可下载内容';
+  if (error?.message === 'NOT_VIDEO_RESPONSE') return '链接返回的不是视频文件';
+  if (/^HTTP_\d+$/.test(error?.message || '')) return `视频源请求失败（HTTP ${error.message.slice(5)}）`;
+  if (error?.name === 'AbortError') return '下载已中止';
+  return '网络连接或视频源异常，请稍后重试';
+}
+
+function validateVideoUrl(value) {
+  if (typeof value !== 'string' || !value.trim() || value.length > VIDEO_DOWNLOAD_URL_MAX_LENGTH) {
+    throw new Error('INVALID_VIDEO_URL');
+  }
+  let parsed;
+  try { parsed = new URL(value.trim()); }
+  catch (error) { throw new Error('INVALID_VIDEO_URL'); }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw new Error('INVALID_VIDEO_URL');
+  }
+  return parsed.href;
+}
+
+function resolveVideoDownloadDirectory(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  const directory = raw || app.getPath('downloads');
+  if (!path.isAbsolute(directory) || directory.length > 1024) throw new Error('INVALID_DOWNLOAD_DIRECTORY');
+  let stat;
+  try { stat = fs.statSync(directory); }
+  catch (error) { throw new Error('INVALID_DOWNLOAD_DIRECTORY'); }
+  if (!stat.isDirectory()) throw new Error('INVALID_DOWNLOAD_DIRECTORY');
+  return path.resolve(directory);
+}
+
+function filenameFromContentDisposition(value) {
+  if (!value) return '';
+  const utf8 = value.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (utf8) {
+    try { return decodeURIComponent(utf8[1].trim().replace(/^"|"$/g, '')); }
+    catch (error) { /* fall through to filename= */ }
+  }
+  const quoted = value.match(/filename\s*=\s*"([^"]+)"/i);
+  if (quoted) return quoted[1];
+  const plain = value.match(/filename\s*=\s*([^;]+)/i);
+  return plain ? plain[1].trim() : '';
+}
+
+function sanitizeVideoFilename(value, contentType) {
+  let filename = path.basename(String(value || ''))
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+    .replace(/[. ]+$/g, '')
+    .trim();
+  if (!filename || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(filename)) filename = `video_${Date.now()}`;
+  const currentExt = path.extname(filename).toLowerCase();
+  const mime = String(contentType || '').split(';')[0].trim().toLowerCase();
+  const safeExt = VIDEO_EXTENSIONS.has(currentExt) ? currentExt : (VIDEO_MIME_EXTENSIONS[mime] || '.mp4');
+  if (!VIDEO_EXTENSIONS.has(currentExt)) filename = `${path.basename(filename, currentExt)}${safeExt}`;
+  const ext = path.extname(filename);
+  let base = path.basename(filename, ext).slice(0, 140).replace(/[. ]+$/g, '');
+  if (!base || base.startsWith('.')) base = `video_${Date.now()}`;
+  return `${base}${ext}`;
+}
+
+function buildVideoFilename(response, requestedUrl) {
+  const dispositionName = filenameFromContentDisposition(response.headers.get('content-disposition'));
+  let urlName = '';
+  try { urlName = decodeURIComponent(new URL(response.url || requestedUrl).pathname.split('/').pop() || ''); }
+  catch (error) { /* use generated fallback */ }
+  return sanitizeVideoFilename(dispositionName || urlName || `video_${Date.now()}`, response.headers.get('content-type'));
+}
+
+function uniqueVideoTarget(directory, filename) {
+  const ext = path.extname(filename);
+  const base = path.basename(filename, ext);
+  for (let index = 0; index < 10000; index += 1) {
+    const suffix = index === 0 ? '' : ` (${index})`;
+    const target = path.join(directory, `${base}${suffix}${ext}`);
+    if (!fs.existsSync(target) && !fs.existsSync(`${target}.part`)) return target;
+  }
+  throw new Error('TOO_MANY_DUPLICATES');
+}
+
+function rememberVideoDownloadDirectory(directory, usesDefaultDirectory) {
+  const cfg = loadConfig();
+  cfg.videoDownloadDir = usesDefaultDirectory ? '' : directory;
+  if (!usesDefaultDirectory) {
+    const history = Array.isArray(cfg.videoDownloadDirHistory) ? cfg.videoDownloadDirHistory : [];
+    const dirKey = String(directory).toLowerCase();
+    cfg.videoDownloadDirHistory = [directory, ...history.filter(item => typeof item === 'string' && item.toLowerCase() !== dirKey)].slice(0, 5);
+  }
+  saveConfig(cfg);
+  return cfg.videoDownloadDirHistory || [];
+}
+
+function showVideoDownloadNotification(success, detail, filePath) {
+  if (!Notification.isSupported()) return;
+  const notification = new Notification({
+    title: success ? '视频下载完成' : '视频下载失败',
+    body: success ? `已保存：${detail}` : detail,
+    icon: APP_ICON,
+  });
+  notification.on('click', () => {
+    if (success && filePath && fs.existsSync(filePath)) {
+      shell.showItemInFolder(filePath);
+      return;
+    }
+    showWindow();
+    setTimeout(() => {
+      if (win && !win.isDestroyed()) win.webContents.send('video-download:focus');
+    }, 150);
+  });
+  notification.show();
+}
+
+async function runVideoDownload(urlValue, directoryValue) {
+  const url = validateVideoUrl(urlValue);
+  const usesDefaultDirectory = !String(directoryValue || '').trim();
+  const directory = resolveVideoDownloadDirectory(directoryValue);
+  const controller = new AbortController();
+  const job = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    status: 'downloading', controller, directory, partPath: '', filePath: '', notified: false,
+  };
+  activeVideoDownload = job;
+  lastCompletedVideoPath = '';
+
+  try {
+    rememberVideoDownloadDirectory(directory, usesDefaultDirectory);
+    emitVideoDownloadProgress({
+      status: 'downloading', receivedBytes: 0, totalBytes: 0, percent: 0,
+      directory, usesDefaultDirectory, fileName: '', filePath: '', error: '',
+    });
+    const response = await net.fetch(url, { redirect: 'follow', signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP_${response.status}`);
+    if (!response.body) throw new Error('EMPTY_RESPONSE');
+    validateVideoUrl(response.url || url);
+    const responseType = String(response.headers.get('content-type') || '').toLowerCase();
+    if (/^(text|audio|image)\//.test(responseType) || /(?:json|xml|html|mpegurl)/.test(responseType)) {
+      throw new Error('NOT_VIDEO_RESPONSE');
+    }
+    const urlPathname = (() => {
+      try { return new URL(response.url || url).pathname.toLowerCase(); }
+      catch (error) { return ''; }
+    })();
+    if (/\.(m3u8|m3u)$/.test(urlPathname)) throw new Error('NOT_VIDEO_RESPONSE');
+    const fileName = buildVideoFilename(response, url);
+    const targetPath = uniqueVideoTarget(directory, fileName);
+    const partPath = `${targetPath}.part`;
+    job.filePath = targetPath;
+    job.partPath = partPath;
+    const totalHeader = Number(response.headers.get('content-length'));
+    const totalBytes = Number.isSafeInteger(totalHeader) && totalHeader > 0 ? totalHeader : 0;
+    let receivedBytes = 0;
+    let lastEmitAt = 0;
+    emitVideoDownloadProgress({ status: 'downloading', receivedBytes, totalBytes, percent: 0, fileName, directory, usesDefaultDirectory });
+
+    const progressStream = new Transform({
+      transform(chunk, encoding, callback) {
+        receivedBytes += chunk.length;
+        const now = Date.now();
+        if (now - lastEmitAt >= 100 || (totalBytes && receivedBytes >= totalBytes)) {
+          lastEmitAt = now;
+          emitVideoDownloadProgress({
+            status: 'downloading', receivedBytes, totalBytes,
+            percent: totalBytes ? receivedBytes / totalBytes * 100 : 0,
+            fileName, directory, usesDefaultDirectory,
+          });
+        }
+        callback(null, chunk);
+      },
+    });
+    await pipeline(Readable.fromWeb(response.body), progressStream, fs.createWriteStream(partPath, { flags: 'wx' }));
+    if (receivedBytes === 0) throw new Error('EMPTY_RESPONSE');
+    fs.renameSync(partPath, targetPath);
+    job.partPath = '';
+    job.status = 'completed';
+    lastCompletedVideoPath = targetPath;
+    emitVideoDownloadProgress({
+      status: 'completed', receivedBytes, totalBytes: totalBytes || receivedBytes, percent: 100,
+      fileName, filePath: targetPath, directory, usesDefaultDirectory, error: '',
+    });
+    job.notified = true;
+    showVideoDownloadNotification(true, fileName, targetPath);
+    return { success: true, fileName, filePath: targetPath };
+  } catch (error) {
+    if (job.partPath) {
+      try { fs.unlinkSync(job.partPath); }
+      catch (unlinkError) { /* partial file may already be absent */ }
+    }
+    job.status = 'error';
+    const message = videoDownloadErrorMessage(error);
+    if (!job.quitting) {
+      emitVideoDownloadProgress({ status: 'error', error: message, directory, usesDefaultDirectory });
+      if (!job.notified) {
+        job.notified = true;
+        showVideoDownloadNotification(false, message, '');
+      }
+    }
+    return { success: false, error: message };
+  }
+}
+
 // ========== Harness 网页版（dsh web）懒启动 ==========
 // 便利贴启动时不拉起服务；用户点击卡片状态区时，才在后台启动 `dsh web`
 // （等价于 `启动 DeepSeek Harness.bat` 里的 `pnpm dsh web`）并打开浏览器。
@@ -1035,7 +1274,7 @@ function setupIPC() {
     if (!isTrustedSender(_event)) return null;
     const cfg = loadConfig();
     const { apiKey, ...safe } = cfg; // 不向渲染层返回 API Key
-    return safe;
+    return { ...safe, videoDownloadDefaultDir: app.getPath('downloads') };
   });
   ipcMain.handle('has-api-key', (_event) => {
     if (!isTrustedSender(_event)) return false;
@@ -1269,6 +1508,58 @@ function setupIPC() {
       const msg = errMap[e.message] || `翻译服务异常：${e.message}`;
       return { success: false, error: msg };
     }
+  });
+
+  ipcMain.handle('video-download-select-directory', async (_event) => {
+    if (!isTrustedSender(_event)) return { success: false, error: 'FORBIDDEN' };
+    const cfg = loadConfig();
+    const current = String(cfg.videoDownloadDir || '').trim();
+    const previousSettingsOpen = settingsOpen;
+    settingsOpen = true;
+    let result;
+    try {
+      result = await dialog.showOpenDialog(win, {
+        title: '选择视频下载位置',
+        defaultPath: current || app.getPath('downloads'),
+        properties: ['openDirectory', 'createDirectory'],
+      });
+    } catch (error) {
+      return { success: false, error: '无法打开文件夹选择窗口' };
+    } finally {
+      settingsOpen = previousSettingsOpen;
+    }
+    if (result.canceled || result.filePaths.length === 0) return { success: false, cancelled: true };
+    try {
+      const directory = resolveVideoDownloadDirectory(result.filePaths[0]);
+      const history = rememberVideoDownloadDirectory(directory, false);
+      return { success: true, directory, history };
+    } catch (error) {
+      return { success: false, error: videoDownloadErrorMessage(error) };
+    }
+  });
+
+  ipcMain.handle('video-download-start', async (_event, payload) => {
+    if (!isTrustedSender(_event)) return { success: false, error: 'FORBIDDEN' };
+    if (activeVideoDownload?.status === 'downloading') {
+      return { success: false, error: '已有视频正在下载，请等待完成' };
+    }
+    try {
+      return await runVideoDownload(payload?.url, payload?.directory);
+    } catch (error) {
+      const message = videoDownloadErrorMessage(error);
+      emitVideoDownloadProgress({ status: 'error', error: message });
+      showVideoDownloadNotification(false, message, '');
+      return { success: false, error: message };
+    }
+  });
+
+  ipcMain.handle('video-download-open-directory', (_event) => {
+    if (!isTrustedSender(_event)) return { success: false, error: 'FORBIDDEN' };
+    if (!lastCompletedVideoPath || !fs.existsSync(lastCompletedVideoPath)) {
+      return { success: false, error: '下载文件不存在或已被移动' };
+    }
+    shell.showItemInFolder(lastCompletedVideoPath);
+    return { success: true };
   });
 
   ipcMain.handle('harness-snapshot', (_event) => {
@@ -1601,6 +1892,14 @@ app.on('before-quit', (event) => {
 });
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  if (activeVideoDownload?.status === 'downloading') {
+    activeVideoDownload.quitting = true;
+    try { activeVideoDownload.controller.abort(); } catch (error) { /* already settled */ }
+    if (activeVideoDownload.partPath) {
+      try { fs.unlinkSync(activeVideoDownload.partPath); activeVideoDownload.partPath = ''; }
+      catch (error) { /* write stream may still hold the handle */ }
+    }
+  }
   clearTimeout(ocrIdleTimer);
   if (ocrWorker) { ocrWorker.terminate().catch(() => {}); ocrWorker = null; }
 });

@@ -25,7 +25,12 @@ const state = {
   calendarDayTasks: null, // 当日视图渲染的任务数组(历史日期含文件任务,负 idx 操作映射)
   calendarDayIdMap: null, // 负 idx → 任务 的精确映射(点击操作按 id 定位,防排序错位)
   calendarWeek: null, // 周条当前显示的周(基准日,可独立于选中日期切周)
-  toolsEnabled: { translate: true, harness: true },
+  toolsEnabled: { translate: true, videoDownload: true, harness: true },
+  videoDownload: {
+    url: '', directory: '', defaultDirectory: '', directoryHistory: [], usesDefaultDirectory: true,
+    status: 'idle', receivedBytes: 0, totalBytes: 0, percent: 0,
+    fileName: '', filePath: '', error: '', openError: '',
+  },
   harness: {
     status: 'idle', sessionId: null, workspace: '', permission: 'workspace-write', mode: 'standard',
     model: 'deepseek-v4-flash', reasoningEffort: 'high', configured: false, configError: '',
@@ -89,6 +94,8 @@ async function init() {
   await loadShortcutsFromConfig();
   initializeSettingsSelects();
   if (window.electronAPI?.onHarnessEvent) window.electronAPI.onHarnessEvent(handleHarnessEvent);
+  if (window.electronAPI?.onVideoDownloadProgress) window.electronAPI.onVideoDownloadProgress(handleVideoDownloadProgress);
+  if (window.electronAPI?.onVideoDownloadFocus) window.electronAPI.onVideoDownloadFocus(focusVideoDownloadCard);
   await refreshHarnessSnapshot();
   await refreshHarnessSessions(true);
   const restoredPage = window.electronAPI?.getPage ? await window.electronAPI.getPage() : 'main';
@@ -314,7 +321,7 @@ async function init() {
       if (state.currentPage === 'notepad') {
         notepadTextarea.focus();
       } else if (state.currentPage === 'tools') {
-        const input = toolsCards.querySelector('.tool-card-input');
+        const input = toolsCards.querySelector('.tool-card-input, .video-download-url, .harness-input');
         if (input) input.focus();
       } else if (state.pagesEnabled.tasks) {
         // 每次窗口显示时重新加载任务，确保跨天后已完成任务被清除
@@ -2254,8 +2261,13 @@ async function loadShortcutsFromConfig() {
     }
     state.toolsEnabled = {
       translate: cfg.toolsEnabled?.translate !== false,
+      videoDownload: cfg.toolsEnabled?.videoDownload !== false,
       harness: cfg.toolsEnabled?.harness ?? cfg.harness?.enabled ?? true,
     };
+    state.videoDownload.defaultDirectory = cfg.videoDownloadDefaultDir || '';
+    state.videoDownload.directory = cfg.videoDownloadDir || cfg.videoDownloadDefaultDir || '';
+    state.videoDownload.directoryHistory = Array.isArray(cfg.videoDownloadDirHistory) ? cfg.videoDownloadDirHistory : [];
+    state.videoDownload.usesDefaultDirectory = !cfg.videoDownloadDir;
     // 项目白名单:启动即加载,弹出胶囊选项 = 白名单 ∪ 任务历史项目
     if (cfg.projectNames) {
       state.projectNames = [...cfg.projectNames];
@@ -2295,6 +2307,7 @@ async function openSettings() {
     $('#settings-reportname').value = cfg.reportName || '';
     const harness = cfg.harness || {};
     $('#settings-translate-enabled').checked = cfg.toolsEnabled?.translate !== false;
+    $('#settings-video-download-enabled').checked = cfg.toolsEnabled?.videoDownload !== false;
     $('#settings-harness-enabled').checked = cfg.toolsEnabled?.harness ?? harness.enabled ?? true;
     $('#settings-harness-dir').value = harness.installDir || 'F:\\Tools\\deepseek-harness';
     $('#settings-harness-node').value = harness.nodePath || 'C:\\Program Files\\nodejs\\node.exe';
@@ -2408,6 +2421,7 @@ async function confirmSettings() {
   const toolsEnabled = $('#settings-tools-page').checked;
   const toolFeatures = {
     translate: $('#settings-translate-enabled').checked,
+    videoDownload: $('#settings-video-download-enabled').checked,
     harness: $('#settings-harness-enabled').checked,
   };
   const pagesEnabled = { tasks: tasksEnabled, tools: toolsEnabled };
@@ -3327,7 +3341,336 @@ function renderToolsPage() {
   toolsCards.innerHTML = '';
   // 只渲染启用的功能卡;未启用不创建 DOM、不绑定事件
   if (state.toolsEnabled.translate) renderTranslateCard();
+  if (state.toolsEnabled.videoDownload) renderVideoDownloadCard();
   if (state.toolsEnabled.harness) renderHarnessCard();
+}
+
+// ========== 工具箱:视频下载卡 ==========
+function formatDownloadBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function closeVideoDirectoryMenu(card) {
+  const menu = card?.querySelector('.video-download-menu');
+  const button = card?.querySelector('.video-download-dir-arrow');
+  if (menu) menu.classList.add('hidden');
+  if (button) {
+    button.setAttribute('aria-expanded', 'false');
+    button.innerHTML = '&#9660;';
+  }
+}
+
+function resetVideoDownloadState(download) {
+  if (download.status !== 'completed' && download.status !== 'error') return;
+  download.status = 'idle';
+  download.receivedBytes = 0;
+  download.totalBytes = 0;
+  download.percent = 0;
+  download.fileName = '';
+  download.filePath = '';
+  download.error = '';
+  download.openError = '';
+}
+
+function addVideoDirectoryOption(menu, label, className, onClick) {
+  const item = document.createElement('button');
+  item.type = 'button';
+  item.className = `combo-dropdown-item ${className || ''}`.trim();
+  item.textContent = label;
+  item.title = label;
+  item.addEventListener('click', onClick);
+  menu.appendChild(item);
+}
+
+function rebuildVideoDirectoryMenu(card) {
+  const download = state.videoDownload;
+  const menu = card?.querySelector('.video-download-menu');
+  const dirInput = card?.querySelector('.video-download-dir-input');
+  if (!menu || !dirInput) return;
+  const defaultDirKey = String(download.defaultDirectory || '').trim().toLowerCase();
+  menu.textContent = '';
+  addVideoDirectoryOption(menu, `系统下载目录${download.defaultDirectory ? ` · ${download.defaultDirectory}` : ''}`, 'default-item', () => {
+    download.directory = download.defaultDirectory;
+    download.usesDefaultDirectory = true;
+    dirInput.value = download.directory;
+    resetVideoDownloadState(download);
+    updateVideoDownloadCard();
+    closeVideoDirectoryMenu(card);
+  });
+  download.directoryHistory
+    .filter(dir => dir && String(dir).trim().toLowerCase() !== defaultDirKey)
+    .forEach(dir => addVideoDirectoryOption(menu, dir, '', () => {
+      download.directory = dir;
+      download.usesDefaultDirectory = false;
+      dirInput.value = dir;
+      resetVideoDownloadState(download);
+      updateVideoDownloadCard();
+      closeVideoDirectoryMenu(card);
+    }));
+  addVideoDirectoryOption(menu, '选择其他文件夹…', 'browse-item', async () => {
+    closeVideoDirectoryMenu(card);
+    if (!window.electronAPI?.selectVideoDownloadDirectory) return;
+    let result;
+    try { result = await window.electronAPI.selectVideoDownloadDirectory(); }
+    catch (error) { result = { success: false, error: '无法打开文件夹选择窗口' }; }
+    if (!result?.success) return;
+    download.directory = result.directory;
+    download.directoryHistory = result.history || download.directoryHistory;
+    download.usesDefaultDirectory = false;
+    dirInput.value = result.directory;
+    resetVideoDownloadState(download);
+    updateVideoDownloadCard();
+    rebuildVideoDirectoryMenu(card);
+  });
+}
+
+function renderVideoDownloadCard() {
+  const { card, body } = createToolCard('video-download', 'video-download-card');
+  const download = state.videoDownload;
+
+  const title = document.createElement('div');
+  title.className = 'tool-card-title';
+  title.appendChild(document.createTextNode('视频下载'));
+  const titleEn = document.createElement('span');
+  titleEn.className = 'tool-card-title-en';
+  titleEn.textContent = 'Video download';
+  title.appendChild(titleEn);
+
+  const urlInput = document.createElement('textarea');
+  urlInput.className = 'video-download-url';
+  urlInput.placeholder = '粘贴 HTTP/HTTPS 视频链接…';
+  urlInput.rows = 3;
+  urlInput.value = download.url;
+  urlInput.setAttribute('aria-label', '视频链接');
+
+  const dirLabel = document.createElement('label');
+  dirLabel.className = 'video-download-label';
+  dirLabel.textContent = '文件下载位置';
+
+  const combo = document.createElement('div');
+  combo.className = 'video-download-combo';
+  const dirInput = document.createElement('input');
+  dirInput.type = 'text';
+  dirInput.className = 'video-download-dir-input';
+  dirInput.value = download.directory;
+  dirInput.placeholder = '系统下载目录';
+  dirInput.setAttribute('aria-label', '文件下载位置');
+  const arrow = document.createElement('button');
+  arrow.type = 'button';
+  arrow.className = 'combo-arrow video-download-dir-arrow';
+  arrow.innerHTML = '&#9660;';
+  arrow.setAttribute('aria-label', '选择下载位置');
+  arrow.setAttribute('aria-expanded', 'false');
+  const menu = document.createElement('div');
+  menu.className = 'combo-dropdown video-download-menu hidden';
+
+  rebuildVideoDirectoryMenu(card);
+  combo.append(dirInput, arrow, menu);
+
+  const progressMeta = document.createElement('div');
+  progressMeta.className = 'video-download-progress-meta';
+  const progressLabel = document.createElement('span');
+  progressLabel.className = 'video-download-progress-label';
+  const progressValue = document.createElement('span');
+  progressValue.className = 'video-download-progress-value';
+  progressMeta.append(progressLabel, progressValue);
+  const progress = document.createElement('div');
+  progress.className = 'video-download-progress';
+  progress.setAttribute('role', 'progressbar');
+  progress.setAttribute('aria-label', '视频下载进度');
+  const progressFill = document.createElement('div');
+  progressFill.className = 'video-download-progress-fill';
+  progress.appendChild(progressFill);
+
+  const status = document.createElement('div');
+  status.className = 'video-download-status';
+  status.setAttribute('aria-live', 'polite');
+
+  const actions = document.createElement('div');
+  actions.className = 'video-download-actions';
+  const openButton = document.createElement('button');
+  openButton.type = 'button';
+  openButton.className = 'video-download-button video-download-open';
+  openButton.textContent = '打开文件目录';
+  const downloadButton = document.createElement('button');
+  downloadButton.type = 'button';
+  downloadButton.className = 'video-download-button video-download-confirm';
+  actions.append(openButton, downloadButton);
+
+  body.append(title, urlInput, dirLabel, combo, progressMeta, progress, status, actions);
+  toolsCards.appendChild(card);
+
+  const resizeUrlInput = () => {
+    urlInput.style.height = 'auto';
+    urlInput.style.height = `${Math.min(132, Math.max(72, urlInput.scrollHeight))}px`;
+  };
+  urlInput.addEventListener('input', () => {
+    download.url = urlInput.value;
+    resetVideoDownloadState(download);
+    resizeUrlInput();
+    updateVideoDownloadCard();
+  });
+  dirInput.addEventListener('input', () => {
+    download.directory = dirInput.value;
+    const trimmed = download.directory.trim();
+    const defaultTrimmed = String(download.defaultDirectory || '').trim();
+    download.usesDefaultDirectory = !trimmed || trimmed.toLowerCase() === defaultTrimmed.toLowerCase();
+    resetVideoDownloadState(download);
+    updateVideoDownloadCard();
+  });
+  arrow.addEventListener('click', () => {
+    const opening = menu.classList.contains('hidden');
+    menu.classList.toggle('hidden', !opening);
+    arrow.setAttribute('aria-expanded', String(opening));
+    arrow.innerHTML = opening ? '&#9650;' : '&#9660;';
+  });
+  combo.addEventListener('focusout', (event) => {
+    if (!combo.contains(event.relatedTarget)) closeVideoDirectoryMenu(card);
+  });
+  combo.addEventListener('keydown', (event) => {
+    const menuOpen = !menu.classList.contains('hidden');
+    if (event.key === 'Escape') {
+      if (menuOpen) {
+        event.preventDefault();
+        closeVideoDirectoryMenu(card);
+        arrow.focus();
+      }
+      return;
+    }
+    if (!menuOpen || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return;
+    event.preventDefault();
+    const items = Array.from(menu.querySelectorAll('.combo-dropdown-item'));
+    if (!items.length) return;
+    const currentIndex = items.indexOf(document.activeElement);
+    const delta = event.key === 'ArrowDown' ? 1 : -1;
+    const nextIndex = (currentIndex + delta + items.length) % items.length;
+    items[nextIndex].focus();
+  });
+  openButton.addEventListener('click', async () => {
+    const result = await window.electronAPI?.openVideoDownloadDirectory?.();
+    if (result?.success === false) {
+      download.openError = result.error || '无法打开文件目录';
+    } else {
+      download.openError = '';
+    }
+    updateVideoDownloadCard();
+  });
+  downloadButton.addEventListener('click', async () => {
+    const url = urlInput.value.trim();
+    if (!/^https?:\/\//i.test(url)) {
+      download.status = 'error';
+      download.error = '请输入有效的 HTTP/HTTPS 视频链接';
+      updateVideoDownloadCard();
+      urlInput.focus();
+      return;
+    }
+    download.url = url;
+    download.directory = dirInput.value.trim() || download.defaultDirectory;
+    download.status = 'downloading';
+    download.receivedBytes = 0;
+    download.totalBytes = 0;
+    download.percent = 0;
+    download.fileName = '';
+    download.filePath = '';
+    download.error = '';
+    download.openError = '';
+    updateVideoDownloadCard();
+    let result;
+    try {
+      result = await window.electronAPI?.startVideoDownload?.({
+        url,
+        directory: download.usesDefaultDirectory ? '' : download.directory,
+      });
+    } catch (error) {
+      result = { success: false, error: '下载服务异常，请重试' };
+    }
+    if (result?.success === false && download.status === 'downloading') {
+      download.status = 'error';
+      download.error = result.error || '下载失败，请稍后重试';
+      updateVideoDownloadCard();
+    }
+  });
+  resizeUrlInput();
+  updateVideoDownloadCard();
+}
+
+function updateVideoDownloadCard() {
+  const card = toolsCards.querySelector('[data-tool="video-download"]');
+  if (!card) return;
+  const download = state.videoDownload;
+  const downloading = download.status === 'downloading';
+  const completed = download.status === 'completed';
+  const failed = download.status === 'error';
+  const knownTotal = download.totalBytes > 0;
+  const percent = knownTotal ? Math.min(100, Math.max(0, download.percent || (download.receivedBytes / download.totalBytes * 100))) : 0;
+  const label = card.querySelector('.video-download-progress-label');
+  const value = card.querySelector('.video-download-progress-value');
+  const progress = card.querySelector('.video-download-progress');
+  const fill = card.querySelector('.video-download-progress-fill');
+  const status = card.querySelector('.video-download-status');
+  const urlInput = card.querySelector('.video-download-url');
+  const dirInput = card.querySelector('.video-download-dir-input');
+  const arrow = card.querySelector('.video-download-dir-arrow');
+  const openButton = card.querySelector('.video-download-open');
+  const downloadButton = card.querySelector('.video-download-confirm');
+
+  card.dataset.status = download.status;
+  progress.classList.toggle('is-indeterminate', downloading && !knownTotal);
+  progress.setAttribute('aria-valuemin', '0');
+  progress.setAttribute('aria-valuemax', '100');
+  if (knownTotal && !failed) progress.setAttribute('aria-valuenow', String(Math.round(percent)));
+  else progress.removeAttribute('aria-valuenow');
+  fill.style.width = failed ? '0%' : (completed ? '100%' : `${percent}%`);
+  label.textContent = completed ? '下载完成' : failed ? '下载失败' : downloading ? '正在下载' : '等待下载';
+  if (completed) value.textContent = '100%';
+  else if (downloading && knownTotal) value.textContent = `${Math.round(percent)}% · ${formatDownloadBytes(download.receivedBytes)} / ${formatDownloadBytes(download.totalBytes)}`;
+  else if (downloading) value.textContent = `${formatDownloadBytes(download.receivedBytes)} · 大小未知`;
+  else value.textContent = '0%';
+  const openError = download.openError;
+  status.textContent = openError ? openError : (failed ? download.error : completed ? `已保存：${download.fileName}` : downloading ? (download.fileName ? `正在保存：${download.fileName}` : '正在连接视频源…') : '确认后开始下载');
+  status.classList.toggle('error', failed || Boolean(openError));
+  status.classList.toggle('success', completed && !openError);
+  urlInput.disabled = downloading;
+  dirInput.disabled = downloading;
+  arrow.disabled = downloading;
+  openButton.disabled = !completed;
+  downloadButton.disabled = downloading || !download.url.trim();
+  downloadButton.textContent = downloading ? '下载中…' : completed ? '再次下载' : failed ? '重新下载' : '确认下载';
+}
+
+function handleVideoDownloadProgress(payload) {
+  if (!payload || typeof payload !== 'object') return;
+  const download = state.videoDownload;
+  for (const key of ['status', 'receivedBytes', 'totalBytes', 'percent', 'fileName', 'filePath', 'error', 'directory']) {
+    if (payload[key] !== undefined) download[key] = payload[key];
+  }
+  if (payload.directory) {
+    download.usesDefaultDirectory = payload.usesDefaultDirectory === true;
+    const dirKey = String(payload.directory).toLowerCase();
+    const changed = !download.directoryHistory.some(dir => String(dir).toLowerCase() === dirKey);
+    if (changed) {
+      download.directoryHistory = [payload.directory, ...download.directoryHistory].slice(0, 5);
+      const card = toolsCards.querySelector('[data-tool="video-download"]');
+      if (card) rebuildVideoDirectoryMenu(card);
+    }
+  }
+  updateVideoDownloadCard();
+}
+
+async function focusVideoDownloadCard() {
+  if (!state.pagesEnabled.tools || !state.toolsEnabled.videoDownload) return;
+  if (state.currentPage !== 'tools') await switchToTools();
+  const card = toolsCards.querySelector('[data-tool="video-download"]');
+  if (!card) return;
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  card.classList.remove('is-notification-focus');
+  requestAnimationFrame(() => card.classList.add('is-notification-focus'));
+  setTimeout(() => card.classList.remove('is-notification-focus'), 1400);
+  card.querySelector('.video-download-url')?.focus({ preventScroll: true });
 }
 
 // ========== 工具箱:DeepSeek Harness 卡 ==========
@@ -4829,7 +5172,7 @@ async function switchToTools() {
   pagesContainer.classList.remove('on-notepad');
   pagesContainer.classList.add('on-tools');
   setTimeout(() => {
-    const input = toolsCards.querySelector('.tool-card-input');
+    const input = toolsCards.querySelector('.tool-card-input, .video-download-url, .harness-input');
     if (input) input.focus();
   }, 400);
 }

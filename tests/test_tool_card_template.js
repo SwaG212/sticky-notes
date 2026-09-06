@@ -9,6 +9,7 @@ const renderer = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'ut
 assert.match(html, /<template id="tool-card-template">[\s\S]*?<section class="tool-card">[\s\S]*?<div class="tool-card-body"><\/div>/);
 assert.match(renderer, /toolCardTemplate\.content\.firstElementChild\.cloneNode\(true\)/);
 assert.match(renderer, /renderTranslateCard\(\)[\s\S]*?createToolCard\('translate'\)/);
+assert.match(renderer, /renderVideoDownloadCard\(\)[\s\S]*?createToolCard\('video-download', 'video-download-card'\)/);
 assert.match(renderer, /renderHarnessCard\(\)[\s\S]*?createToolCard\('harness', 'harness-card'\)/);
 assert.doesNotMatch(renderer, /card\.className\s*=\s*['"]tool-card/);
 

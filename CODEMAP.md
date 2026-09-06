@@ -82,7 +82,7 @@ package.json (`main: main.js`)
 
 1. `.page-main`：任务列表、项目页签、日历、文本/图片输入、整理、日报。
 2. `.page-notepad`：Markdown 笔记编辑器、文件列表、文件/内容搜索、设置入口。
-3. `.page-tools`：翻译卡与 DeepSeek Harness 卡；所有功能卡通过 `#tool-card-template` 与 `createToolCard()` 统一创建。
+3. `.page-tools`：翻译卡、视频下载卡与 DeepSeek Harness 卡；所有功能卡通过 `#tool-card-template` 与 `createToolCard()` 统一创建。
 
 新增功能卡时不要手写 `.tool-card` 根节点，统一使用：
 
@@ -116,6 +116,7 @@ toolsCards.appendChild(card);
 | OCR | `initOCR`、`ocrImage`、空闲回收计时器 |
 | DeepSeek | `callDeepSeek`、`organizeText`、`parseTaskJSON` |
 | 翻译 | `detectLang`、`translateText` |
+| 视频下载 | `runVideoDownload`、下载文件命名/路径校验、进度事件、Windows 通知 |
 | 任务文件 | `loadTasksFromFile`、`saveTasksToFile` |
 | 笔记文件 | `getNotesDir`、`safeJoin`、`listNotes`、`readNote`、`saveNote`、创建/重命名/删除/置顶 |
 | AI 命名 | `aiNameNote` |
@@ -141,7 +142,7 @@ renderer/renderer.js 调用 window.electronAPI.xxx
   → 返回 renderer 更新 state 并重新渲染
 ```
 
-IPC 按功能分为：窗口事件、AI 整理、配置、自启动、任务文件、窗口位置、页面状态、笔记及图片、日报、翻译、Harness。新增通道一般必须同时修改 `preload.js` 与 `main.js`；还需在主进程处理器中验证发送方和参数。
+IPC 按功能分为：窗口事件、AI 整理、配置、自启动、任务文件、窗口位置、页面状态、笔记及图片、日报、翻译、视频下载、Harness。新增通道一般必须同时修改 `preload.js` 与 `main.js`；还需在主进程处理器中验证发送方和参数。
 
 ## 7. 关键业务调用链
 
@@ -208,6 +209,20 @@ switchToNotepad / 文件列表选择
 
 `renderToolsPage` / 翻译卡事件 → `electronAPI.translateRequest` → `main.js: translateText` → DeepSeek；支持图片 OCR，并可自动反向翻译验证。
 
+### 工具箱视频下载
+
+```text
+renderVideoDownloadCard
+  → electronAPI.startVideoDownload
+  → main.js: runVideoDownload（HTTP/HTTPS、重定向、.part 临时文件）
+  → video-download:progress 实时更新卡片
+  → 完成后启用资源管理器定位 + 成功/失败 Windows 通知
+```
+
+- 下载目录使用独立配置 `videoDownloadDir` / `videoDownloadDirHistory`，空目录表示 Windows 系统下载目录；最近历史最多 5 条。
+- 同一时间只运行一个下载；应用重启后不恢复任务。文件名优先取响应头，其次取 URL，危险或未知扩展名改为视频扩展名，同名文件自动追加序号。
+- 成功通知点击后在资源管理器中选中文件；失败通知点击后唤起应用并定位视频下载卡。
+
 ### DeepSeek Harness
 
 ```text
@@ -234,6 +249,7 @@ Electron 的 `userDataPath` 在 Windows 通常对应 `%APPDATA%/sticky-notes/`�
 
 ```text
 config.enc                  加密配置、API Key、页面开关、快捷键、Harness 配置
+                            以及视频下载目录与最近 5 条目录历史
 window-state.json           非固定窗口的位置
 tasks/YYYY-MM-DD.json       每日任务数组
 notes/*.md                  默认笔记文件（可在设置中改成自定义目录）
@@ -264,6 +280,7 @@ notes/attachments/*         笔记图片
 | 笔记目录历史 | `tests/m11-notesdir-history.js`、`tests/m11-notesdir-history-testcases.md` |
 | Harness | `tests/test_harness_manager.js` |
 | 卡片页模板与卡片 DOM | `tests/test_tool_card_template.js`、`tests/m14-tools-page.js` |
+| 视频下载卡、IPC 与通知契约 | `tests/test_video_download_card.js` |
 | 内存与长期运行 | `tests/m13-memory-check.js`、`scripts/mem-check.ps1` |
 | OCR/AI/提醒/综合流程 | 对应的 `tests/m2-*` 至 `tests/m10-*` 历史回归脚本 |
 
@@ -286,6 +303,7 @@ notes/attachments/*         笔记图片
 | 修改设置、快捷键、自启动 | `renderer.js` 设置区块、`main.js` 配置/快捷键 | `preload.js`、`index.html` |
 | 修改窗口、托盘、失焦隐藏、多屏 | `main.js` 窗口/托盘区块 | `window-bounds.js`、`renderer.js:init` |
 | 修改翻译工具 | `renderer.js` 工具箱翻译区块 | `main.js:translateText`、`preload.js` |
+| 修改视频下载工具 | `renderer.js` 视频下载卡区块 | `main.js:runVideoDownload`、`preload.js`、视频下载测试 |
 | 修改 Harness 工具 | `harness/`、`renderer.js` Harness 区块 | `main.js` Harness IPC、`preload.js` |
 | 修改小智助手原型 | `assistant-prototype/README.md`、`DEVELOPMENT_GUIDE.md` | 对应 `src/` 分层；不要改生产主链路 |
 | 修改打包、版本、安装器 | `package.json` | `scripts/clean-locales.js`、图标资源 |

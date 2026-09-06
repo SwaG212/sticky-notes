@@ -47,7 +47,7 @@ app.whenReady().then(async () => {
   assert(st.footerChildren.length === 3, `T4 页脚栏三元素(← 搜索框 →)(实际 ${st.footerChildren.join(',')})`);
 
   // 切换: main → notepad → tools
-  await r(`state.pagesEnabled = { tasks: true, tools: true }; state.toolsEnabled = { translate: true, harness: true };`);
+  await r(`state.pagesEnabled = { tasks: true, tools: true }; state.toolsEnabled = { translate: true, videoDownload: true, harness: true };`);
   await r(`switchToNotepad()`);
   const onNotepad = await r(`pagesContainer.classList.contains('on-notepad') && !pagesContainer.classList.contains('on-tools')`);
   assert(onNotepad, 'T5 切到记事本页');
@@ -160,6 +160,41 @@ app.whenReady().then(async () => {
   `);
   const emptyResult = await r(`document.querySelector('[data-tool="translate"] .tool-card-result').textContent`);
   assert(emptyResult === '', 'TR6 清空输入后结果清空');
+
+  // ========== V: 视频下载卡 ==========
+  console.log('\n=== V 视频下载卡 ===');
+  const videoCard = JSON.parse(await r(`(() => {
+    const card = document.querySelector('[data-tool="video-download"]');
+    const buttons = [...card.querySelectorAll('.video-download-actions button')];
+    return JSON.stringify({
+      exists: !!card,
+      usesTemplate: !!card.querySelector(':scope > .tool-card-body'),
+      openFirst: buttons[0]?.classList.contains('video-download-open'),
+      downloadSecond: buttons[1]?.classList.contains('video-download-confirm'),
+      openDisabled: buttons[0]?.disabled,
+      progressBackground: getComputedStyle(card.querySelector('.video-download-progress')).backgroundColor,
+      progressWidth: card.querySelector('.video-download-progress-fill').style.width,
+      settingsToggle: !!document.querySelector('#settings-video-download-enabled'),
+    });
+  })()`));
+  assert(videoCard.exists && videoCard.usesTemplate, 'V1 视频下载卡通过统一模板创建');
+  assert(videoCard.openFirst && videoCard.downloadSecond, 'V2 打开目录在左、下载操作在右');
+  assert(videoCard.openDisabled && videoCard.progressWidth === '0%', 'V3 未下载时目录按钮禁用、进度保持为 0');
+  assert(videoCard.progressBackground !== 'rgba(0, 0, 0, 0)' && videoCard.settingsToggle, 'V4 灰色进度轨道与设置开关存在');
+  const videoComplete = JSON.parse(await r(`(() => {
+    handleVideoDownloadProgress({
+      status: 'completed', receivedBytes: 1024, totalBytes: 1024, percent: 100,
+      fileName: 'demo.mp4', filePath: 'C:\\\\Downloads\\\\demo.mp4',
+    });
+    const card = document.querySelector('[data-tool="video-download"]');
+    return JSON.stringify({
+      openEnabled: !card.querySelector('.video-download-open').disabled,
+      actionText: card.querySelector('.video-download-confirm').textContent,
+      value: card.querySelector('.video-download-progress-value').textContent,
+    });
+  })()`));
+  assert(videoComplete.openEnabled && videoComplete.actionText === '再次下载' && videoComplete.value === '100%', 'V5 完成后启用目录按钮并切换操作文案');
+  await r(`Object.assign(state.videoDownload, { status: 'idle', receivedBytes: 0, totalBytes: 0, percent: 0, fileName: '', filePath: '', error: '' }); updateVideoDownloadCard();`);
 
   // ========== H: DeepSeek Harness 卡 ==========
   console.log('\n=== H DeepSeek Harness 卡 ===');
