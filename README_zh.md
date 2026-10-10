@@ -3,7 +3,7 @@
 Windows 桌面便利贴应用 — 随手记录，AI 整理成任务清单，勾选执行，还有内置记事本支持多文件笔记。
 
 ![平台](https://img.shields.io/badge/platform-Windows-blue)
-![Electron](https://img.shields.io/badge/electron-33.x-47848f)
+![Electron](https://img.shields.io/badge/electron-43.x-47848f)
 ![许可证](https://img.shields.io/badge/license-MIT-green)
 
 ## 功能
@@ -41,7 +41,7 @@ Windows 桌面便利贴应用 — 随手记录，AI 整理成任务清单，勾�
 
 | 层级 | 技术 |
 |------|------|
-| 运行时 | Electron 33 |
+| 运行时 | Electron 43 |
 | 前端 | 原生 JS + HTML + CSS |
 | AI | DeepSeek API (deepseek-chat) |
 | OCR | Tesseract.js v5 (chi_sim 简体中文) |
@@ -49,6 +49,8 @@ Windows 桌面便利贴应用 — 随手记录，AI 整理成任务清单，勾�
 | 打包 | electron-builder + NSIS → `.exe` 安装包 |
 
 ## 安装
+
+从 2.0.0 升级时，先退出便利贴，再运行 [v2.1.0 发布页](https://github.com/SwaG212/sticky-notes/releases/tag/v2.1.0)中的 `便利贴 Setup 2.1.0.exe`。安装器会覆盖原安装；笔记、任务和设置保留在用户数据目录。
 
 ### 环境要求
 - [Node.js](https://nodejs.org/) >= 18

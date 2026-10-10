@@ -3,7 +3,7 @@
 A Windows desktop sticky notes app — jot down ideas, AI organizes them into a task list, check them off, plus a built-in notepad for multi-file note-taking.
 
 ![Platform](https://img.shields.io/badge/platform-Windows-blue)
-![Electron](https://img.shields.io/badge/electron-33.x-47848f)
+![Electron](https://img.shields.io/badge/electron-43.x-47848f)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## Features
@@ -41,7 +41,7 @@ A Windows desktop sticky notes app — jot down ideas, AI organizes them into a 
 
 | Layer | Technology |
 |-------|-----------|
-| Runtime | Electron 33 |
+| Runtime | Electron 43 |
 | Frontend | Vanilla JS + HTML + CSS |
 | AI | DeepSeek API (deepseek-chat) |
 | OCR | Tesseract.js v5 (chi_sim) |
@@ -49,6 +49,8 @@ A Windows desktop sticky notes app — jot down ideas, AI organizes them into a 
 | Packaging | electron-builder + NSIS → `.exe` installer |
 
 ## Installation
+
+To upgrade from 2.0.0, quit the app and run `便利贴 Setup 2.1.0.exe` from the [v2.1.0 release](https://github.com/SwaG212/sticky-notes/releases/tag/v2.1.0). The installer replaces the existing installation; notes, tasks, and settings remain in the user data directory.
 
 ### Prerequisites
 - [Node.js](https://nodejs.org/) >= 18
