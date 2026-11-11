@@ -71,20 +71,4 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('video-download:focus', handler);
   },
 
-  // DeepSeek Harness
-  harnessSnapshot: () => ipcRenderer.invoke('harness-snapshot'),
-  harnessListSessions: () => ipcRenderer.invoke('harness-list-sessions'),
-  harnessLoadSession: (sessionId) => ipcRenderer.invoke('harness-load-session', sessionId),
-  harnessSelectWorkspace: () => ipcRenderer.invoke('harness-select-workspace'),
-  harnessUpdateOptions: (payload) => ipcRenderer.invoke('harness-update-options', payload),
-  harnessStart: (payload) => ipcRenderer.invoke('harness-start', payload),
-  harnessStop: () => ipcRenderer.invoke('harness-stop'),
-  harnessNewSession: () => ipcRenderer.invoke('harness-new-session'),
-  harnessResetWorkspaceApproval: () => ipcRenderer.invoke('harness-reset-workspace-approval'),
-  harnessOpenWeb: () => ipcRenderer.invoke('harness-open-web'),
-  onHarnessEvent: (cb) => {
-    const handler = (_event, payload) => cb(payload);
-    ipcRenderer.on('harness:event', handler);
-    return () => ipcRenderer.removeListener('harness:event', handler);
-  },
 });

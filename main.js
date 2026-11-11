@@ -1,14 +1,11 @@
 const { app, BrowserWindow, Tray, globalShortcut, Menu, nativeImage, screen, ipcMain, safeStorage, clipboard, protocol, net, shell, dialog, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { execSync, spawnSync, spawn } = require('child_process');
+const { execSync } = require('child_process');
 const os = require('os');
-const nodeNet = require('net');
 const { Readable, Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 const { pathToFileURL } = require('url');
-const { HarnessManager, dshSessionsRoot, harnessConfig } = require('./harness/manager');
-const { parseSessionFile } = require('./harness/session-store');
 const { atomicWriteFileSync } = require('./atomic-write');
 const { fitBoundsToWorkArea } = require('./window-bounds');
 
@@ -45,9 +42,6 @@ let winFixed = true;
 let savedWinX = null;
 let savedWinY = null;
 let moveSaveTimer = null;
-let harnessManager = null;
-let harnessWebChild = null;
-let harnessWebStderr = '';
 let quitSavePending = false;
 let quitSaveReady = false;
 let quitSaveTimer = null;
@@ -83,12 +77,11 @@ function escapeHtml(s) {
 // ========== 配置管理（加密存储 + 内存缓存） ==========
 let cachedConfig = null;
 
-function normalizeToolsEnabled(value, harness = {}) {
+function normalizeToolsEnabled(value) {
   const source = value && typeof value === 'object' ? value : {};
   return {
     translate: typeof source.translate === 'boolean' ? source.translate : true,
     videoDownload: typeof source.videoDownload === 'boolean' ? source.videoDownload : true,
-    harness: typeof source.harness === 'boolean' ? source.harness : harness.enabled !== false,
   };
 }
 
@@ -104,9 +97,7 @@ function loadConfig() {
       if (typeof cachedConfig.videoDownloadDir !== 'string') cachedConfig.videoDownloadDir = '';
       if (!Array.isArray(cachedConfig.videoDownloadDirHistory)) cachedConfig.videoDownloadDirHistory = [];
       if (!cachedConfig.blurHide) cachedConfig.blurHide = { tasks: true, notepad: true, tools: true };
-      if (!cachedConfig.harness) cachedConfig.harness = {};
-      cachedConfig.harness = sanitizeHarnessSettings(cachedConfig.harness, cachedConfig.harness);
-      cachedConfig.toolsEnabled = normalizeToolsEnabled(cachedConfig.toolsEnabled, cachedConfig.harness);
+      cachedConfig.toolsEnabled = normalizeToolsEnabled(cachedConfig.toolsEnabled);
       // 迁移：把当前 notesDir 加入历史（修复旧版本遗留数据）
       if (cachedConfig.notesDir && cachedConfig.notesDir.trim() && !cachedConfig.notesDirHistory.includes(cachedConfig.notesDir.trim())) {
         cachedConfig.notesDirHistory = [cachedConfig.notesDir.trim(), ...cachedConfig.notesDirHistory].slice(0, 5);
@@ -117,7 +108,7 @@ function loadConfig() {
       return cachedConfig;
     }
   } catch (e) { /* ignore */ }
-  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', notesDirHistory: [], videoDownloadDir: '', videoDownloadDirHistory: [], projectNames: [], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2', switchTools: 'Alt+3' }, pagesEnabled: { tasks: true, tools: true }, toolsEnabled: { translate: true, videoDownload: true, harness: true }, blurHide: { tasks: true, notepad: true, tools: true }, harness: {} };
+  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', notesDirHistory: [], videoDownloadDir: '', videoDownloadDirHistory: [], projectNames: [], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2', switchTools: 'Alt+3' }, pagesEnabled: { tasks: true, tools: true }, toolsEnabled: { translate: true, videoDownload: true }, blurHide: { tasks: true, notepad: true, tools: true } };
   return cachedConfig;
 }
 
@@ -139,28 +130,6 @@ function saveConfig(cfg) {
   atomicWriteFileSync(configPath, encrypted);
   cachedConfig = cfg;
   registerToggleShortcut(cfg.shortcuts?.toggle || 'Alt+`');
-}
-
-function sanitizeHarnessSettings(value, current = {}) {
-  const source = value && typeof value === 'object' ? value : {};
-  const permission = source.permission === 'read-only' ? 'read-only' : 'workspace-write';
-  const mode = source.mode === 'minimal' ? 'minimal' : 'standard';
-  const model = ['deepseek-v4-pro', 'deepseek-v4-flash'].includes(source.model)
-    ? source.model
-    : ['deepseek-v4-pro', 'deepseek-v4-flash'].includes(current.model) ? current.model : 'deepseek-v4-flash';
-  const reasoningEffort = ['off', 'high', 'max'].includes(source.reasoningEffort)
-    ? source.reasoningEffort
-    : ['off', 'high', 'max'].includes(current.reasoningEffort) ? current.reasoningEffort : 'high';
-  return {
-    enabled: source.enabled !== false,
-    installDir: typeof source.installDir === 'string' ? source.installDir.trim() : String(current.installDir || ''),
-    nodePath: typeof source.nodePath === 'string' ? source.nodePath.trim() : String(current.nodePath || ''),
-    workspace: typeof source.workspace === 'string' ? source.workspace.trim() : String(current.workspace || ''),
-    mode,
-    model,
-    reasoningEffort,
-    permission,
-  };
 }
 
 function loadWindowState() {
@@ -791,26 +760,6 @@ function validateAiInput(text, images) {
   for (const d of images) validateImageDataUrl(d);
 }
 
-function emitHarnessEvent(event) {
-  if (win && !win.isDestroyed()) win.webContents.send('harness:event', event);
-  // 任务结束时的系统通知：由主进程按窗口可见性权威判断，避免依赖渲染层状态
-  if (event && (event.type === 'result' || event.type === 'error')) {
-    const visible = win && !win.isDestroyed() && win.isVisible();
-    if (!visible) showHarnessNotification(event.type === 'result');
-  }
-}
-
-function showHarnessNotification(success) {
-  if (!Notification.isSupported()) return;
-  const notification = new Notification({
-    title: '便利贴',
-    body: success ? 'Harness 任务已完成' : 'Harness 任务失败',
-    icon: APP_ICON,
-  });
-  notification.on('click', () => showWindow());
-  notification.show();
-}
-
 // ========== 视频下载 ==========
 const VIDEO_DOWNLOAD_URL_MAX_LENGTH = 16 * 1024;
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov', '.mkv', '.avi', '.m4v', '.mpeg', '.mpg', '.ts']);
@@ -1035,218 +984,6 @@ async function runVideoDownload(urlValue, directoryValue) {
   }
 }
 
-// ========== Harness 网页版（dsh web）懒启动 ==========
-// 便利贴启动时不拉起服务；用户点击卡片状态区时，才在后台启动 `dsh web`
-// （等价于 `启动 DeepSeek Harness.bat` 里的 `pnpm dsh web`）并打开浏览器。
-
-/** 定位可执行的 Harness CLI 入口：优先构建产物（纯 JS、无 tsx/esbuild 子进程），其次回退到 tsx 直跑源码。 */
-function harnessWebEntry(installDir) {
-  const built = path.join(installDir, 'apps', 'cli', 'lib', 'bin.js');
-  if (fs.existsSync(built)) return [built];
-  const source = path.join(installDir, 'apps', 'cli', 'src', 'bin.ts');
-  if (fs.existsSync(source)) return ['--import', 'tsx/esm', source];
-  return null;
-}
-
-function isPortListening(host, port, timeoutMs) {
-  return new Promise((resolve) => {
-    let settled = false;
-    const socket = nodeNet.connect({ host, port });
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolve(value);
-    };
-    socket.setTimeout(timeoutMs || 400);
-    socket.once('connect', () => finish(true));
-    socket.once('error', () => finish(false));
-    socket.once('timeout', () => finish(false));
-  });
-}
-
-function waitForPort(host, port, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve) => {
-    const tick = async () => {
-      if (await isPortListening(host, port, 400)) return resolve(true);
-      if (Date.now() >= deadline) return resolve(false);
-      setTimeout(tick, 250);
-    };
-    void tick();
-  });
-}
-
-async function openHarnessWeb() {
-  const url = 'http://127.0.0.1:3080';
-  const cfg = harnessConfig(loadConfig(), __dirname);
-  if (cfg.enabled === false) return { success: false, error: 'DeepSeek Harness 已禁用' };
-  if (!path.isAbsolute(cfg.installDir) || !fs.existsSync(cfg.installDir)) {
-    return { success: false, error: 'Harness 安装目录不存在' };
-  }
-  if (!fs.existsSync(cfg.nodePath)) return { success: false, error: 'Node.js 路径不存在' };
-  const entry = harnessWebEntry(cfg.installDir);
-  if (!entry) return { success: false, error: '未找到 Harness CLI 入口，请先在安装目录运行 pnpm run build' };
-
-  // 端口已在监听（可能是手动跑 bat 或上一次启动的）→ 直接打开浏览器。
-  if (await isPortListening('127.0.0.1', 3080, 400)) {
-    shell.openExternal(url).catch(() => {});
-    return { success: true };
-  }
-
-  // 尚未启动 → 后台拉起服务。
-  if (!(harnessWebChild && harnessWebChild.exitCode === null)) {
-    harnessWebStderr = '';
-    const child = spawn(cfg.nodePath, [...entry, 'web'], {
-      cwd: cfg.installDir,
-      env: { ...process.env },
-      stdio: ['ignore', 'ignore', 'pipe'],
-      windowsHide: true,
-    });
-    harnessWebChild = child;
-    child.stderr.on('data', (chunk) => {
-      harnessWebStderr = (harnessWebStderr + chunk.toString()).slice(-4000);
-    });
-    child.on('error', (err) => {
-      if (harnessWebChild === child) harnessWebChild = null;
-      harnessWebStderr = err.message;
-    });
-    child.on('exit', () => {
-      if (harnessWebChild === child) harnessWebChild = null;
-    });
-  }
-
-  // 等待端口就绪（冷启动可能较慢）；子进程提前退出则立即失败，不干等。
-  const child = harnessWebChild;
-  const ready = await new Promise((resolve) => {
-    let settled = false;
-    const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
-    if (!child || child.exitCode !== null) return finish(false);
-    child.once('exit', () => finish(false));
-    child.once('error', () => finish(false));
-    waitForPort('127.0.0.1', 3080, 25000).then((value) => finish(value));
-  });
-  shell.openExternal(url).catch(() => {});
-  if (!ready) {
-    const hint = harnessWebStderr.trim();
-    return { success: false, error: hint || 'Harness 网页版启动失败或超时，浏览器已打开，请稍后刷新页面' };
-  }
-  return { success: true };
-}
-
-// 确保 `dsh web` 与会话明文存储（compression: none），使便利贴与网页共用同一
-// 批 session.jsonl。写入 home 级补丁 $DSH_HOME/cordis.patch.yml（作用于所有
-// profile，无需改动启动脚本），幂等：已存在同 id 行则跳过。
-function ensureWebCompressionNone() {
-  try {
-    const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
-    const cfg = harnessConfig(loadConfig(), __dirname);
-    const migration = spawnSync(cfg.nodePath, [
-      path.join(__dirname, 'harness', 'migrate-sessions.mjs'),
-      dshSessionsRoot(),
-      path.join(userDataPath, 'harness-sessions'),
-      cfg.installDir,
-    ], { encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
-    if (migration.error || migration.status !== 0) {
-      throw migration.error || new Error(migration.stderr.trim() || 'Harness session migration failed');
-    }
-    const patchPath = path.join(home, 'cordis.patch.yml');
-    const block = [
-      '# Written by 便利贴 (sticky-notes) so its Harness and `dsh web` share one plain-JSONL session store.',
-      '- id: session-persistence-jsonl',
-      '  config:',
-      "    root: !!js dshHomePath('sessions')",
-      '    compression: none',
-      '',
-    ].join('\n');
-    fs.mkdirSync(home, { recursive: true });
-    if (!fs.existsSync(patchPath)) {
-      fs.writeFileSync(patchPath, block, 'utf8');
-      return;
-    }
-    const existing = fs.readFileSync(patchPath, 'utf8');
-    if (existing.includes('session-persistence-jsonl')) return; // 已配置
-    fs.writeFileSync(patchPath, existing.replace(/\s*$/, '\n\n') + block, 'utf8');
-  } catch (e) {
-    console.error('Harness shared-session setup failed:', e);
-  }
-}
-
-// 网页端任务完成 → 复用便利贴的推送逻辑：窗口可见时发内部事件给渲染层弹底部提示，
-// 隐藏时直接弹 Windows 系统通知。
-function notifyExternalComplete(success) {
-  if (win && !win.isDestroyed() && win.isVisible()) {
-    win.webContents.send('harness:event', { type: 'external-complete', success });
-  } else {
-    showHarnessNotification(success);
-  }
-}
-
-function collectWebSessionFiles(root) {
-  const found = [];
-  if (!fs.existsSync(root)) return found;
-  for (const project of fs.readdirSync(root, { withFileTypes: true })) {
-    if (!project.isDirectory()) continue;
-    const projectPath = path.join(root, project.name);
-    for (const session of fs.readdirSync(projectPath, { withFileTypes: true })) {
-      if (!session.isDirectory()) continue;
-      if (session.name.startsWith('sticky-')) continue; // 便利贴自己发起的会话，无需监听
-      const filePath = path.join(projectPath, session.name, 'session.jsonl');
-      if (fs.existsSync(filePath)) found.push(filePath);
-    }
-  }
-  return found;
-}
-
-let webWatcherTimer = null;
-const webWatcherSeen = new Map(); // filePath -> { mtimeMs, size, turnEnds, outcome }
-let webWatcherBaseline = false;
-
-function pollWebSessions() {
-  let files = [];
-  try { files = collectWebSessionFiles(dshSessionsRoot()); } catch { return; }
-  for (const filePath of files) {
-    let stat;
-    try { stat = fs.statSync(filePath); } catch { continue; }
-    const prev = webWatcherSeen.get(filePath);
-    if (prev && prev.mtimeMs === stat.mtimeMs && prev.size === stat.size) continue;
-    let session = null;
-    try { session = parseSessionFile(filePath); } catch { continue; }
-    if (!session) continue;
-    const entry = {
-      mtimeMs: stat.mtimeMs,
-      size: stat.size,
-      turnEnds: session.turnEnds || 0,
-      outcome: session.outcome || 'idle',
-    };
-    const isWebSession = !String(session.id).startsWith('sticky-');
-    // 网页会话「新增或内容变化」时实时通知渲染层刷新会话列表并同步当前会话进度，
-    // 这样任务即使尚未完成，便利贴里也能看到进行中的消息/待办/工具调用。
-    // 便利贴自己发起的任务已由 bridge 的事件流实时更新，此处跳过避免重复覆盖。
-    if (webWatcherBaseline && isWebSession) {
-      emitHarnessEvent({ type: 'sessions-changed', sessionId: session.id });
-    }
-    // 仅在基线建立后、网页会话出现新的轮次结束时再弹「完成/失败」提示。
-    if (webWatcherBaseline && prev && isWebSession) {
-      if ((session.turnEnds || 0) > (prev.turnEnds || 0)) {
-        const outcome = session.outcome || 'idle';
-        if (outcome === 'completed') notifyExternalComplete(true);
-        else if (!['completed', 'idle', 'aborted', 'interrupted'].includes(outcome)) notifyExternalComplete(false);
-      }
-    }
-    webWatcherSeen.set(filePath, entry);
-  }
-  for (const key of webWatcherSeen.keys()) {
-    if (!files.includes(key)) webWatcherSeen.delete(key);
-  }
-  webWatcherBaseline = true;
-}
-
-function startWebSessionWatcher() {
-  if (webWatcherTimer) return;
-  webWatcherTimer = setInterval(pollWebSessions, 2000);
-}
-
 // ========== IPC 处理 ==========
 function setupIPC() {
   ipcMain.handle('organize-request', async (_event, { text, images, project }) => {
@@ -1291,14 +1028,11 @@ function setupIPC() {
       if (cfg && cfg[key] !== undefined) merged[key] = cfg[key];
     }
     if (cfg && cfg.toolsEnabled !== undefined) {
-      merged.toolsEnabled = normalizeToolsEnabled(cfg.toolsEnabled, cur.harness);
+      merged.toolsEnabled = normalizeToolsEnabled(cfg.toolsEnabled);
     }
     // API Key:渲染层拿不到旧 Key;仅显式输入新 Key 才更新,留空/占位则保留旧 Key
     if (cfg && typeof cfg.apiKey === 'string' && cfg.apiKey.trim() && !cfg.apiKey.trim().startsWith('*')) {
       merged.apiKey = cfg.apiKey.trim();
-    }
-    if (cfg && cfg.harness !== undefined) {
-      merged.harness = sanitizeHarnessSettings(cfg.harness, cur.harness);
     }
     // 笔记目录变更需主进程确认(防受控渲染层替换受信任根目录)
     const newDir = String(merged.notesDir || '').trim();
@@ -1318,10 +1052,8 @@ function setupIPC() {
         merged.notesDir = cur.notesDir; // 弹窗失败保守拒绝
       }
     }
-    const harnessChanged = JSON.stringify(cur.harness || {}) !== JSON.stringify(merged.harness || {});
     try { saveConfig(merged); }
     catch (e) { return { success: false, error: 'WRITE_FAILED' }; }
-    if (harnessChanged) harnessManager?.reset();
     return { success: true };
   });
   ipcMain.handle('get-login-settings', (_e) => { if (!isTrustedSender(_e)) return false; return app.getLoginItemSettings().openAtLogin; });
@@ -1562,109 +1294,6 @@ function setupIPC() {
     return { success: true };
   });
 
-  ipcMain.handle('harness-snapshot', (_event) => {
-    if (!isTrustedSender(_event) || !harnessManager) return null;
-    return harnessManager.snapshot();
-  });
-  ipcMain.handle('harness-list-sessions', (_event) => {
-    if (!isTrustedSender(_event) || !harnessManager) return [];
-    return harnessManager.listSessions();
-  });
-  ipcMain.handle('harness-load-session', (_event, sessionId) => {
-    if (!isTrustedSender(_event) || !harnessManager || typeof sessionId !== 'string') return null;
-    return harnessManager.loadSession(sessionId);
-  });
-  ipcMain.handle('harness-select-workspace', async (_event) => {
-    if (!isTrustedSender(_event)) return { success: false, error: 'FORBIDDEN' };
-    const cfg = loadConfig();
-    const current = sanitizeHarnessSettings(cfg.harness);
-    const result = await dialog.showOpenDialog(win, {
-      title: '选择 Harness 工作目录',
-      defaultPath: current.workspace || __dirname,
-      properties: ['openDirectory'],
-    });
-    if (result.canceled || result.filePaths.length === 0) return { success: false, cancelled: true };
-    cfg.harness = { ...current, workspace: result.filePaths[0] };
-    saveConfig(cfg);
-    harnessManager?.reset();
-    return { success: true, workspace: cfg.harness.workspace };
-  });
-  ipcMain.handle('harness-update-options', (_event, payload) => {
-    try {
-      if (!isTrustedSender(_event) || !harnessManager) return { success: false, error: 'FORBIDDEN' };
-      if (['starting', 'running', 'stopping'].includes(harnessManager.snapshot().status)) {
-        return { success: false, error: '任务执行期间无法切换模型或推理等级' };
-      }
-      const cfg = loadConfig();
-      const current = sanitizeHarnessSettings(cfg.harness);
-      const next = sanitizeHarnessSettings({
-        ...current,
-        model: payload && payload.model,
-        reasoningEffort: payload && payload.reasoningEffort,
-      }, current);
-      const changed = current.model !== next.model || current.reasoningEffort !== next.reasoningEffort;
-      cfg.harness = next;
-      saveConfig(cfg);
-      // Restarting the bridge must not broadcast an idle snapshot: the tools card
-      // should keep showing the completed session with process output folded.
-      if (changed) harnessManager.reset({ emitSnapshot: false });
-      return { success: true, model: next.model, reasoningEffort: next.reasoningEffort };
-    } catch (error) {
-      return { success: false, error: error.message || '保存 Harness 选项失败' };
-    }
-  });
-  ipcMain.handle('harness-start', async (_event, payload) => {
-    if (!isTrustedSender(_event) || !harnessManager) return { success: false, error: 'FORBIDDEN' };
-    const text = payload && typeof payload.text === 'string' ? payload.text : '';
-    const sessionId = payload && typeof payload.sessionId === 'string' ? payload.sessionId : null;
-    const snapshot = harnessManager.snapshot();
-    if (!snapshot.configured) return { success: false, error: snapshot.configError };
-    if (!text.trim() || text.length > 8000) {
-      return { success: false, error: text.trim() ? '任务内容过长' : '请输入任务内容' };
-    }
-    const cfg = sanitizeHarnessSettings(loadConfig().harness);
-    const fullCfg = loadConfig();
-    // 写权限授权：按工作目录记忆，首次确认后不再每次弹窗；更换目录或重置后重新询问
-    if (cfg.permission === 'workspace-write' && fullCfg.harnessWorkspaceApproved !== cfg.workspace) {
-      const { response } = await dialog.showMessageBox(win, {
-        type: 'question',
-        buttons: ['运行任务', '取消'],
-        defaultId: 1,
-        cancelId: 1,
-        message: '允许 Harness 修改工作目录？',
-        detail: `${cfg.workspace || '尚未选择目录'}\n\nHarness 可以读取并修改此目录中的文件。\n确认后不再每次询问，直到更换工作目录或在设置中重置授权。`,
-      });
-      if (response !== 0) return { success: false, cancelled: true };
-      fullCfg.harnessWorkspaceApproved = cfg.workspace;
-      saveConfig(fullCfg);
-    }
-    return harnessManager.run(text, sessionId);
-  });
-  ipcMain.handle('harness-stop', async (_event) => {
-    if (!isTrustedSender(_event) || !harnessManager) return { success: false, error: 'FORBIDDEN' };
-    return harnessManager.stop();
-  });
-  ipcMain.handle('harness-new-session', (_event) => {
-    if (!isTrustedSender(_event) || !harnessManager) return { success: false, error: 'FORBIDDEN' };
-    return harnessManager.newSession();
-  });
-  ipcMain.handle('harness-reset-workspace-approval', (_event) => {
-    if (!isTrustedSender(_event)) return { success: false, error: 'FORBIDDEN' };
-    const cfg = loadConfig();
-    if (cfg.harnessWorkspaceApproved !== undefined) {
-      delete cfg.harnessWorkspaceApproved;
-      saveConfig(cfg);
-    }
-    return { success: true };
-  });
-  ipcMain.handle('harness-open-web', async (_event) => {
-    if (!isTrustedSender(_event)) return { success: false, error: 'FORBIDDEN' };
-    try {
-      return await openHarnessWeb();
-    } catch (error) {
-      return { success: false, error: error.message || '打开 Harness 网页版失败' };
-    }
-  });
 }
 
 // ========== 窗口管理 ==========
@@ -1834,16 +1463,8 @@ app.whenReady().then(() => {
     }
   });
 
-  harnessManager = new HarnessManager({
-    appRoot: __dirname,
-    userDataPath,
-    getConfig: loadConfig,
-    emit: emitHarnessEvent,
-  });
   setupIPC();
   createTray();
-  ensureWebCompressionNone();
-  startWebSessionWatcher();
 
   const cfg = loadConfig();
   winFixed = cfg.winFixed !== false;
@@ -1884,11 +1505,6 @@ app.on('before-quit', (event) => {
     return;
   }
   app.isQuitting = true;
-  harnessManager?.dispose();
-  if (harnessWebChild && harnessWebChild.exitCode === null) {
-    harnessWebChild.kill();
-    harnessWebChild = null;
-  }
 });
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();

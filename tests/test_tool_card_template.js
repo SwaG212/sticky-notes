@@ -10,7 +10,6 @@ assert.match(html, /<template id="tool-card-template">[\s\S]*?<section class="to
 assert.match(renderer, /toolCardTemplate\.content\.firstElementChild\.cloneNode\(true\)/);
 assert.match(renderer, /renderTranslateCard\(\)[\s\S]*?createToolCard\('translate'\)/);
 assert.match(renderer, /renderVideoDownloadCard\(\)[\s\S]*?createToolCard\('video-download', 'video-download-card'\)/);
-assert.match(renderer, /renderHarnessCard\(\)[\s\S]*?createToolCard\('harness', 'harness-card'\)/);
 assert.doesNotMatch(renderer, /card\.className\s*=\s*['"]tool-card/);
 
 console.log('功能卡统一模板契约通过');

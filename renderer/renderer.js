@@ -25,17 +25,11 @@ const state = {
   calendarDayTasks: null, // 当日视图渲染的任务数组(历史日期含文件任务,负 idx 操作映射)
   calendarDayIdMap: null, // 负 idx → 任务 的精确映射(点击操作按 id 定位,防排序错位)
   calendarWeek: null, // 周条当前显示的周(基准日,可独立于选中日期切周)
-  toolsEnabled: { translate: true, videoDownload: true, harness: true },
+  toolsEnabled: { translate: true, videoDownload: true },
   videoDownload: {
     url: '', directory: '', defaultDirectory: '', directoryHistory: [], usesDefaultDirectory: true,
     status: 'idle', receivedBytes: 0, totalBytes: 0, percent: 0,
     fileName: '', filePath: '', error: '', openError: '',
-  },
-  harness: {
-    status: 'idle', sessionId: null, workspace: '', permission: 'workspace-write', mode: 'standard',
-    model: 'deepseek-v4-flash', reasoningEffort: 'high', configured: false, configError: '',
-    messages: [], sessions: [], todos: [], diffs: [], sessionTitle: '', toolGroupExpanded: false, todosExpanded: false,
-    runStartedAt: null, runElapsedMs: null, runTokens: null,
   },
   hoveredImage: null,
   activeSheet: 'all',
@@ -93,11 +87,8 @@ const noteSearchStatus = $('#note-search-status');
 async function init() {
   await loadShortcutsFromConfig();
   initializeSettingsSelects();
-  if (window.electronAPI?.onHarnessEvent) window.electronAPI.onHarnessEvent(handleHarnessEvent);
   if (window.electronAPI?.onVideoDownloadProgress) window.electronAPI.onVideoDownloadProgress(handleVideoDownloadProgress);
   if (window.electronAPI?.onVideoDownloadFocus) window.electronAPI.onVideoDownloadFocus(focusVideoDownloadCard);
-  await refreshHarnessSnapshot();
-  await refreshHarnessSessions(true);
   const restoredPage = window.electronAPI?.getPage ? await window.electronAPI.getPage() : 'main';
   if (state.pagesEnabled.tasks) {
     await loadTasks();
@@ -120,19 +111,6 @@ async function init() {
   $('#btn-settings-confirm').addEventListener('click', confirmSettings);
   $('#btn-settings-back').addEventListener('click', cancelSettings);
   $('#btn-settings').addEventListener('click', openSettings);
-  $('#settings-harness-reset-approval').addEventListener('click', async () => {
-    if (window.electronAPI?.harnessResetWorkspaceApproval) {
-      await window.electronAPI.harnessResetWorkspaceApproval();
-    }
-    const hint = $('#settings-reset-approval-hint');
-    hint.textContent = '目录授权已重置';
-    hint.classList.add('show');
-    clearTimeout(hint._resetTimer);
-    hint._resetTimer = setTimeout(() => {
-      hint.classList.remove('show');
-      setTimeout(() => { hint.textContent = ''; }, 200);
-    }, 2000);
-  });
   // 文件路径下拉按钮
   $('#notesdir-dropdown-btn').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -321,7 +299,7 @@ async function init() {
       if (state.currentPage === 'notepad') {
         notepadTextarea.focus();
       } else if (state.currentPage === 'tools') {
-        const input = toolsCards.querySelector('.tool-card-input, .video-download-url, .harness-input');
+        const input = toolsCards.querySelector('.tool-card-input, .video-download-url');
         if (input) input.focus();
       } else if (state.pagesEnabled.tasks) {
         // 每次窗口显示时重新加载任务，确保跨天后已完成任务被清除
@@ -2067,11 +2045,6 @@ function addProjectTag(name) {
   persistProjectNames();
 }
 
-function escapeHtml(s) {
-  const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
-  return s.replace(/[&<>"']/g, c => map[c]);
-}
-
 // ========== Markdown ↔ HTML 转换 ==========
   // 图片数据缓存（用于复制到外部应用时替换 note-image:// 为 base64）
 const imageDataCache = new Map(); // relativePath → base64 data URL
@@ -2262,7 +2235,6 @@ async function loadShortcutsFromConfig() {
     state.toolsEnabled = {
       translate: cfg.toolsEnabled?.translate !== false,
       videoDownload: cfg.toolsEnabled?.videoDownload !== false,
-      harness: cfg.toolsEnabled?.harness ?? cfg.harness?.enabled ?? true,
     };
     state.videoDownload.defaultDirectory = cfg.videoDownloadDefaultDir || '';
     state.videoDownload.directory = cfg.videoDownloadDir || cfg.videoDownloadDefaultDir || '';
@@ -2305,14 +2277,8 @@ async function openSettings() {
     $('#settings-apikey').placeholder = hasKey ? '已配置，留空保持不变' : 'sk-xxxxxxxxxxxxxxxxxxxx';
     $('#settings-baseurl').value = cfg.baseUrl || 'https://api.deepseek.com';
     $('#settings-reportname').value = cfg.reportName || '';
-    const harness = cfg.harness || {};
     $('#settings-translate-enabled').checked = cfg.toolsEnabled?.translate !== false;
     $('#settings-video-download-enabled').checked = cfg.toolsEnabled?.videoDownload !== false;
-    $('#settings-harness-enabled').checked = cfg.toolsEnabled?.harness ?? harness.enabled ?? true;
-    $('#settings-harness-dir').value = harness.installDir || 'F:\\Tools\\deepseek-harness';
-    $('#settings-harness-node').value = harness.nodePath || 'C:\\Program Files\\nodejs\\node.exe';
-    $('#settings-harness-mode').value = harness.mode === 'minimal' ? 'minimal' : 'standard';
-    $('#settings-harness-permission').value = harness.permission === 'read-only' ? 'read-only' : 'workspace-write';
 
     // 填充文件路径下拉菜单
     const currentDir = cfg.notesDir || '';
@@ -2398,17 +2364,8 @@ async function confirmSettings() {
   const reportName = $('#settings-reportname').value.trim();
   const notesDir = $('#settings-notesdir').value.trim();
 
-  // 检测文件位置是否变更，并保留卡片中选择的 Harness 工作目录
+  // 检测文件位置是否变更
   const oldCfg = window.electronAPI ? await window.electronAPI.getConfig() : {};
-  const harness = {
-    enabled: $('#settings-harness-enabled').checked,
-    installDir: $('#settings-harness-dir').value.trim(),
-    nodePath: $('#settings-harness-node').value.trim(),
-    workspace: oldCfg?.harness?.workspace || '',
-    mode: $('#settings-harness-mode').value === 'minimal' ? 'minimal' : 'standard',
-    model: oldCfg?.harness?.model || 'deepseek-v4-flash',
-    permission: $('#settings-harness-permission').value === 'read-only' ? 'read-only' : 'workspace-write',
-  };
   const dirChanged = notesDir !== (oldCfg.notesDir || '');
 
   collectShortcutsFromInputs();
@@ -2422,7 +2379,6 @@ async function confirmSettings() {
   const toolFeatures = {
     translate: $('#settings-translate-enabled').checked,
     videoDownload: $('#settings-video-download-enabled').checked,
-    harness: $('#settings-harness-enabled').checked,
   };
   const pagesEnabled = { tasks: tasksEnabled, tools: toolsEnabled };
   const blurHide = {
@@ -2430,8 +2386,7 @@ async function confirmSettings() {
     notepad: $('#settings-blurhide-notepad').checked,
     tools: $('#settings-blurhide-tools').checked,
   };
-  harness.workspace = oldCfg?.harness?.workspace || '';
-  const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, showSheetBar, showProjectBadge, showDailyReport, showCalendar, pagesEnabled, toolsEnabled: toolFeatures, blurHide, harness };
+  const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, showSheetBar, showProjectBadge, showDailyReport, showCalendar, pagesEnabled, toolsEnabled: toolFeatures, blurHide };
 
   if (window.electronAPI) {
     let saveResult;
@@ -2472,7 +2427,6 @@ async function confirmSettings() {
     switchToMain();
   }
   state.toolsEnabled = toolFeatures;
-  await refreshHarnessSnapshot();
   if (state.currentPage === 'tools') renderToolsPage();
 
   // 文件位置变更后，刷新笔记列表
@@ -3342,7 +3296,6 @@ function renderToolsPage() {
   // 只渲染启用的功能卡;未启用不创建 DOM、不绑定事件
   if (state.toolsEnabled.translate) renderTranslateCard();
   if (state.toolsEnabled.videoDownload) renderVideoDownloadCard();
-  if (state.toolsEnabled.harness) renderHarnessCard();
 }
 
 // ========== 工具箱:视频下载卡 ==========
@@ -3673,569 +3626,6 @@ async function focusVideoDownloadCard() {
   card.querySelector('.video-download-url')?.focus({ preventScroll: true });
 }
 
-// ========== 工具箱:DeepSeek Harness 卡 ==========
-const HARNESS_STATUS_LABELS = {
-  idle: '就绪', ready: '就绪', starting: '启动中', running: '执行中',
-  stopping: '停止中', stopped: '已停止', completed: '已完成', error: '失败',
-};
-
-let harnessStatusTimer = null;
-
-function formatHarnessClock(ms) {
-  const totalSeconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  const pad = (value) => String(value).padStart(2, '0');
-  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${minutes}:${pad(seconds)}`;
-}
-
-function formatHarnessDuration(ms) {
-  const totalSeconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  if (minutes < 60) return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h ${String(minutes % 60).padStart(2, '0')}m`;
-}
-
-function formatHarnessTokens(usage) {
-  const total = Number(usage?.totalTokens);
-  if (!Number.isFinite(total) || total <= 0) return '';
-  if (total >= 1000000) return `${(total / 1000000).toFixed(1)}M`;
-  if (total >= 1000) return `${(total / 1000).toFixed(total >= 10000 ? 0 : 1)}k`;
-  return String(Math.round(total));
-}
-
-function getHarnessStatusParts() {
-  const status = state.harness.status || 'idle';
-  const label = HARNESS_STATUS_LABELS[status] || status || '就绪';
-  let meta = '';
-  if (['starting', 'running', 'stopping'].includes(status) && state.harness.runStartedAt) {
-    meta = formatHarnessClock(Date.now() - state.harness.runStartedAt);
-  } else if (status === 'completed') {
-    const parts = [];
-    if (Number.isFinite(state.harness.runElapsedMs)) {
-      parts.push(`耗时 ${formatHarnessDuration(state.harness.runElapsedMs)}`);
-    }
-    const tokens = formatHarnessTokens(state.harness.runTokens);
-    if (tokens) parts.push(`${tokens} tokens`);
-    meta = parts.join(' · ');
-  }
-  return { label, meta };
-}
-
-function updateHarnessStatusBadge() {
-  const badge = toolsCards?.querySelector('[data-tool="harness"] .harness-status');
-  if (!badge) return;
-  const { label, meta } = getHarnessStatusParts();
-  let statusLine = badge.querySelector('.harness-status-line');
-  let metaLine = badge.querySelector('.harness-status-meta');
-  if (!statusLine) {
-    statusLine = document.createElement('span');
-    statusLine.className = 'harness-status-line';
-    badge.appendChild(statusLine);
-  }
-  if (!metaLine) {
-    metaLine = document.createElement('span');
-    metaLine.className = 'harness-status-meta';
-    badge.appendChild(metaLine);
-  }
-  statusLine.textContent = label;
-  metaLine.textContent = meta;
-  metaLine.classList.toggle('hidden', !meta);
-  badge.dataset.harnessStatus = state.harness.status || 'idle';
-}
-
-function syncHarnessStatusTimer() {
-  const shouldTick = ['starting', 'running', 'stopping'].includes(state.harness.status);
-  if (shouldTick && !harnessStatusTimer) {
-    harnessStatusTimer = setInterval(updateHarnessStatusBadge, 500);
-  } else if (!shouldTick && harnessStatusTimer) {
-    clearInterval(harnessStatusTimer);
-    harnessStatusTimer = null;
-  }
-}
-
-async function refreshHarnessSnapshot() {
-  if (!window.electronAPI?.harnessSnapshot) return;
-  const snapshot = await window.electronAPI.harnessSnapshot();
-  if (!snapshot) return;
-  state.harness = {
-    ...state.harness,
-    ...snapshot,
-    toolGroupExpanded: ['starting', 'running', 'stopping'].includes(snapshot.status),
-  };
-  updateHarnessCard();
-}
-
-async function refreshHarnessSessions(restoreLatest = false) {
-  if (!window.electronAPI?.harnessListSessions || !state.harness.workspace) return;
-  const sessions = await window.electronAPI.harnessListSessions();
-  state.harness.sessions = Array.isArray(sessions) ? sessions : [];
-  const currentId = state.harness.sessionId;
-  // 渲染层重载后内存里的消息会被清空，但快照已把当前会话 id 恢复回来。此时也要
-  // 从磁盘把当前会话的消息补回来，否则会出现“任务跑着跑着对话全没了”的现象。
-  if (currentId && state.harness.messages.length === 0) {
-    await loadHarnessSession(currentId);
-    return;
-  }
-  if (restoreLatest && !currentId && state.harness.sessions[0]) {
-    await loadHarnessSession(state.harness.sessions[0].id);
-    return;
-  }
-  updateHarnessCard();
-}
-
-async function loadHarnessSession(sessionId, preserveStats = false) {
-  if (!window.electronAPI?.harnessLoadSession || !sessionId) return;
-  const session = await window.electronAPI.harnessLoadSession(sessionId);
-  if (!session) return;
-  const busy = ['starting', 'running', 'stopping'].includes(state.harness.status);
-  const loaded = Array.isArray(session.messages) ? session.messages : [];
-  state.harness.sessionId = session.id;
-  state.harness.sessionTitle = session.title || '';
-  // 用空/不完整的读取结果覆盖正在展示的实时对话，是“对话消失”的主要来源。
-  // 任务刚结束时持久化仍在批量落盘，此时读到的磁盘存档可能缺少结尾的最终答复；
-  // 只要本地实时对话以最终答复收尾、而磁盘存档里找不到这条答复，就保留实时对话，
-  // 等下一次能读到完整存档时（重载页面/切换目录/再次刷新）再换成磁盘版本。
-  const liveMessages = state.harness.messages;
-  const liveLast = liveMessages.length > 0 ? liveMessages[liveMessages.length - 1] : null;
-  const diskMissingLiveAnswer = liveLast?.role === 'assistant'
-    && !loaded.some(message => message.role === 'assistant' && message.text === liveLast.text);
-  if (liveMessages.length === 0 || (loaded.length > 0 && !diskMissingLiveAnswer)) {
-    state.harness.messages = loaded;
-  }
-  state.harness.todos = Array.isArray(session.todos) ? session.todos : [];
-  state.harness.diffs = Array.isArray(session.diffs) ? session.diffs : [];
-  state.harness.toolGroupExpanded = false;
-  if (!preserveStats) {
-    state.harness.runStartedAt = null;
-    state.harness.runElapsedMs = null;
-    state.harness.runTokens = null;
-  }
-    const sessionElapsedMs = Number.isFinite(session.elapsedMs) ? session.elapsedMs : null;
-    const sessionTokens = Number.isFinite(session.usage?.totalTokens) ? session.usage : null;
-    if (preserveStats) {
-      // 网页会话实时刷新时不要清掉已有统计；若当前没有，则从磁盘补齐 token/耗时。
-      if (!Number.isFinite(state.harness.runElapsedMs) && sessionElapsedMs !== null) {
-        state.harness.runElapsedMs = sessionElapsedMs;
-      }
-      if (!state.harness.runTokens && sessionTokens) {
-        state.harness.runTokens = sessionTokens;
-      }
-    } else {
-      state.harness.runElapsedMs = sessionElapsedMs;
-      state.harness.runTokens = sessionTokens;
-    }
-  // 任务执行期间从磁盘补历史时，不要用文件里的“已完成/空闲”结果覆盖掉运行状态。
-  if (!busy) {
-    state.harness.status = session.outcome === 'completed' ? 'completed'
-      : ['aborted', 'interrupted'].includes(session.outcome) ? 'stopped'
-        : session.outcome === 'idle' ? 'idle' : 'error';
-  }
-  updateHarnessCard();
-}
-
-function addHarnessMessage(role, text, extra = {}) {
-  const value = String(text || '').trim();
-  if (!value) return;
-  state.harness.messages.push({ role, text: value.slice(0, 12000), ...extra });
-  // 数量上限只裁最旧的非用户消息：用户发言永远保留，长任务不会把开头提问挤出窗口。
-  while (state.harness.messages.length > 100) {
-    const index = state.harness.messages.findIndex(message => message.role !== 'user');
-    if (index === -1) break;
-    state.harness.messages.splice(index, 1);
-  }
-}
-
-let harnessToastTimer = null;
-function showHarnessCompletionToast(success) {
-  if (!state.windowVisible) return; // 窗口未显示：系统通知由主进程负责
-  const host = state.currentPage === 'notepad'
-    ? document.querySelector('.page-notepad .notepad-footer')
-    : state.currentPage === 'tools'
-      ? document.querySelector('.page-tools .notepad-footer')
-      : $('#input-actions');
-  if (!host) return;
-  host.classList.add('harness-toast-host');
-  let toast = host.querySelector('.harness-toast');
-  if (!toast) {
-    toast = document.createElement('div');
-    toast.className = 'harness-toast';
-    host.appendChild(toast);
-  }
-  const accent = success ? 'harness-toast-success' : 'harness-toast-error';
-  const dot = document.createElement('span');
-  dot.className = `harness-toast-dot ${accent}`;
-  const tail = document.createElement('span');
-  tail.className = accent;
-  tail.textContent = success ? '已完成' : '失败';
-  toast.innerHTML = '';
-  toast.append(dot, document.createTextNode('Harness任务'), tail);
-  void toast.offsetWidth; // 强制重排，确保连续触发时动画重新播放
-  toast.classList.add('show');
-  clearTimeout(harnessToastTimer);
-  harnessToastTimer = setTimeout(() => toast.classList.remove('show'), 2000);
-}
-
-// 点击 Harness 卡片状态区 → 懒启动 dsh web 并打开浏览器；失败时弹提示。
-async function openHarnessWebPage() {
-  if (typeof window.electronAPI?.harnessOpenWeb !== 'function') {
-    showHarnessWebToast('功能未加载，请重启便利贴后重试');
-    return;
-  }
-  showHarnessWebToast('正在启动…', true);
-  try {
-    const result = await window.electronAPI.harnessOpenWeb();
-    if (result && result.success === false && result.error) {
-      showHarnessWebToast(result.error);
-    }
-  } catch (error) {
-    showHarnessWebToast(error?.message || '打开失败');
-  }
-}
-
-function showHarnessWebToast(message, starting = false) {
-  if (!state.windowVisible) return;
-  const host = state.currentPage === 'tools'
-    ? document.querySelector('.page-tools .notepad-footer')
-    : $('#input-actions');
-  if (!host) return;
-  host.classList.add('harness-toast-host');
-  let toast = host.querySelector('.harness-toast');
-  if (!toast) {
-    toast = document.createElement('div');
-    toast.className = 'harness-toast';
-    host.appendChild(toast);
-  }
-  const accent = starting ? 'harness-toast-success' : 'harness-toast-error';
-  const dot = document.createElement('span');
-  dot.className = `harness-toast-dot ${accent}`;
-  const tail = document.createElement('span');
-  tail.className = accent;
-  tail.textContent = String(message || (starting ? '' : '打开失败')).slice(0, 60);
-  toast.innerHTML = '';
-  toast.append(dot, document.createTextNode('Harness网页'), tail);
-  void toast.offsetWidth;
-  toast.classList.add('show');
-  clearTimeout(harnessToastTimer);
-  harnessToastTimer = setTimeout(() => toast.classList.remove('show'), starting ? 8000 : 2600);
-}
-
-function handleHarnessEvent(event) {
-  if (!event || typeof event !== 'object') return;
-  if (event.type === 'snapshot' && event.snapshot) {
-    state.harness = { ...state.harness, ...event.snapshot };
-    state.harness.toolGroupExpanded = ['starting', 'running', 'stopping'].includes(state.harness.status);
-  } else if (event.type === 'status') {
-    state.harness.status = event.status || state.harness.status;
-    state.harness.toolGroupExpanded = ['starting', 'running', 'stopping'].includes(state.harness.status);
-    if (event.sessionId) state.harness.sessionId = event.sessionId;
-    if (['starting', 'running'].includes(state.harness.status) && !state.harness.runStartedAt) {
-      state.harness.runStartedAt = Date.now();
-      state.harness.runElapsedMs = null;
-      state.harness.runTokens = null;
-    }
-  } else if (event.type === 'message' && event.role === 'assistant') {
-    const streamed = event.streamKey
-      ? [...state.harness.messages].reverse().find(message => message.role === 'assistant' && message.streamKey === event.streamKey)
-      : null;
-    if (event.delta) {
-      if (streamed) streamed.text = (streamed.text + event.text).slice(-12000);
-      else state.harness.messages.push({ role: 'assistant', text: String(event.text || ''), streamKey: event.streamKey, streaming: true });
-    } else if (streamed) {
-      streamed.text = String(event.text || streamed.text).slice(0, 12000);
-      streamed.streaming = false;
-    } else {
-      const last = state.harness.messages[state.harness.messages.length - 1];
-      if (!last || last.role !== 'assistant' || last.text !== event.text) addHarnessMessage('assistant', event.text);
-    }
-  } else if (event.type === 'tool') {
-    if (event.phase === 'start') {
-      state.harness.toolGroupExpanded = true;
-      addHarnessMessage('tool', event.name || '工具', { callId: event.callId, detail: event.detail || '', pending: true });
-    } else {
-      const row = [...state.harness.messages].reverse().find(m => m.role === 'tool' && m.callId === event.callId);
-      if (row) {
-        row.pending = false;
-        row.failed = !!event.failed;
-        row.output = event.output || '';
-      }
-      if (Array.isArray(event.diffs)) state.harness.diffs.push(...event.diffs);
-      if (state.harness.diffs.length > 50) state.harness.diffs.splice(0, state.harness.diffs.length - 50);
-    }
-  } else if (event.type === 'todos') {
-    state.harness.todos = Array.isArray(event.todos) ? event.todos : [];
-  } else if (event.type === 'subagent') {
-    addHarnessMessage('tool', `子任务${event.status === 'finished' ? '已完成' : '已启动'}`, { pending: event.status !== 'finished' });
-  } else if (event.type === 'result') {
-    const last = state.harness.messages[state.harness.messages.length - 1];
-    if (event.text && (!last || last.role !== 'assistant' || last.text !== event.text)) {
-      addHarnessMessage('assistant', event.text);
-    }
-    state.harness.status = 'completed';
-    state.harness.toolGroupExpanded = false;
-    state.harness.runElapsedMs = Number.isFinite(event.elapsedMs)
-      ? event.elapsedMs
-      : (state.harness.runStartedAt ? Date.now() - state.harness.runStartedAt : null);
-    state.harness.runTokens = event.usage || null;
-    state.harness.runStartedAt = null;
-    showHarnessCompletionToast(true);
-    setTimeout(async () => {
-      await refreshHarnessSessions();
-      if (state.harness.sessionId) await loadHarnessSession(state.harness.sessionId, true);
-    }, 300);
-  } else if (event.type === 'error') {
-    state.harness.status = 'error';
-    state.harness.toolGroupExpanded = false;
-    state.harness.error = event.message || 'Harness 执行失败';
-    if (!Number.isFinite(state.harness.runElapsedMs) && state.harness.runStartedAt) {
-      state.harness.runElapsedMs = Date.now() - state.harness.runStartedAt;
-    }
-    state.harness.runStartedAt = null;
-    addHarnessMessage('error', state.harness.error);
-    showHarnessCompletionToast(false);
-  } else if (event.type === 'external-complete') {
-    // 网页端任务完成：只弹提示，不改动便利贴当前会话状态；同时刷新会话列表让网页会话可见
-    showHarnessCompletionToast(event.success !== false);
-    refreshHarnessSessions();
-  } else if (event.type === 'sessions-changed') {
-    // 网页端会话文件新增/内容变化：实时刷新会话列表，并同步当前查看会话的进行中进度，
-    // 任务未完成也能看到消息/待办/工具调用，无需等待任务结束或手动刷新。
-    refreshHarnessSessions().then(async () => {
-      if (!event.sessionId) return;
-      const currentId = state.harness.sessionId;
-      const isCurrent = currentId === event.sessionId;
-      const isLatestWhenNone = !currentId && state.harness.sessions[0]?.id === event.sessionId;
-      if (isCurrent || isLatestWhenNone) await loadHarnessSession(event.sessionId, true);
-    });
-  }
-  updateHarnessCard();
-}
-
-function syncHarnessInputCompact(card) {
-  const input = card?.querySelector('.harness-input');
-  if (!input) return;
-  const compact = !input.value.trim() && input !== document.activeElement;
-  input.classList.toggle('harness-input-compact', compact);
-  card.classList.toggle('harness-input-compact', compact);
-  syncHarnessTodosHeight(card); // 任务框基准高度随输入框压缩态变化,同步重算待办补偿
-}
-
-function renderHarnessCard() {
-  const { card, body } = createToolCard('harness', 'harness-card');
-
-  const header = document.createElement('div');
-  header.className = 'harness-header';
-  const title = document.createElement('button');
-  title.type = 'button';
-  title.className = 'tool-card-title harness-title-trigger';
-  title.textContent = 'DeepSeek Harness';
-  title.setAttribute('aria-expanded', 'false');
-  const badge = document.createElement('span');
-  badge.className = 'harness-status';
-  badge.dataset.harnessStatus = state.harness.status;
-  badge.title = '打开网页版 (http://127.0.0.1:3080)';
-  badge.setAttribute('role', 'button');
-  badge.tabIndex = 0;
-  badge.addEventListener('click', openHarnessWebPage);
-  badge.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openHarnessWebPage(); }
-  });
-
-  const headingControl = document.createElement('div');
-  headingControl.className = 'harness-heading-control';
-
-  const workspaceButton = document.createElement('button');
-  workspaceButton.type = 'button';
-  workspaceButton.className = 'harness-workspace harness-quick-btn';
-  workspaceButton.title = '选择工作目录';
-
-  const historyButton = document.createElement('button');
-  historyButton.type = 'button';
-  historyButton.className = 'harness-history-btn harness-quick-btn';
-  historyButton.textContent = '◷ 历史会话';
-  historyButton.setAttribute('aria-expanded', 'false');
-
-  const quickActions = document.createElement('div');
-  quickActions.className = 'harness-quick-actions';
-  quickActions.append(workspaceButton, historyButton);
-  headingControl.append(title, quickActions);
-
-  const sessionList = document.createElement('div');
-  sessionList.className = 'harness-session-list';
-  sessionList.setAttribute('role', 'listbox');
-  sessionList.setAttribute('aria-label', '历史会话');
-  header.append(headingControl, badge, sessionList);
-
-  title.addEventListener('click', () => openHarnessQuickActions(card));
-  workspaceButton.addEventListener('click', async () => {
-    await selectHarnessWorkspace();
-    closeHarnessQuickActions(card);
-  });
-  historyButton.addEventListener('click', async () => {
-    const open = card.classList.toggle('harness-history-open');
-    historyButton.setAttribute('aria-expanded', String(open));
-    if (open) await refreshHarnessSessions(); // 打开列表时拉取最新会话（含网页端新建的）
-  });
-
-  const todos = document.createElement('div');
-  todos.className = 'harness-todos';
-  todos.dataset.expanded = state.harness.todosExpanded ? '1' : '0'; // 展开/收起动画仅在用户点击时播放
-
-  const history = document.createElement('div');
-  history.className = 'harness-history';
-  history.setAttribute('aria-live', 'polite');
-
-  const artifacts = document.createElement('details');
-  artifacts.className = 'harness-artifacts';
-  const artifactsSummary = document.createElement('summary');
-  const artifactsBody = document.createElement('div');
-  artifactsBody.className = 'harness-artifacts-body';
-  artifacts.append(artifactsSummary, artifactsBody);
-
-  const input = document.createElement('textarea');
-  input.className = 'harness-input';
-  input.rows = 3;
-  input.maxLength = 8000;
-  input.placeholder = '描述要完成的任务…';
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      submitHarnessTask(card);
-    }
-  });
-  input.addEventListener('focus', () => syncHarnessInputCompact(card));
-  input.addEventListener('blur', () => syncHarnessInputCompact(card));
-  input.addEventListener('input', () => syncHarnessInputCompact(card));
-
-  const actions = document.createElement('div');
-  actions.className = 'harness-actions';
-  const options = document.createElement('div');
-  options.className = 'harness-run-options';
-  const optionsTrigger = document.createElement('button');
-  optionsTrigger.type = 'button';
-  optionsTrigger.className = 'harness-options-trigger';
-  optionsTrigger.setAttribute('aria-label', '选择模型和推理等级');
-  optionsTrigger.setAttribute('aria-expanded', 'false');
-  const optionsPanel = document.createElement('div');
-  optionsPanel.className = 'harness-options-panel';
-  optionsPanel.setAttribute('role', 'dialog');
-  optionsPanel.setAttribute('aria-label', '模型和推理等级');
-  const optionRows = [
-    ['模型', [['Flash', 'deepseek-v4-flash'], ['Pro', 'deepseek-v4-pro']]],
-    ['推理', [['Off', 'off'], ['High', 'high'], ['Max', 'max']]],
-  ];
-  for (const [labelText, choices] of optionRows) {
-    const row = document.createElement('div');
-    row.className = 'harness-option-row';
-    const label = document.createElement('span');
-    label.textContent = labelText;
-    const choicesBox = document.createElement('div');
-    choicesBox.className = 'harness-option-choices';
-    for (const [text, value] of choices) {
-      const choice = document.createElement('button');
-      choice.type = 'button';
-      choice.textContent = text;
-      choice.dataset.value = value;
-      choice.dataset.kind = labelText === '模型' ? 'model' : 'effort';
-      choice.addEventListener('click', () => {
-        const model = choice.dataset.kind === 'model' ? value : state.harness.model;
-        const effort = choice.dataset.kind === 'effort' ? value : state.harness.reasoningEffort;
-        updateHarnessRunOptions(card, model, effort);
-      });
-      choicesBox.appendChild(choice);
-    }
-    row.append(label, choicesBox);
-    optionsPanel.appendChild(row);
-  }
-  optionsTrigger.addEventListener('click', () => {
-    const open = options.classList.toggle('open');
-    optionsTrigger.setAttribute('aria-expanded', String(open));
-  });
-  options.append(optionsTrigger, optionsPanel);
-  const buttons = document.createElement('div');
-  buttons.className = 'harness-action-buttons';
-  const newButton = document.createElement('button');
-  newButton.type = 'button';
-  newButton.className = 'harness-secondary-btn harness-new-btn';
-  newButton.textContent = '+';
-  newButton.title = '新会话';
-  newButton.setAttribute('aria-label', '新会话');
-  newButton.addEventListener('click', newHarnessSession);
-  const runButton = document.createElement('button');
-  runButton.type = 'button';
-  runButton.className = 'harness-send-btn harness-run-stop-btn';
-  const runIcon = document.createElement('span');
-  runIcon.className = 'harness-run-stop-icon';
-  runIcon.setAttribute('aria-hidden', 'true');
-  const runLabel = document.createElement('span');
-  runLabel.className = 'harness-run-stop-label';
-  runLabel.textContent = '运行';
-  runButton.append(runIcon, runLabel);
-  runButton.addEventListener('click', () => {
-    const busy = ['starting', 'running', 'stopping'].includes(state.harness.status);
-    if (busy) stopHarnessTask();
-    else submitHarnessTask(card);
-  });
-  buttons.append(newButton, runButton);
-  actions.append(options, buttons);
-
-  body.append(header, todos, history, artifacts, input, actions);
-  toolsCards.appendChild(card);
-  updateHarnessCard();
-}
-
-function compactHarnessPath(value) {
-  const full = String(value || '').trim();
-  if (!full) return '选择目录';
-  const parts = full.split(/[\\/]+/).filter(Boolean);
-  return parts.length > 2 ? `…\\${parts.slice(-2).join('\\')}` : full;
-}
-
-function updateHarnessWorkspaceButton(card) {
-  const workspace = card?.querySelector('.harness-workspace');
-  if (!workspace) return;
-  workspace.textContent = `📁 ${compactHarnessPath(state.harness.workspace)}`;
-  workspace.title = state.harness.workspace || '选择工作目录';
-}
-
-function openHarnessQuickActions(card) {
-  card.classList.add('harness-actions-open');
-  card.querySelector('.harness-title-trigger')?.setAttribute('aria-expanded', 'true');
-}
-
-function closeHarnessQuickActions(card) {
-  if (!card) return;
-  card.classList.remove('harness-actions-open', 'harness-history-open');
-  card.querySelector('.harness-title-trigger')?.setAttribute('aria-expanded', 'false');
-  updateHarnessWorkspaceButton(card);
-}
-
-document.addEventListener('pointerdown', (event) => {
-  const card = toolsCards?.querySelector('.harness-card.harness-actions-open');
-  if (!card || event.target.closest('.harness-title-trigger, .harness-quick-actions, .harness-session-list')) return;
-  closeHarnessQuickActions(card);
-});
-document.addEventListener('pointerdown', (event) => {
-  const options = toolsCards?.querySelector('.harness-run-options.open');
-  if (!options || event.target.closest('.harness-run-options')) return;
-  closeHarnessRunOptions(options);
-});
-document.addEventListener('keydown', (event) => {
-  if (event.key !== 'Escape') return;
-  closeHarnessQuickActions(toolsCards?.querySelector('.harness-card'));
-  closeHarnessRunOptions(toolsCards?.querySelector('.harness-run-options'));
-});
-
-function closeHarnessRunOptions(options) {
-  if (!options) return;
-  options.classList.remove('open');
-  options.querySelector('.harness-options-trigger')?.setAttribute('aria-expanded', 'false');
-}
-
 function closeSettingsSelect(wrapper) {
   if (!wrapper) return;
   wrapper.classList.remove('open');
@@ -4346,7 +3736,7 @@ function initializeSettingsSelects() {
   syncSettingsSelects();
 }
 
-// 转义 HTML 特殊字符，避免 Harness 输出中的 <>& 被当作标签注入
+// 转义 HTML 特殊字符，避免 <>& 被当作标签注入
 function escapeHtml(text) {
   return String(text)
     .replace(/&/g, '&amp;')
@@ -4480,463 +3870,6 @@ function renderMarkdown(text) {
   flushAll();
   return out.join('');
 }
-
-function buildHarnessMessageRow(message) {
-  const row = document.createElement('div');
-  row.className = `harness-message ${message.role}${message.failed ? ' failed' : ''}`;
-  const label = document.createElement('span');
-  label.className = 'harness-message-label';
-  label.textContent = message.role === 'user' ? '你' : message.role === 'assistant' ? 'Harness' : message.role === 'tool' ? '·' : '!';
-  let body;
-  if (message.role === 'tool') {
-    body = document.createElement('details');
-    body.className = 'harness-message-body harness-tool-detail';
-    const summary = document.createElement('summary');
-    summary.textContent = `${message.text} · ${message.pending ? '执行中' : message.failed ? '失败' : '完成'}`;
-    body.appendChild(summary);
-    if (message.detail) {
-      const args = document.createElement('pre');
-      args.textContent = message.detail;
-      body.appendChild(args);
-    }
-    if (message.output) {
-      const output = document.createElement('pre');
-      output.textContent = message.output;
-      body.appendChild(output);
-    }
-  } else {
-    body = document.createElement('div');
-    const markdown = message.role === 'assistant';
-    body.className = 'harness-message-body' + (markdown ? ' harness-markdown' : '');
-    if (markdown) {
-      body.innerHTML = renderMarkdown(message.text);
-    } else {
-      body.textContent = message.text;
-    }
-  }
-  if (message.role !== 'user' && message.role !== 'assistant') row.appendChild(label);
-  row.appendChild(body);
-  return row;
-}
-
-function appendHarnessMessages(container, messages, toolGroupOpen) {
-  let toolGroup = null;
-  for (const message of messages) {
-    if (message.role === 'tool' && !toolGroup) {
-      const group = document.createElement('details');
-      group.className = 'harness-tool-group';
-      group.open = toolGroupOpen;
-      const summary = document.createElement('summary');
-      const body = document.createElement('div');
-      body.className = 'harness-tool-group-body';
-      group.append(summary, body);
-      container.appendChild(group);
-      toolGroup = { summary, body, count: 0, failed: 0, pending: 0 };
-    } else if (message.role !== 'tool') {
-      toolGroup = null;
-    }
-    const row = buildHarnessMessageRow(message);
-    if (message.role === 'tool' && toolGroup) {
-      toolGroup.count++;
-      if (message.failed) toolGroup.failed++;
-      if (message.pending) toolGroup.pending++;
-      const suffix = toolGroup.pending ? '执行中' : toolGroup.failed ? `${toolGroup.failed} 项失败` : '已完成';
-      toolGroup.summary.textContent = `执行过程 · ${toolGroup.count} 项 · ${suffix}`;
-      toolGroup.body.appendChild(row);
-    } else {
-      container.appendChild(row);
-    }
-  }
-}
-
-// 判断每条消息是否属于「执行过程」内容：
-// - tool(工具调用/子任务)一定是过程；
-// - assistant 在其所在「轮」(两条相邻 user 消息之间)里，只有最后一条是最终答复，更早的都是中间输出(过程)。
-// 用户消息、报错永远不是过程。
-function computeProcessFolds(messages) {
-  const folds = messages.map(m => m.role === 'tool');
-  let turnStart = 0;
-  for (let i = 0; i <= messages.length; i++) {
-    if (i === messages.length || messages[i].role === 'user') {
-      // 在 [turnStart, i) 内找最后一条 assistant 作为最终答复；更早的 assistant 记为过程
-      for (let j = i - 1; j >= turnStart; j--) {
-        if (messages[j].role === 'assistant') {
-          for (let k = turnStart; k < j; k++) {
-            if (messages[k].role === 'assistant') folds[k] = true;
-          }
-          break;
-        }
-      }
-      turnStart = i + 1;
-    }
-  }
-  return folds;
-}
-
-function renderHarnessHistory(card) {
-  const history = card.querySelector('.harness-history');
-  history.innerHTML = '';
-  const messages = state.harness.messages;
-  const isEmpty = messages.length === 0;
-  history.classList.toggle('harness-empty-state', isEmpty);
-  if (isEmpty) {
-    const empty = document.createElement('div');
-    empty.className = 'harness-empty';
-    const icon = document.createElement('img');
-    icon.className = 'harness-empty-icon';
-    icon.src = 'deepseek-whale.png';
-    icon.alt = '';
-    icon.setAttribute('aria-hidden', 'true');
-    empty.append(icon);
-    if (state.harness.configError) {
-      const error = document.createElement('span');
-      error.className = 'harness-empty-error';
-      error.textContent = state.harness.configError;
-      empty.appendChild(error);
-    }
-    history.appendChild(empty);
-    return;
-  }
-
-  // 完成后：把「过程内容」折叠成可展开的组，用户消息、报错、每轮的最终答复保持可见
-  if (state.harness.status === 'completed') {
-    const folds = computeProcessFolds(messages);
-    let processGroup = null;
-    const flushProcessGroup = () => {
-      if (processGroup) {
-        processGroup.summary.textContent = `执行过程 · ${processGroup.count} 项`;
-        processGroup = null;
-      }
-    };
-    for (let i = 0; i < messages.length; i++) {
-      const message = messages[i];
-      const fold = folds[i];
-      if (!fold) flushProcessGroup();
-      if (fold && !processGroup) {
-        const group = document.createElement('details');
-        group.className = 'harness-process-group';
-        group.open = false;
-        const summary = document.createElement('summary');
-        const body = document.createElement('div');
-        body.className = 'harness-process-body';
-        group.append(summary, body);
-        history.appendChild(group);
-        processGroup = { summary, body, count: 0 };
-      }
-      const row = buildHarnessMessageRow(message);
-      if (fold && processGroup) {
-        processGroup.count++;
-        processGroup.body.appendChild(row);
-      } else {
-        history.appendChild(row);
-      }
-    }
-    flushProcessGroup();
-  } else {
-    appendHarnessMessages(history, messages, state.harness.toolGroupExpanded);
-  }
-  history.scrollTop = history.scrollHeight;
-}
-
-function renderHarnessSessions(card) {
-  const list = card.querySelector('.harness-session-list');
-  if (!list) return;
-  list.innerHTML = '';
-  for (const session of state.harness.sessions) {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'harness-session-item';
-    item.dataset.sessionId = session.id;
-    item.textContent = session.title;
-    item.classList.toggle('selected', session.id === state.harness.sessionId);
-    item.setAttribute('role', 'option');
-    item.setAttribute('aria-selected', String(session.id === state.harness.sessionId));
-    item.addEventListener('click', () => {
-      closeHarnessQuickActions(card);
-      loadHarnessSession(session.id);
-    });
-    list.appendChild(item);
-  }
-}
-
-// 待办区:默认折叠为一行摘要,点击展开完整列表
-// 展开时列表多占的高度从任务框(history)里扣除,保证卡片总高度不变
-const HARNESS_TODOS_LIST_MAX = 132; // 展开列表最大高度(px),超出部分内部滚动
-const HARNESS_HISTORY_MIN = 120;    // 任务框最低高度(px),低于此值不再压缩
-
-function renderHarnessTodos(card) {
-  const container = card.querySelector('.harness-todos');
-  const expanded = state.harness.todosExpanded && state.harness.todos.length > 0;
-  // 记录上一次展开态,判断本次是否为用户主动切换(仅切换时播放展开/收起动画)
-  const wasExpanded = container.dataset.expanded === '1';
-  container.dataset.expanded = expanded ? '1' : '0';
-  const toggling = wasExpanded !== expanded;
-
-  container.innerHTML = '';
-  container.classList.toggle('hidden', state.harness.todos.length === 0);
-  container.classList.toggle('harness-todos-open', expanded);
-  if (state.harness.todos.length === 0) {
-    syncHarnessTodosHeight(card);
-    return;
-  }
-
-  // 折叠摘要行:显示待办数量,点击展开/收起
-  const summary = document.createElement('button');
-  summary.type = 'button';
-  summary.className = 'harness-todos-summary';
-  summary.setAttribute('aria-expanded', String(expanded));
-  const count = document.createElement('span');
-  count.className = 'harness-todos-count';
-  count.textContent = `待办 · ${state.harness.todos.length}`;
-  const chevron = document.createElement('span');
-  chevron.className = 'harness-todos-chevron';
-  chevron.setAttribute('aria-hidden', 'true');
-  chevron.textContent = '▾';
-  summary.append(count, chevron);
-  summary.addEventListener('click', () => {
-    state.harness.todosExpanded = !state.harness.todosExpanded;
-    renderHarnessTodos(card);
-  });
-  container.appendChild(summary);
-
-  // 待办列表
-  const list = document.createElement('div');
-  list.className = 'harness-todos-list';
-  for (const todo of state.harness.todos) {
-    const row = document.createElement('div');
-    row.className = `harness-todo ${todo.status}`;
-    const mark = todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '●' : '○';
-    row.textContent = `${mark} ${todo.content}`;
-    list.appendChild(row);
-  }
-  container.appendChild(list);
-
-  // 在动画钉住列表高度前先量出内容高度(高度 0 时 scrollHeight 会失真),供高度补偿使用
-  const naturalListHeight = Math.min(list.scrollHeight, HARNESS_TODOS_LIST_MAX);
-  container.dataset.listHeight = String(naturalListHeight); // 存一份,动画期间外部同步也能拿到正确值
-
-  // 切换时播放高度动画,其余更新(运行中状态刷新)直接定格
-  if (toggling) animateHarnessTodosList(list, expanded);
-  else list.hidden = !expanded;
-
-  syncHarnessTodosHeight(card, naturalListHeight);
-}
-
-// 待办列表高度动画:展开 0→实际高度,收起 实际高度→0
-function animateHarnessTodosList(list, expanded) {
-  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
-    list.hidden = !expanded;
-    return;
-  }
-  const target = Math.min(list.scrollHeight, HARNESS_TODOS_LIST_MAX);
-  const from = expanded ? 0 : target;
-  list.style.height = from + 'px';
-  list.style.overflow = 'hidden';
-  if (!expanded) list.hidden = false;
-  list.getBoundingClientRect(); // 强制回流,确保起始高度生效
-  const anim = list.animate(
-    [{ height: `${from}px` }, { height: `${target}px` }],
-    { duration: 300, easing: 'ease' }
-  );
-  anim.onfinish = () => {
-    list.style.height = '';
-    list.style.overflow = '';
-    if (!expanded) list.hidden = true;
-  };
-}
-
-// 待办区高度变化时从任务框高度里扣除,与输入框压缩/文件变更共用同一基准,卡片总高不变
-// measuredListHeight: 可选,由调用方传入展开列表内容高度(动画钉住高度时外部测量更可靠)
-function syncHarnessTodosHeight(card, measuredListHeight) {
-  const history = card?.querySelector('.harness-history');
-  const container = card?.querySelector('.harness-todos');
-  if (!history || !container) return;
-  let listHeight = 0;
-  if (state.harness.todos.length > 0 && state.harness.todosExpanded) {
-    if (measuredListHeight !== undefined) {
-      listHeight = measuredListHeight;
-    } else {
-      // 优先用最近一次渲染时量出的内容高度(动画期间 scrollHeight 会失真)
-      const stored = parseFloat(container.dataset.listHeight);
-      listHeight = Number.isFinite(stored) ? stored : 0;
-      if (listHeight === 0) {
-        const list = container.querySelector('.harness-todos-list');
-        if (list) listHeight = Math.min(list.scrollHeight, HARNESS_TODOS_LIST_MAX);
-      }
-    }
-    // 折叠时待办区只有摘要行,展开后还多出摘要与列表之间的 gap,需一并从任务框扣除
-    const gap = parseFloat(getComputedStyle(container).gap) || 0;
-    listHeight += gap;
-  }
-  const base = parseFloat(getComputedStyle(card).getPropertyValue('--harness-history-base')) || 249;
-  const target = Math.max(HARNESS_HISTORY_MIN, base - listHeight);
-  if (listHeight === 0) {
-    // 折叠/无待办:交给 CSS 状态规则,不残留内联高度
-    history.style.height = '';
-    history.style.minHeight = '';
-    history.style.maxHeight = '';
-  } else {
-    history.style.height = target + 'px';
-    history.style.minHeight = target + 'px';
-    history.style.maxHeight = target + 'px';
-  }
-}
-
-function renderHarnessDiffs(card) {
-  const details = card.querySelector('.harness-artifacts');
-  const hasDiffs = state.harness.diffs.length > 0;
-  details.classList.toggle('hidden', !hasDiffs);
-  card.classList.toggle('has-diffs', hasDiffs);
-  details.querySelector('summary').textContent = `文件变更 · ${new Set(state.harness.diffs.map(diff => diff.path)).size}`;
-  const body = details.querySelector('.harness-artifacts-body');
-  body.innerHTML = '';
-  for (const diff of state.harness.diffs) {
-    const section = document.createElement('section');
-    section.className = 'harness-diff';
-    const title = document.createElement('div');
-    title.className = 'harness-diff-path';
-    title.textContent = diff.path;
-    const content = document.createElement('pre');
-    const oldText = diff.oldText === null ? '' : diff.oldText.split('\n').map(line => `- ${line}`).join('\n');
-    const newText = diff.newText.split('\n').map(line => `+ ${line}`).join('\n');
-    content.textContent = [oldText, newText].filter(Boolean).join('\n');
-    section.append(title, content);
-    body.appendChild(section);
-  }
-}
-
-function updateHarnessCard() {
-  const card = toolsCards?.querySelector('[data-tool="harness"]');
-  if (!card) return;
-  const busy = ['starting', 'running', 'stopping'].includes(state.harness.status);
-  updateHarnessStatusBadge();
-  syncHarnessStatusTimer();
-  const workspace = card.querySelector('.harness-workspace');
-  updateHarnessWorkspaceButton(card);
-  card.querySelector('.harness-input').disabled = busy || !state.harness.configured;
-  syncHarnessInputCompact(card);
-  const runButton = card.querySelector('.harness-run-stop-btn');
-  runButton.disabled = !state.harness.configured && !busy;
-  runButton.classList.toggle('harness-running', busy);
-  runButton.querySelector('.harness-run-stop-icon').textContent = busy ? '' : '▶';
-  runButton.querySelector('.harness-run-stop-label').textContent = busy ? '停止' : '运行';
-  card.querySelector('.harness-new-btn').disabled = busy;
-  const model = state.harness.model === 'deepseek-v4-pro' ? 'Pro' : 'Flash';
-  const effort = ['off', 'max'].includes(state.harness.reasoningEffort) ? state.harness.reasoningEffort : 'high';
-  const optionsTrigger = card.querySelector('.harness-options-trigger');
-  optionsTrigger.textContent = `${model}-${effort[0].toUpperCase()}${effort.slice(1)}`;
-  optionsTrigger.disabled = busy;
-  card.querySelectorAll('.harness-option-choices button').forEach(button => {
-    const selected = button.dataset.kind === 'model'
-      ? button.dataset.value === state.harness.model
-      : button.dataset.value === effort;
-    button.classList.toggle('selected', selected);
-    button.setAttribute('aria-pressed', String(selected));
-    button.disabled = busy;
-  });
-  card.querySelectorAll('.harness-option-choices').forEach(choices => {
-    const buttons = [...choices.querySelectorAll('button')];
-    const selectedIndex = Math.max(0, buttons.findIndex(button => button.classList.contains('selected')));
-    choices.style.setProperty('--option-count', buttons.length);
-    choices.style.setProperty('--option-index', selectedIndex);
-  });
-  if (busy) closeHarnessRunOptions(card.querySelector('.harness-run-options'));
-  card.querySelector('.harness-workspace').disabled = busy;
-  card.querySelector('.harness-history-btn').disabled = busy || state.harness.sessions.length === 0;
-  renderHarnessSessions(card);
-  renderHarnessTodos(card);
-  renderHarnessHistory(card);
-  renderHarnessDiffs(card);
-  syncHarnessTodosHeight(card); // 文件变更/输入框压缩态变化后,按最新基准重算待办补偿
-}
-
-let harnessOptionsRequestSeq = 0;
-async function updateHarnessRunOptions(card, model, reasoningEffort) {
-  const requestSeq = ++harnessOptionsRequestSeq;
-  state.harness.model = model;
-  state.harness.reasoningEffort = reasoningEffort;
-  updateHarnessCard();
-  if (!window.electronAPI?.harnessUpdateOptions) {
-    return;
-  }
-  try {
-    const result = await window.electronAPI.harnessUpdateOptions({ model, reasoningEffort });
-    if (requestSeq !== harnessOptionsRequestSeq) return;
-    if (!result?.success) throw new Error(result?.error || '保存 Harness 选项失败');
-    state.harness.model = result.model;
-    state.harness.reasoningEffort = result.reasoningEffort;
-  } catch (error) {
-    if (requestSeq === harnessOptionsRequestSeq) await refreshHarnessSnapshot();
-  } finally {
-    if (requestSeq === harnessOptionsRequestSeq) updateHarnessCard();
-  }
-}
-
-async function selectHarnessWorkspace() {
-  if (!window.electronAPI?.harnessSelectWorkspace) return;
-  const result = await window.electronAPI.harnessSelectWorkspace();
-  if (result?.success) {
-    state.harness.workspace = result.workspace;
-    await refreshHarnessSnapshot();
-    state.harness.sessionId = null;
-    state.harness.sessionTitle = '';
-    state.harness.messages = [];
-    state.harness.todos = [];
-    state.harness.diffs = [];
-    state.harness.runStartedAt = null;
-    state.harness.runElapsedMs = null;
-    state.harness.runTokens = null;
-    await refreshHarnessSessions(true);
-  }
-}
-
-async function submitHarnessTask(card) {
-  const input = card.querySelector('.harness-input');
-  const text = input.value.trim();
-  if (!text || !window.electronAPI?.harnessStart) return;
-  const result = await window.electronAPI.harnessStart({ text, sessionId: state.harness.sessionId });
-  if (result?.success) {
-    state.harness.sessionId = result.sessionId;
-    state.harness.status = 'starting';
-    state.harness.toolGroupExpanded = true;
-    state.harness.runStartedAt = Date.now();
-    state.harness.runElapsedMs = null;
-    state.harness.runTokens = null;
-    addHarnessMessage('user', text);
-    input.value = '';
-  } else if (!result?.cancelled) {
-    addHarnessMessage('error', result?.error || '无法启动 Harness');
-    state.harness.status = 'error';
-    state.harness.toolGroupExpanded = false;
-  }
-  updateHarnessCard();
-}
-
-async function stopHarnessTask() {
-  if (!window.electronAPI?.harnessStop) return;
-  state.harness.status = 'stopping';
-  updateHarnessCard();
-  await window.electronAPI.harnessStop();
-}
-
-async function newHarnessSession() {
-  if (!window.electronAPI?.harnessNewSession) return;
-  const result = await window.electronAPI.harnessNewSession();
-  if (!result?.success) return;
-  state.harness.sessionId = null;
-  state.harness.status = 'idle';
-  state.harness.toolGroupExpanded = false;
-  state.harness.error = null;
-  state.harness.messages = [];
-  state.harness.todos = [];
-  state.harness.diffs = [];
-  state.harness.sessionTitle = '';
-  state.harness.runStartedAt = null;
-  state.harness.runElapsedMs = null;
-  state.harness.runTokens = null;
-  updateHarnessCard();
-}
-
 // ========== 工具箱:翻译卡 ==========
 let translateDebounce = null;
 let translateReqSeq = 0;
@@ -5172,7 +4105,7 @@ async function switchToTools() {
   pagesContainer.classList.remove('on-notepad');
   pagesContainer.classList.add('on-tools');
   setTimeout(() => {
-    const input = toolsCards.querySelector('.tool-card-input, .video-download-url, .harness-input');
+    const input = toolsCards.querySelector('.tool-card-input, .video-download-url');
     if (input) input.focus();
   }, 400);
 }

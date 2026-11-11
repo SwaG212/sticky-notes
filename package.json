@@ -25,7 +25,6 @@
       "atomic-write.js",
       "window-bounds.js",
       "preload.js",
-      "harness/**/*",
       "renderer/**/*",
       "assets/**/*",
       "node_modules/**/*",

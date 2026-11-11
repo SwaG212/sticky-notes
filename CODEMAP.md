@@ -15,9 +15,9 @@ renderer/index.html + renderer/styles.css + renderer/renderer.js
                          │ Electron IPC
                          ▼
                        main.js
-       ┌─────────────────┼──────────────────┐
-       ▼                 ▼                  ▼
-本地文件 / safeStorage   DeepSeek / OCR     Harness 子进程
+      ┌─────────────────┐
+      ▼                 ▼
+本地文件 / safeStorage   DeepSeek / OCR
 ```
 
 生产代码的核心特征：
@@ -26,7 +26,6 @@ renderer/index.html + renderer/styles.css + renderer/renderer.js
 - `main.js` 是 Electron 主进程的单文件业务与系统能力中心。
 - `preload.js` 是唯一公开给页面的 IPC 桥；渲染层不能直接访问 Node.js。
 - `atomic-write.js`、`window-bounds.js` 是从主进程抽出的纯工具模块。
-- `harness/` 是生产应用中的 DeepSeek Harness 集成。
 - `assistant-prototype/` 是独立的“小智桌面助手”实验项目，当前不属于生产应用启动链路。
 
 ## 2. 启动链路与运行边界
@@ -36,7 +35,7 @@ renderer/index.html + renderer/styles.css + renderer/renderer.js
 ```text
 package.json (`main: main.js`)
   → main.js / app.whenReady()
-  → 注册 note-image://、IPC、托盘、快捷键、提醒与 Harness
+  → 注册 note-image://、IPC、托盘、快捷键、提醒
   → 用户唤出窗口时 createWindow()
   → renderer/index.html
   → preload.js 注入 window.electronAPI
@@ -57,14 +56,13 @@ package.json (`main: main.js`)
 
 | 文件或目录 | 职责 | 何时修改 |
 |---|---|---|
-| `main.js` | Electron 生命周期、窗口、托盘、快捷键、配置、任务/笔记文件、AI、OCR、提醒、IPC、Harness 接入 | 系统能力、文件存储、IPC、AI/OCR、安全校验 |
+| `main.js` | Electron 生命周期、窗口、托盘、快捷键、配置、任务/笔记文件、AI、OCR、提醒、IPC | 系统能力、文件存储、IPC、AI/OCR、安全校验 |
 | `preload.js` | 将允许的 IPC 方法暴露为 `window.electronAPI` | 新增或改变渲染层与主进程通信 |
 | `renderer/index.html` | 三个页面与设置遮罩的静态 DOM 骨架 | 新增控件、页面区域、设置项 |
 | `renderer/renderer.js` | 全局前端状态、事件绑定、渲染、任务/日历/笔记/工具箱交互 | 几乎所有产品交互与前端逻辑 |
 | `renderer/styles.css` | 全局变量、布局、组件状态、动画、三个页面样式 | 视觉、动效、响应状态、可访问性样式 |
 | `atomic-write.js` | 同目录临时文件 + 刷盘 + 替换的原子写入 | 可靠写盘策略 |
 | `window-bounds.js` | 将窗口位置限制在显示器工作区 | 多屏与窗口定位 |
-| `harness/` | DeepSeek Harness 的配置、子进程桥、会话解析和网页版启动支持 | 工具箱 Harness 功能 |
 | `tests/` | 生产应用的纯逻辑、DOM 仿真、回归和历史里程碑测试 | 修改对应行为时补充或运行测试 |
 | `assets/` | 应用图标、OCR 语言包 | 图标或 OCR 资源 |
 | `scripts/` | 打包清理、内存检查 | 构建或诊断流程 |
@@ -82,7 +80,7 @@ package.json (`main: main.js`)
 
 1. `.page-main`：任务列表、项目页签、日历、文本/图片输入、整理、日报。
 2. `.page-notepad`：Markdown 笔记编辑器、文件列表、文件/内容搜索、设置入口。
-3. `.page-tools`：翻译卡、视频下载卡与 DeepSeek Harness 卡；所有功能卡通过 `#tool-card-template` 与 `createToolCard()` 统一创建。
+3. `.page-tools`：翻译卡、视频下载卡；所有功能卡通过 `#tool-card-template` 与 `createToolCard()` 统一创建。
 
 新增功能卡时不要手写 `.tool-card` 根节点，统一使用：
 
@@ -102,7 +100,6 @@ toolsCards.appendChild(card);
 - 日历：当前月、选中日期、当日视图、历史任务缓存映射和周条状态。
 - 笔记：文件列表、当前文件、原始/当前内容、置顶、搜索和图片缓存。
 - 页面/设置：`currentPage`、快捷键、页面与工具启用开关。
-- Harness：运行状态、会话、消息、待办、差异、耗时和 Token 统计。
 
 `init()` 负责读取配置、恢复页面、加载数据并绑定全部 DOM/IPC 事件。新增交互入口通常需要同时检查 `index.html`、`init()` 和对应的渲染函数。
 
@@ -112,7 +109,7 @@ toolsCards.appendChild(card);
 
 | 分区 | 关键函数或入口 |
 |---|---|
-| 配置 | `loadConfig`、`saveConfig`、`sanitizeHarnessSettings` |
+| 配置 | `loadConfig`、`saveConfig` |
 | OCR | `initOCR`、`ocrImage`、空闲回收计时器 |
 | DeepSeek | `callDeepSeek`、`organizeText`、`parseTaskJSON` |
 | 翻译 | `detectLang`、`translateText` |
@@ -122,7 +119,6 @@ toolsCards.appendChild(card);
 | AI 命名 | `aiNameNote` |
 | 提醒 | `checkAlarms`、`showAlarmWindow`、`startAlarmTimer` |
 | 安全校验 | `isTrustedSender`、任务/笔记/图片输入校验 |
-| Harness | `emitHarnessEvent`、Harness 网页版函数、`HarnessManager` 调用 |
 | IPC | `setupIPC` |
 | 窗口 | `createWindow`、`showWindow`、`hideWindow`、`getWindowPosition` |
 | 托盘/快捷键 | `createTray`、`registerToggleShortcut` |
@@ -138,11 +134,11 @@ toolsCards.appendChild(card);
 renderer/renderer.js 调用 window.electronAPI.xxx
   → preload.js 映射到 ipcRenderer.invoke/send/on
   → main.js / setupIPC() 中同名 ipcMain.handle/on
-  → 文件、系统 API、DeepSeek、OCR 或 Harness
+  → 文件、系统 API、DeepSeek、OCR
   → 返回 renderer 更新 state 并重新渲染
 ```
 
-IPC 按功能分为：窗口事件、AI 整理、配置、自启动、任务文件、窗口位置、页面状态、笔记及图片、日报、翻译、视频下载、Harness。新增通道一般必须同时修改 `preload.js` 与 `main.js`；还需在主进程处理器中验证发送方和参数。
+IPC 按功能分为：窗口事件、AI 整理、配置、自启动、任务文件、窗口位置、页面状态、笔记及图片、日报、翻译、视频下载。新增通道一般必须同时修改 `preload.js` 与 `main.js`；还需在主进程处理器中验证发送方和参数。
 
 ## 7. 关键业务调用链
 
@@ -223,32 +219,12 @@ renderVideoDownloadCard
 - 同一时间只运行一个下载；应用重启后不恢复任务。文件名优先取响应头，其次取 URL，危险或未知扩展名改为视频扩展名，同名文件自动追加序号。
 - 成功通知点击后在资源管理器中选中文件；失败通知点击后唤起应用并定位视频下载卡。
 
-### DeepSeek Harness
-
-```text
-renderer Harness 卡
-  → preload Harness IPC
-  → main.js IPC
-  → harness/manager.js: HarnessManager
-  → 子进程 harness/bridge.mjs
-  → harness/runtime.mjs + 外部 DeepSeek Harness SDK
-  → session.jsonl
-  → harness/session-store.js 解析回 UI
-```
-
-- `harness/manager.js`：配置校验、子进程生命周期、JSONL 请求/事件桥、会话列表入口。
-- `harness/bridge.mjs`：把 SDK 流事件压缩成 UI 事件，执行/停止任务。
-- `harness/runtime.mjs`：启动外部 Harness/Cordis 运行时。
-- `harness/session-store.js`：解析会话、消息、Token、待办和文件差异；大日志采用头尾读取。
-- `harness/sticky-harness.cordis.yml`：运行时插件和权限配置。
-- `harness/migrate-sessions.mjs`：会话迁移工具。
-
 ## 8. 本地数据布局
 
 Electron 的 `userDataPath` 在 Windows 通常对应 `%APPDATA%/sticky-notes/`：
 
 ```text
-config.enc                  加密配置、API Key、页面开关、快捷键、Harness 配置
+config.enc                  加密配置、API Key、页面开关、快捷键
                             以及视频下载目录与最近 5 条目录历史
 window-state.json           非固定窗口的位置
 tasks/YYYY-MM-DD.json       每日任务数组
@@ -278,7 +254,6 @@ notes/attachments/*         笔记图片
 | 时间选择 | `tests/test_time_picker_dom.js` |
 | 笔记刷新/存储 | `tests/test_notepad_refresh_dom.js`、`tests/m7-note-storage.js` |
 | 笔记目录历史 | `tests/m11-notesdir-history.js`、`tests/m11-notesdir-history-testcases.md` |
-| Harness | `tests/test_harness_manager.js` |
 | 卡片页模板与卡片 DOM | `tests/test_tool_card_template.js`、`tests/m14-tools-page.js` |
 | 视频下载卡、IPC 与通知契约 | `tests/test_video_download_card.js` |
 | 内存与长期运行 | `tests/m13-memory-check.js`、`scripts/mem-check.ps1` |
@@ -304,7 +279,6 @@ notes/attachments/*         笔记图片
 | 修改窗口、托盘、失焦隐藏、多屏 | `main.js` 窗口/托盘区块 | `window-bounds.js`、`renderer.js:init` |
 | 修改翻译工具 | `renderer.js` 工具箱翻译区块 | `main.js:translateText`、`preload.js` |
 | 修改视频下载工具 | `renderer.js` 视频下载卡区块 | `main.js:runVideoDownload`、`preload.js`、视频下载测试 |
-| 修改 Harness 工具 | `harness/`、`renderer.js` Harness 区块 | `main.js` Harness IPC、`preload.js` |
 | 修改小智助手原型 | `assistant-prototype/README.md`、`DEVELOPMENT_GUIDE.md` | 对应 `src/` 分层；不要改生产主链路 |
 | 修改打包、版本、安装器 | `package.json` | `scripts/clean-locales.js`、图标资源 |
 
@@ -320,5 +294,4 @@ notes/attachments/*         笔记图片
 
 - `main.js` 和 `renderer/renderer.js` 都是大型单文件；当前功能按区块组织，不要仅为“看起来更架构化”就拆文件。
 - README 中的技术版本或目录示例可能滞后，以 `package.json` 和实际源码为准。
-- 生产 Harness 与 `assistant-prototype/` 不是同一套实现，名称相近但不要互相套用。
 - 新增 IPC、文件读写和图片处理时，安全边界与大小限制属于必要逻辑，不能为缩小改动而绕过。
