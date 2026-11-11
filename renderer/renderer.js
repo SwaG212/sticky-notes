@@ -3298,7 +3298,7 @@ async function ensureTaskFilesLoaded() {
 }
 
 // 纯函数:先跨数据源选出每个任务的最新副本,再完全按该副本的 dueDate 归属
-// 当前列表提供全部活动任务;历史文件只补充已完成记录,历史未完成孤立副本不再显示为幽灵任务
+// 当前列表提供全部活动任务;历史文件补充已完成记录与未完成的 Muse 任务,历史未完成孤立副本不再显示为幽灵任务
 // 无日期胶囊任务不收录;同名按 任务+项目 去重,保留 updatedAt 最新版本
 function buildDueDateIndex(todayTasks, cachedFiles) {
   const latest = new Map();
