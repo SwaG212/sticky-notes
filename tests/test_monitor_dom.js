@@ -242,6 +242,18 @@ async function run() {
       overlayOpen: !!overlay && overlay.classList.contains('open')
     };
 
+    // D1 回归：等展开动画（260ms）+ 内联样式清除（280ms）结束后再量几何尺寸
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    const rect = overlay ? overlay.getBoundingClientRect() : null;
+    const geometry = {
+      width: rect ? rect.width : 0,
+      height: rect ? rect.height : 0,
+      inlineLeft: overlay ? overlay.style.left : '',
+      inlineTop: overlay ? overlay.style.top : '',
+      inlineWidth: overlay ? overlay.style.width : '',
+      inlineHeight: overlay ? overlay.style.height : ''
+    };
+
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     await new Promise((resolve) => setTimeout(resolve, 320));
 
@@ -251,7 +263,7 @@ async function run() {
       pageExpanded: !!pageMonitor && pageMonitor.classList.contains('monitor-expanded')
     };
 
-    return { found: true, opened: opened, closed: closed };
+    return { found: true, opened: opened, geometry: geometry, closed: closed };
   });
 
   check('M5 点击第一张卡后展开', m5.found && m5.opened.notHidden);
@@ -261,6 +273,9 @@ async function run() {
   check('M5 Esc 后 overlay 重新 hidden', m5.found && m5.closed.hidden);
   check('M5 Esc 后 state.monitorExpandedId 为 null', m5.found && m5.closed.expandedId === null, m5.found ? String(m5.closed.expandedId) : '未找到卡片');
   check('M5 Esc 后移除 monitor-expanded 类', m5.found && !m5.closed.pageExpanded);
+  check('M5 展开后覆盖层接近满窗（宽≥330）', m5.found && m5.geometry.width >= 330, m5.found ? ('宽 ' + m5.geometry.width + '，高 ' + m5.geometry.height) : '未找到卡片');
+  check('M5 展开后覆盖层接近满窗（高≥420）', m5.found && m5.geometry.height >= 420, m5.found ? ('宽 ' + m5.geometry.width + '，高 ' + m5.geometry.height) : '未找到卡片');
+  check('M5 展开后内联 left/top/width/height 已清除', m5.found && !m5.geometry.inlineLeft && !m5.geometry.inlineTop && !m5.geometry.inlineWidth && !m5.geometry.inlineHeight, m5.found ? JSON.stringify(m5.geometry) : '未找到卡片');
 
   const m6 = await runInPage(async function () {
     state.pageOrder = ['monitor', 'main', 'notepad', 'tools'];
@@ -343,6 +358,83 @@ async function run() {
   });
 
   check('M8 空状态显示“还没有 Muse 安排的任务”', m8.text.indexOf('还没有 Muse 安排的任务') >= 0, JSON.stringify(m8.text));
+
+  // M9: D2/D3/D4 回归 —— 五个状态的徽标颜色、模型为空的显示、选中筛选的数量颜色
+  const m9 = await runInPage(async function () {
+    const now = Date.now();
+    const makeMuseTask = (id, status, model, progress, text) => ({
+      id: id,
+      task: text,
+      text: text,
+      content: text,
+      title: text,
+      source: 'muse',
+      model: model,
+      progress: progress,
+      status: status,
+      completed: status === 'completed',
+      createdAt: new Date(now - 3600000).toISOString(),
+      created_at: new Date(now - 3600000).toISOString(),
+      completedAt: status === 'completed' ? new Date(now - 1800000).toISOString() : null,
+      startedAt: now - 1800000,
+      started_at: now - 1800000,
+      runStartedAt: now - 1800000,
+      run_started_at: now - 1800000,
+      updatedAt: now - 600000
+    });
+
+    state.tasks = [
+      makeMuseTask('m9-running', 'running', 'Sol', 60, '运行中任务'),
+      makeMuseTask('m9-waiting-null', 'waiting', null, 0, '模型为空的等待任务'),
+      makeMuseTask('m9-completed', 'completed', 'DeepSeek', 100, '已完成任务'),
+      makeMuseTask('m9-blocked', 'blocked', 'Muse', 30, '阻塞任务'),
+      makeMuseTask('m9-failed-unknown', 'failed', 'GPT', 10, '未知模型失败任务')
+    ];
+    state.monitorFilter = 'all';
+    // 注意：此时 currentPage 已是 monitor，switchToMonitor() 会直接返回不刷新；
+    // 直接调 loadMonitorSnapshot() 从 state.tasks 重建 monitorTasks。
+    await loadMonitorSnapshot();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    const byId = {};
+    document.querySelectorAll('#monitor-list .monitor-task').forEach((card) => {
+      const statusEl = card.querySelector('.monitor-status');
+      const modelEl = card.querySelector('.monitor-model');
+      const cs = statusEl ? getComputedStyle(statusEl) : null;
+      byId[card.dataset.id] = {
+        statusBg: cs ? cs.backgroundColor : '',
+        statusColor: cs ? cs.color : '',
+        modelText: modelEl ? (modelEl.textContent || '').trim() : ''
+      };
+    });
+
+    document.querySelector('.monitor-filter-tab[data-filter="running"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const activeCountEl = document.querySelector('.monitor-filter-tab[data-filter="running"] .monitor-filter-count');
+    const activeCountColor = activeCountEl ? getComputedStyle(activeCountEl).color : '';
+    const inactiveCountEl = document.querySelector('.monitor-filter-tab[data-filter="all"] .monitor-filter-count');
+    const inactiveCountColor = inactiveCountEl ? getComputedStyle(inactiveCountEl).color : '';
+
+    return { byId: byId, activeCountColor: activeCountColor, inactiveCountColor: inactiveCountColor };
+  });
+
+  // D3: 五个状态徽标均为浅底深字（bg 当背景、color 当文字）
+  check('M9 运行中徽标背景为浅绿 #F0FDF4', m9.byId['m9-running'] && m9.byId['m9-running'].statusBg === 'rgb(240, 253, 244)', JSON.stringify(m9.byId['m9-running']));
+  check('M9 运行中徽标文字为深绿 #15803D', m9.byId['m9-running'] && m9.byId['m9-running'].statusColor === 'rgb(21, 128, 61)', JSON.stringify(m9.byId['m9-running']));
+  check('M9 等待中徽标背景为浅黄 #FFFBEB', m9.byId['m9-waiting-null'] && m9.byId['m9-waiting-null'].statusBg === 'rgb(255, 251, 235)', JSON.stringify(m9.byId['m9-waiting-null']));
+  check('M9 等待中徽标文字为深棕 #92400E', m9.byId['m9-waiting-null'] && m9.byId['m9-waiting-null'].statusColor === 'rgb(146, 64, 14)', JSON.stringify(m9.byId['m9-waiting-null']));
+  check('M9 已完成徽标背景为浅灰 #F1F5F9', m9.byId['m9-completed'] && m9.byId['m9-completed'].statusBg === 'rgb(241, 245, 249)', JSON.stringify(m9.byId['m9-completed']));
+  check('M9 已完成徽标文字为灰 #64748B', m9.byId['m9-completed'] && m9.byId['m9-completed'].statusColor === 'rgb(100, 116, 139)', JSON.stringify(m9.byId['m9-completed']));
+  check('M9 阻塞徽标背景为浅红 #FEF2F2', m9.byId['m9-blocked'] && m9.byId['m9-blocked'].statusBg === 'rgb(254, 242, 242)', JSON.stringify(m9.byId['m9-blocked']));
+  check('M9 阻塞徽标文字为深红 #B91C1C', m9.byId['m9-blocked'] && m9.byId['m9-blocked'].statusColor === 'rgb(185, 28, 28)', JSON.stringify(m9.byId['m9-blocked']));
+  check('M9 失败徽标背景为浅红 #FEF2F2', m9.byId['m9-failed-unknown'] && m9.byId['m9-failed-unknown'].statusBg === 'rgb(254, 242, 242)', JSON.stringify(m9.byId['m9-failed-unknown']));
+  check('M9 失败徽标文字为深红 #B91C1C', m9.byId['m9-failed-unknown'] && m9.byId['m9-failed-unknown'].statusColor === 'rgb(185, 28, 28)', JSON.stringify(m9.byId['m9-failed-unknown']));
+  // D2: 模型为空显示“未指定”，未知模型仍显示“未知模型”
+  check('M9 模型为 null 的任务显示“未指定”', m9.byId['m9-waiting-null'] && m9.byId['m9-waiting-null'].modelText.indexOf('未指定') >= 0, JSON.stringify(m9.byId['m9-waiting-null']));
+  check('M9 未知模型的任务仍显示“未知模型”', m9.byId['m9-failed-unknown'] && m9.byId['m9-failed-unknown'].modelText.indexOf('未知模型') >= 0, JSON.stringify(m9.byId['m9-failed-unknown']));
+  // D4: 选中筛选标签的数量保持灰色 #9a9aac
+  check('M9 选中筛选的数量颜色为灰色 #9a9aac', m9.activeCountColor === 'rgb(154, 154, 172)', JSON.stringify(m9.activeCountColor));
+  check('M9 未选中筛选的数量颜色仍为灰色 #9a9aac', m9.inactiveCountColor === 'rgb(154, 154, 172)', JSON.stringify(m9.inactiveCountColor));
 
   await finish(fail ? 1 : 0);
 }

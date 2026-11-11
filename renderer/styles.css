@@ -2734,8 +2734,9 @@ body {
   color: #9a9aac;
   margin-left: 2px;
 }
+/* D4: 定稿小样要求选中时数量保持灰色，不跟亮蓝。 */
 .monitor-filter-tab.active .monitor-filter-count {
-  color: #0A24E9;
+  color: #9a9aac;
   font-weight: 400;
 }
 .monitor-filter-sep {

@@ -4544,11 +4544,13 @@ function buildMonitorTaskCard(task, opts) {
   const statusMeta = (ML.STATUS_META && ML.STATUS_META[task.status]) || {};
   const status = document.createElement('span');
   status.className = 'monitor-status';
-  if (statusMeta.color) status.style.backgroundColor = statusMeta.color;
-  if (statusMeta.textColor) status.style.color = statusMeta.textColor;
+  // D3: 浅底深字 —— bg 当背景、color 当文字。旧代码把深色 color 当背景，
+  // 又读 STATUS_META 里不存在的 textColor，导致深底深字看不清。
+  if (statusMeta.bg) status.style.backgroundColor = statusMeta.bg;
+  if (statusMeta.color) status.style.color = statusMeta.color;
   const statusDot = document.createElement('span');
   statusDot.className = 'monitor-status-dot';
-  statusDot.style.backgroundColor = statusMeta.dotColor || statusMeta.textColor || statusMeta.color || 'currentColor';
+  statusDot.style.backgroundColor = statusMeta.dotColor || statusMeta.color || 'currentColor';
   const statusLabel = document.createElement('span');
   statusLabel.textContent = statusMeta.label || statusMeta.name || task.status || '';
   status.appendChild(statusDot);
@@ -4556,18 +4558,30 @@ function buildMonitorTaskCard(task, opts) {
   top.appendChild(status);
 
   const modelMap = ML.MODEL_META || {};
-  const unspecifiedKey = ML.MODEL_UNSPECIFIED || 'unspecified';
-  const unknownKey = ML.MODEL_UNKNOWN || 'unknown';
-  const modelKey = task.model == null ? unspecifiedKey : task.model;
-  const modelKnown = Object.prototype.hasOwnProperty.call(modelMap, modelKey);
-  const modelEntry = (modelKnown ? modelMap[modelKey] : modelMap[unknownKey]) || {};
+  // D2: MODEL_UNSPECIFIED / MODEL_UNKNOWN 导出的是 { label, color } 对象，
+  // 不能当字符串键用（旧代码 hasOwnProperty 恒为 false，走到“未知模型”）。
+  // 直接取其 label / color。
+  const unspecifiedMeta = ML.MODEL_UNSPECIFIED || { label: '未指定', color: '#64748B' };
+  const unknownMeta = ML.MODEL_UNKNOWN || { label: '未知模型', color: '#64748B' };
+  let modelEntry;
+  let modelLabelText;
+  if (task.model == null || task.model === '') {
+    modelEntry = unspecifiedMeta;
+    modelLabelText = unspecifiedMeta.label || '未指定';
+  } else if (Object.prototype.hasOwnProperty.call(modelMap, task.model)) {
+    modelEntry = modelMap[task.model];
+    modelLabelText = modelEntry.label || modelEntry.name || task.model;
+  } else {
+    modelEntry = unknownMeta;
+    modelLabelText = unknownMeta.label || '未知模型';
+  }
   const model = document.createElement('span');
   model.className = 'monitor-model';
   const modelDot = document.createElement('span');
   modelDot.className = 'monitor-model-dot';
   modelDot.style.backgroundColor = modelEntry.color || modelEntry.dotColor || '#9aa0a6';
   const modelLabel = document.createElement('span');
-  modelLabel.textContent = modelKnown ? (modelEntry.label || modelEntry.name || modelKey) : '未知模型';
+  modelLabel.textContent = modelLabelText;
   model.appendChild(modelDot);
   model.appendChild(modelLabel);
   top.appendChild(model);
@@ -4666,6 +4680,21 @@ function expandMonitorTask(id) {
   monitorExpandOverlay.classList.remove('hidden');
   void monitorExpandOverlay.offsetWidth;
   monitorExpandOverlay.classList.add('open');
+  // D1: 内联 left/top/width/height 会压住 .open 的满屏 CSS（left:0/top:0/
+  // width:100%/height:100%），覆盖层永远停在卡片尺寸。先把内联
+  // 尺寸动画到满屏（transition 260ms），动画结束后再清除内联
+  // 样式，让 .open 接管最终几何尺寸；清除时若已收起则跳过，
+  // 避免干扰收起动画。
+  requestAnimationFrame(function () {
+    setMonitorOverlayRect(0, 0, pageRect.width, pageRect.height);
+  });
+  window.setTimeout(function () {
+    if (state.monitorExpandedId !== id) return;
+    monitorExpandOverlay.style.left = '';
+    monitorExpandOverlay.style.top = '';
+    monitorExpandOverlay.style.width = '';
+    monitorExpandOverlay.style.height = '';
+  }, 280);
   monitorPage.classList.add('monitor-expanded');
   monitorExpandClose.focus();
 }
