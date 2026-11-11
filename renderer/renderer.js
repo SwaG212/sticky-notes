@@ -3318,7 +3318,10 @@ function buildDueDateIndex(todayTasks, cachedFiles) {
     else if (tNew === curNew && t.completed && !cur.completed) latest.set(key, t);
   };
   for (const t of todayTasks) add(t, true);
-  for (const arr of cachedFiles) for (const t of arr) if (t.completed) add(t);
+  // Muse tasks are never migrated and live in exactly one file, so an unfinished
+  // Muse copy in a past file is the live task, not a stale orphan: admit it.
+  // Local unfinished copies stay filtered (ghost protection, see header comment).
+  for (const arr of cachedFiles) for (const t of arr) if (t.completed || t.source === 'muse') add(t);
   for (const t of latest.values()) {
     if (typeof t.dueDate !== 'string') continue;
     const list = index.get(t.dueDate);

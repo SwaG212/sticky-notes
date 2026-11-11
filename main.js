@@ -998,6 +998,7 @@ async function runVideoDownload(urlValue, directoryValue) {
 // ========== IPC 处理 ==========
 // ============ 监控台快照 + 任务文件监听 + 合并保存 ============
 let monitorRevision = 0;
+let monitorEmittedRevision = 0; // revision already broadcast via tasks:changed
 let monitorSnapshotCache = null;
 let monitorSnapshotKey = '';
 let monitorFileHashes = new Map();
@@ -1107,10 +1108,14 @@ function getMonitorSnapshot() {
 }
 
 function emitTasksChanged(reason) {
-  const beforeKey = monitorSnapshotKey;
+  // Emit once per snapshot revision. The revision is the source of truth:
+  // any getMonitorSnapshot() caller may already have refreshed the cached key,
+  // so comparing keys here would silently drop the event. (A snapshot poll
+  // inside the ~350ms watcher debounce window hit this 100%.)
   getMonitorSnapshot();
-  if (beforeKey === monitorSnapshotKey) return;
+  if (monitorEmittedRevision === monitorRevision) return;
   if (win && !win.isDestroyed()) {
+    monitorEmittedRevision = monitorRevision;
     win.webContents.send('tasks:changed', { revision: monitorRevision, reason });
   }
 }
@@ -1244,6 +1249,7 @@ function startTasksWatcher() {
     }
   } catch (e) {}
   getMonitorSnapshot();
+  monitorEmittedRevision = monitorRevision; // baseline: initial snapshot is already known
 
   tasksPollTimer = setInterval(() => {
     const current = new Map();
