@@ -42,8 +42,8 @@ app.whenReady().then(async () => {
   assert(st.toolsSettings === 0, 'T1b 工具箱页无设置按钮');
   assert(st.toolsBackInFooter, 'T1c 工具箱页 ← 按钮在页脚栏');
   const containerPx = parseFloat(st.pagesWidth);
-  assert(Math.abs(containerPx - st.mainWidth * 3) < 2, `T2 页面容器为单页 3 倍宽(${containerPx} ≈ 3×${st.mainWidth})`);
-  assert(Math.abs(st.mainWidth - st.toolsWidth) < 1, 'T3 三个页面等宽');
+  assert(Math.abs(containerPx - st.mainWidth * 4) < 2, `T2 页面容器为单页 4 倍宽(${containerPx} ≈ 4×${st.mainWidth})`);
+  assert(Math.abs(st.mainWidth - st.toolsWidth) < 1, 'T3 四个页面等宽');
   assert(st.footerChildren.length === 3, `T4 页脚栏三元素(← 搜索框 →)(实际 ${st.footerChildren.join(',')})`);
 
   // 切换: main → notepad → tools
@@ -210,7 +210,7 @@ app.whenReady().then(async () => {
   const def = JSON.parse(defaults);
   assert(def.tools === true && def.translate === true, 'S2 工具箱页与翻译卡默认启用');
   const mainJs = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf-8');
-  assert(mainJs.includes('pagesEnabled: { tasks: true, tools: true }'), 'S2b 主进程默认配置含 tools: true');
+  assert(mainJs.includes('pagesEnabled: { tasks: true, tools: true, monitor: true }'), 'S2b 主进程默认配置含 tools: true 与 monitor: true');
   assert(mainJs.includes('function detectLang') && mainJs.includes('/[一-鿿]/'), 'S2c 主进程含语言检测逻辑 detectLang');
 
   // 关闭工具箱页 → 页脚栏右滑按钮隐藏,页面跳回

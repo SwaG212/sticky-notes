@@ -112,6 +112,34 @@
       </template>
       <div class="notepad-footer">
         <button id="btn-tools-back">←</button>
+        <button id="btn-tools-forward">→</button>
+      </div>
+    </div>
+    <!-- 监控台页面（第四页） -->
+    <div class="page page-monitor">
+      <div class="monitor-header">
+        <span class="monitor-title">监控台</span>
+        <span id="monitor-running-count" class="monitor-running-count"></span>
+        <button id="monitor-refresh" class="monitor-refresh" title="刷新">↻</button>
+      </div>
+      <div id="monitor-sync-status" class="monitor-sync-status"></div>
+      <div id="monitor-filters" class="monitor-filters" role="tablist" aria-label="任务筛选">
+        <button class="monitor-filter-tab active" data-filter="all" role="tab" aria-pressed="true">全部 <span class="monitor-filter-count">0</span></button>
+        <span class="monitor-filter-sep" aria-hidden="true"></span>
+        <button class="monitor-filter-tab" data-filter="running" role="tab" aria-pressed="false">进行中 <span class="monitor-filter-count">0</span></button>
+        <span class="monitor-filter-sep" aria-hidden="true"></span>
+        <button class="monitor-filter-tab" data-filter="waiting" role="tab" aria-pressed="false">等待中 <span class="monitor-filter-count">0</span></button>
+        <span class="monitor-filter-sep" aria-hidden="true"></span>
+        <button class="monitor-filter-tab" data-filter="completed" role="tab" aria-pressed="false">已完成 <span class="monitor-filter-count">0</span></button>
+      </div>
+      <div id="monitor-list" class="monitor-list"></div>
+      <div class="notepad-footer">
+        <button id="btn-monitor-back">←</button>
+        <button id="btn-monitor-forward">→</button>
+      </div>
+      <div id="monitor-expand-overlay" class="monitor-expand-overlay hidden">
+        <div id="monitor-expand-card"></div>
+        <button id="monitor-expand-close" class="monitor-expand-close" title="收起">×</button>
       </div>
     </div>
   </div>
@@ -211,6 +239,19 @@
             <label class="checkbox-label page-col"><input type="checkbox" id="settings-video-download-enabled"></label>
             <span class="page-col"></span>
           </div>
+          <div class="page-row">
+            <span class="page-row-name">监控台</span>
+            <label class="checkbox-label page-col"><input type="checkbox" id="settings-monitor-page"></label>
+            <label class="checkbox-label page-col"><input type="checkbox" id="settings-blurhide-monitor" checked></label>
+          </div>
+        </div>
+        <div class="settings-card">
+          <div class="settings-card-title">页面顺序</div>
+          <div id="page-order-list"></div>
+          <div class="page-order-actions">
+            <button type="button" id="btn-page-order-reset">恢复默认</button>
+            <span id="page-order-hint" class="settings-hint" aria-live="polite"></span>
+          </div>
         </div>
         <div class="settings-card">
           <div class="settings-card-title">API</div>
@@ -253,6 +294,7 @@
   </div>
 </div>
 
+<script src="monitor-logic.js"></script>
 <script src="renderer.js"></script>
 </body>
 </html>

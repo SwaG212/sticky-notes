@@ -27,6 +27,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listTasksFiles: () => ipcRenderer.invoke('list-tasks-files'),
   loadTasksByDate: (dateStr) => ipcRenderer.invoke('load-tasks-by-date', dateStr),
   saveTasksByDate: (dateStr, tasks) => ipcRenderer.invoke('save-tasks-by-date', dateStr, tasks),
+  getMonitorSnapshot: () => ipcRenderer.invoke('tasks:get-snapshot'),
+  refreshMonitorSnapshot: () => ipcRenderer.invoke('tasks:refresh'),
+  onTasksChanged: (cb) => { const handler = (_event, payload) => cb(payload); ipcRenderer.on('tasks:changed', handler); return () => ipcRenderer.removeListener('tasks:changed', handler); },
 
   // 窗口位置
   setWindowFixed: (fixed) => ipcRenderer.invoke('set-window-fixed', fixed),

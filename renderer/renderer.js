@@ -13,7 +13,19 @@ const state = {
   searchMode: 'filename',
   shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2', switchTools: 'Alt+3' },
   projectNames: [],
-  pagesEnabled: { tasks: true, tools: true },
+  pagesEnabled: { tasks: true, tools: true, monitor: true },
+  pageOrder: ['main', 'notepad', 'tools', 'monitor'],
+  pageOrderInvalid: false,
+  monitorFilter: 'all',
+  monitorTasks: [],
+  monitorStatus: 'loading',
+  monitorRevision: 0,
+  monitorExpandedId: null,
+  monitorSyncState: 'loading',
+  monitorLastSyncAt: null,
+  monitorError: null,
+  monitorWarnings: {},
+  pendingExternalReload: false,
   showSheetBar: true, // 项目页签栏显示开关(设置页,默认显示)
   showProjectBadge: true, // 任务行项目胶囊显示开关(设置页,默认显示)
   showDailyReport: true, // 任务页日报按钮显示开关(设置页,默认显示)
@@ -37,6 +49,8 @@ const state = {
   windowVisible: false,
 };
 
+let settingsDraftPageOrder = ['main', 'notepad', 'tools', 'monitor'];
+
 // ========== DOM 引用 ==========
 const $ = (sel) => document.querySelector(sel);
 const taskItems = $('#task-items');
@@ -57,7 +71,19 @@ const btnNoteNew = $('#btn-note-new');
 const btnNotepadBack = $('#btn-notepad-back');
 const btnNotepadForward = $('#btn-notepad-forward');
 const btnToolsBack = $('#btn-tools-back');
+const btnToolsForward = $('#btn-tools-forward');
 const toolsCards = $('#tools-cards');
+const monitorPage = $('.page-monitor');
+const monitorList = $('#monitor-list');
+const monitorFilters = $('#monitor-filters');
+const monitorRunningCount = $('#monitor-running-count');
+const monitorSyncStatus = $('#monitor-sync-status');
+const monitorRefreshBtn = $('#monitor-refresh');
+const monitorExpandOverlay = $('#monitor-expand-overlay');
+const monitorExpandCard = $('#monitor-expand-card');
+const monitorExpandClose = $('#monitor-expand-close');
+const btnMonitorBack = $('#btn-monitor-back');
+const btnMonitorForward = $('#btn-monitor-forward');
 const toolCardTemplate = $('#tool-card-template');
 const notepadTextarea = $('#notepad-textarea');
 const noteListOverlay = $('#note-list-overlay');
@@ -90,11 +116,13 @@ async function init() {
   if (window.electronAPI?.onVideoDownloadProgress) window.electronAPI.onVideoDownloadProgress(handleVideoDownloadProgress);
   if (window.electronAPI?.onVideoDownloadFocus) window.electronAPI.onVideoDownloadFocus(focusVideoDownloadCard);
   const restoredPage = window.electronAPI?.getPage ? await window.electronAPI.getPage() : 'main';
+  applyPageOrderDOM();
   if (state.pagesEnabled.tasks) {
     await loadTasks();
     renderTasks();
   }
-  if (restoredPage === 'tools' && isToolsPageEnabled()) await switchToTools();
+  if (restoredPage === 'monitor' && canEnterPage('monitor')) await switchToMonitor();
+  else if (restoredPage === 'tools' && isToolsPageEnabled()) await switchToTools();
   else if (restoredPage === 'notepad' || !state.pagesEnabled.tasks) await switchToNotepad();
   updateOrganizeButton();
   updateTasksPageVisibility();
@@ -109,6 +137,10 @@ async function init() {
 
   btnOrganize.addEventListener('click', rearrangeTasks);
   $('#btn-settings-confirm').addEventListener('click', confirmSettings);
+document.querySelector('#btn-page-order-reset')?.addEventListener('click', () => {
+  settingsDraftPageOrder = [...window.MonitorLogic.DEFAULT_PAGE_ORDER];
+  renderPageOrderSettings();
+});
   $('#btn-settings-back').addEventListener('click', cancelSettings);
   $('#btn-settings').addEventListener('click', openSettings);
   // 文件路径下拉按钮
@@ -145,10 +177,22 @@ async function init() {
       }
     }
   });
-  btnSwitchNotepad.addEventListener('click', switchToNotepad);
-  btnNotepadBack.addEventListener('click', switchToMain);
-  btnNotepadForward.addEventListener('click', switchToTools);
-  btnToolsBack.addEventListener('click', switchToNotepad);
+  btnSwitchNotepad.addEventListener('click', () => navigatePage(1));
+  btnNotepadBack.addEventListener('click', () => navigatePage(-1));
+  btnNotepadForward.addEventListener('click', () => navigatePage(1));
+  btnToolsBack.addEventListener('click', () => navigatePage(-1));
+  if (btnMonitorBack) btnMonitorBack.addEventListener('click', () => navigatePage(-1));
+  if (btnMonitorForward) btnMonitorForward.addEventListener('click', () => navigatePage(1));
+  if (btnToolsForward) btnToolsForward.addEventListener('click', () => navigatePage(1));
+  if (monitorRefreshBtn) monitorRefreshBtn.addEventListener('click', () => loadMonitorSnapshot(true));
+  if (monitorFilters) monitorFilters.addEventListener('click', (e) => {
+    const tab = e.target.closest('.monitor-filter-tab');
+    if (!tab) return;
+    state.monitorFilter = tab.dataset.filter || 'all';
+    renderMonitor();
+  });
+  if (monitorExpandClose) monitorExpandClose.addEventListener('click', () => collapseMonitorTask());
+  if (window.electronAPI?.onTasksChanged) window.electronAPI.onTasksChanged((payload) => { handleExternalTasksChanged(payload); });
   btnNoteList.addEventListener('click', toggleNoteList);
   btnNoteNew.addEventListener('click', createNote);
   btnDailyReport.addEventListener('click', generateDailyReport);
@@ -266,6 +310,7 @@ async function init() {
   });
 
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && state.monitorExpandedId) { e.preventDefault(); collapseMonitorTask(); return; }
     const sc = state.shortcuts;
     if (matchShortcut(e, sc.switchTask) && state.pagesEnabled.tasks) { e.preventDefault(); switchToMain(); }
     if (matchShortcut(e, sc.switchNotepad)) { e.preventDefault(); switchToNotepad(); }
@@ -301,12 +346,15 @@ async function init() {
       } else if (state.currentPage === 'tools') {
         const input = toolsCards.querySelector('.tool-card-input, .video-download-url');
         if (input) input.focus();
+      } else if (state.currentPage === 'monitor') {
+        loadMonitorSnapshot();
       } else if (state.pagesEnabled.tasks) {
         // 每次窗口显示时重新加载任务，确保跨天后已完成任务被清除
         await loadTasks();
         renderTasks();
         textInput.focus();
       }
+      if (state.pendingExternalReload) { state.pendingExternalReload = false; if (state.currentPage === 'main') { await loadTasks(); renderTasks(); } }
     });
     window.electronAPI.onWindowWillHide(() => {
       state.windowVisible = false;
@@ -314,7 +362,7 @@ async function init() {
       anim.finished.then(() => { /* 动画完成，元素停在 opacity:0 */ });
       if (state.currentPage === 'notepad') {
         saveCurrentNote();
-      } else if (state.pagesEnabled.tasks && hasContent() && !state.organizing) {
+      } else if (state.currentPage === 'main' && state.pagesEnabled.tasks && hasContent() && !state.organizing) {
         setTimeout(() => { organize(); }, 50);
       }
     });
@@ -947,6 +995,7 @@ function toggleTask(idx) {
   const t = taskByIdx(idx);
   if (!t) return;
   t.completed = !t.completed;
+  t.status = t.completed ? 'completed' : 'waiting';
   t.completedAt = t.completed ? new Date().toISOString() : null;
   sortTasks();
   // 今天任务:写今天文件并同步历史副本(带 updatedAt);历史任务:写回并同步
@@ -1112,7 +1161,7 @@ function addTasks(newTasks) {
   const maxOrder = state.tasks.reduce((max, t) => Math.max(max, t.sortOrder ?? 0), -1);
   const items = newTasks.map((t, i) => ({
     id: genId(), task: t.task, project: t.project || null, completed: false, createdAt: now, completedAt: null,
-    alarmTime: null, dueDate: t.dueDate || null, sortOrder: maxOrder + 1 + i,
+    alarmTime: null, dueDate: t.dueDate || null, sortOrder: maxOrder + 1 + i, source: 'local', status: 'waiting', progress: 0,
   }));
 
   // 无日期新任务归位：插入到该项目「无日期分组」末尾（与重排后的结构保持一致）；
@@ -2232,6 +2281,7 @@ async function loadShortcutsFromConfig() {
     if (cfg.pagesEnabled) {
       state.pagesEnabled = { ...state.pagesEnabled, ...cfg.pagesEnabled };
     }
+    if (cfg.pageOrder) { const po = window.MonitorLogic.normalizePageOrder(cfg.pageOrder); state.pageOrder = po.order; state.pageOrderInvalid = !po.valid; }
     state.toolsEnabled = {
       translate: cfg.toolsEnabled?.translate !== false,
       videoDownload: cfg.toolsEnabled?.videoDownload !== false,
@@ -2323,12 +2373,19 @@ async function openSettings() {
     $('#settings-blurhide-tasks').checked = blurHide.tasks !== false;
     $('#settings-blurhide-notepad').checked = blurHide.notepad !== false;
     $('#settings-blurhide-tools').checked = blurHide.tools !== false;
+    $('#settings-monitor-page').checked = state.pagesEnabled.monitor !== false;
+    $('#settings-blurhide-monitor').checked = (cfg.blurHide?.monitor !== false);
     if (cfg.shortcuts) {
       state.shortcuts = { ...state.shortcuts, ...cfg.shortcuts };
     }
     state.projectNames = [...(cfg.projectNames || [])];
     renderProjectTags();
   }
+  // 页面顺序草稿不依赖主进程配置:无 electronAPI 的环境(如 DOM 测试)也要渲染列表
+  settingsDraftPageOrder = [...state.pageOrder];
+  renderPageOrderSettings();
+  const hint = $('#page-order-hint');
+  if (hint) hint.textContent = state.pageOrderInvalid ? '页面顺序无效，已恢复默认' : '';
   syncSettingsSelects();
   renderShortcutInputs();
   settingsOverlay.classList.remove('hidden');
@@ -2380,16 +2437,17 @@ async function confirmSettings() {
     translate: $('#settings-translate-enabled').checked,
     videoDownload: $('#settings-video-download-enabled').checked,
   };
-  const pagesEnabled = { tasks: tasksEnabled, tools: toolsEnabled };
+  const pagesEnabled = { tasks: tasksEnabled, tools: toolsEnabled, monitor: $('#settings-monitor-page').checked };
   const blurHide = {
     tasks: $('#settings-blurhide-tasks').checked,
     notepad: $('#settings-blurhide-notepad').checked,
     tools: $('#settings-blurhide-tools').checked,
+    monitor: $('#settings-blurhide-monitor').checked,
   };
-  const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, showSheetBar, showProjectBadge, showDailyReport, showCalendar, pagesEnabled, toolsEnabled: toolFeatures, blurHide };
+  const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, showSheetBar, showProjectBadge, showDailyReport, showCalendar, pagesEnabled, toolsEnabled: toolFeatures, blurHide, pageOrder: [...settingsDraftPageOrder] };
 
+  let saveResult;
   if (window.electronAPI) {
-    let saveResult;
     try { saveResult = await window.electronAPI.saveConfig(cfg); }
     catch (error) { saveResult = { success: false }; }
     if (saveResult?.success === false) {
@@ -2406,6 +2464,9 @@ async function confirmSettings() {
   // 页面开关变更
   const tasksWasEnabled = state.pagesEnabled.tasks;
   state.pagesEnabled = pagesEnabled;
+  if (saveResult?.pageOrder) state.pageOrder = saveResult.pageOrder;
+  state.pageOrderInvalid = !!saveResult?.pageOrderInvalid;
+  applyPageOrderDOM();
   updateTasksPageVisibility();
   updateToolsPageVisibility();
   // 页签栏显示开关:整行隐藏;关闭时若停在项目页签,强制回任务汇总(否则无入口切回)
@@ -2426,6 +2487,7 @@ async function confirmSettings() {
   if (!toolsEnabled && state.currentPage === 'tools') {
     switchToMain();
   }
+  if (state.pagesEnabled.monitor === false && state.currentPage === 'monitor') { switchToNotepad(); }
   state.toolsEnabled = toolFeatures;
   if (state.currentPage === 'tools') renderToolsPage();
 
@@ -2452,7 +2514,90 @@ async function confirmSettings() {
   settingsOverlay.classList.add('hidden');
 }
 
+function renderPageOrderSettings() {
+  const list = document.querySelector('#page-order-list');
+  if (!list) return;
+
+  const pageNames = window.MonitorLogic?.PAGE_NAMES || {};
+  const nameOf = (id) => pageNames[id] || id;
+  const closeSuffix = (id) => {
+    if (id === 'tools' && !state.pagesEnabled.tools) return '（已关闭）';
+    if (id === 'monitor' && state.pagesEnabled.monitor === false) return '（已关闭）';
+    return '';
+  };
+
+  const focusButton = (pageId, action) => {
+    const btn = list.querySelector(`.page-order-btn[data-page="${pageId}"][data-action="${action}"]`);
+    btn?.focus();
+  };
+
+  const move = (from, to, action) => {
+    if (to < 0 || to >= settingsDraftPageOrder.length) return;
+    const rows = Array.from(list.querySelectorAll('.page-order-row'));
+    const before = new Map(rows.map((row) => [row.dataset.page, row.getBoundingClientRect().top]));
+    const [item] = settingsDraftPageOrder.splice(from, 1);
+    settingsDraftPageOrder.splice(to, 0, item);
+    renderPageOrderSettings();
+
+    const nextRows = Array.from(list.querySelectorAll('.page-order-row'));
+    nextRows.forEach((row) => {
+      const oldTop = before.get(row.dataset.page);
+      if (oldTop === undefined) return;
+      const newTop = row.getBoundingClientRect().top;
+      const delta = oldTop - newTop;
+      if (delta) {
+        row.animate(
+          [{ transform: `translateY(${delta}px)` }, { transform: 'translateY(0)' }],
+          { duration: 180, easing: 'ease-out' }
+        );
+      }
+    });
+
+    focusButton(item, action);
+    const hint = document.querySelector('#page-order-hint');
+    if (hint) hint.textContent = `${nameOf(item)}已移到第 ${to + 1} 位`;
+  };
+
+  list.innerHTML = '';
+  settingsDraftPageOrder.forEach((id, i) => {
+    const row = document.createElement('div');
+    row.className = 'page-order-row';
+    row.dataset.page = id;
+
+    const index = document.createElement('span');
+    index.className = 'page-order-index';
+    index.textContent = String(i + 1);
+
+    const name = document.createElement('span');
+    name.className = 'page-order-name';
+    name.textContent = nameOf(id) + closeSuffix(id);
+
+    const up = document.createElement('button');
+    up.type = 'button';
+    up.className = 'page-order-btn';
+    up.dataset.page = id;
+    up.dataset.action = 'up';
+    up.textContent = '↑';
+    up.disabled = i === 0;
+    up.setAttribute('aria-label', `将${nameOf(id)}上移`);
+    up.addEventListener('click', () => move(i, i - 1, 'up'));
+
+    const down = document.createElement('button');
+    down.type = 'button';
+    down.className = 'page-order-btn';
+    down.dataset.page = id;
+    down.dataset.action = 'down';
+    down.textContent = '↓';
+    down.disabled = i === settingsDraftPageOrder.length - 1;
+    down.setAttribute('aria-label', `将${nameOf(id)}下移`);
+    down.addEventListener('click', () => move(i, i + 1, 'down'));
+
+    row.append(index, name, up, down);
+    list.appendChild(row);
+  });
+}
 function cancelSettings() {
+  settingsDraftPageOrder = [...state.pageOrder];
   // 放弃修改：恢复 shortcuts 为已保存的值
   if (window.electronAPI) {
     window.electronAPI.getConfig().then(cfg => {
@@ -3020,6 +3165,10 @@ async function persistTask(t, prevKey) {
     stateCopy.dueDate = t.dueDate;
     stateCopy.alarmTime = t.alarmTime;
     stateCopy.updatedAt = t.updatedAt;
+    if (t.source !== undefined) stateCopy.source = t.source;
+    if (t.model !== undefined) stateCopy.model = t.model;
+    if (t.progress !== undefined) stateCopy.progress = t.progress;
+    if (t.status !== undefined) stateCopy.status = t.status;
     stateSyncs.push(saveTasks());
     skipDates.push(getToday());
   } else if (!stateCopy && !t.completed) {
@@ -3075,6 +3224,10 @@ function syncTaskCopies(t, prevKey, skipDates) {
         x.dueDate = t.dueDate;
         x.alarmTime = t.alarmTime;
         x.updatedAt = t.updatedAt;
+        if (t.source !== undefined) x.source = t.source;
+        if (t.model !== undefined) x.model = t.model;
+        if (t.progress !== undefined) x.progress = t.progress;
+        if (t.status !== undefined) x.status = t.status;
         changed = true;
       }
     }
@@ -4053,6 +4206,7 @@ async function autoVerify(card, seq) {
 
 async function switchToNotepad() {
   if (state.currentPage === 'notepad') return;
+  stopMonitorTick();
   // 日历状态切页:不播关闭动画,日历随任务页直接右滑;切回任务页时由 switchToMain 保持状态
   state.currentPage = 'notepad';
   if (window.electronAPI) {
@@ -4072,8 +4226,7 @@ async function switchToNotepad() {
       state.noteOriginalContent = state.noteContent;
     }
   }
-  pagesContainer.classList.remove('on-tools');
-  pagesContainer.classList.add('on-notepad');
+  applyPagePosition();
   closeNoteSearch();
   notepadTextarea.innerHTML = loadMarkdown(state.noteContent);
   notepadTextarea.classList.toggle('is-empty', !state.noteContent);
@@ -4083,18 +4236,20 @@ async function switchToNotepad() {
 
 async function switchToMain() {
   if (state.currentPage === 'main') return;
+  stopMonitorTick();
   if (!state.pagesEnabled.tasks) return;
   // 保存当前笔记
   if (!await saveCurrentNote()) return;
   state.currentPage = 'main';
   // 日历状态切页保持:切回任务页时保留上次视图(日历/选中日期/当日模式),与隐藏再显示一致
   if (window.electronAPI) window.electronAPI.setPage('main');
-  pagesContainer.classList.remove('on-notepad', 'on-tools');
+  applyPagePosition();
   setTimeout(() => textInput.focus(), 400);
 }
 
 async function switchToTools() {
   if (state.currentPage === 'tools') return;
+  stopMonitorTick();
   if (!isToolsPageEnabled()) return;
   // 日历状态切页:不播关闭动画,日历随任务页直接右滑(同 switchToNotepad)
   // 保存当前笔记
@@ -4102,12 +4257,466 @@ async function switchToTools() {
   state.currentPage = 'tools';
   if (window.electronAPI) window.electronAPI.setPage('tools');
   renderToolsPage();
-  pagesContainer.classList.remove('on-notepad');
-  pagesContainer.classList.add('on-tools');
+  applyPagePosition();
   setTimeout(() => {
     const input = toolsCards.querySelector('.tool-card-input, .video-download-url');
     if (input) input.focus();
   }, 400);
+}
+
+function canEnterPage(id) {
+  if (id === 'main') return !!state.pagesEnabled.tasks;
+  if (id === 'notepad') return true;
+  if (id === 'tools') return isToolsPageEnabled();
+  if (id === 'monitor') return state.pagesEnabled.monitor !== false;
+  return false;
+}
+
+function getEnabledPageOrder() {
+  return state.pageOrder.filter(canEnterPage);
+}
+
+function applyPageOrderDOM() {
+  if (!pagesContainer) return;
+  const map = {
+    main: '.page-main',
+    notepad: '.page-notepad',
+    tools: '.page-tools',
+    monitor: '.page-monitor'
+  };
+  state.pageOrder.forEach(id => {
+    const selector = map[id];
+    if (!selector) return;
+    const el = pagesContainer.querySelector(selector);
+    if (el) pagesContainer.appendChild(el);
+  });
+  applyPagePosition();
+}
+
+function applyPagePosition() {
+  if (!pagesContainer) return;
+  const order = getEnabledPageOrder();
+  let idx = order.indexOf(state.currentPage);
+  if (idx === -1) idx = 0;
+  pagesContainer.style.transform = 'translateX(' + (-idx * 25) + '%)';
+  pagesContainer.classList.toggle('on-notepad', state.currentPage === 'notepad');
+  pagesContainer.classList.toggle('on-tools', state.currentPage === 'tools');
+  pagesContainer.classList.toggle('on-monitor', state.currentPage === 'monitor');
+  updateNavButtons();
+}
+
+function updateNavButtons() {
+  const order = getEnabledPageOrder();
+  const idx = order.indexOf(state.currentPage);
+  const hasPrev = idx > 0;
+  const hasNext = idx !== -1 && idx < order.length - 1;
+  [btnNotepadBack, btnToolsBack, btnMonitorBack].forEach(el => {
+    if (el) el.disabled = !hasPrev;
+  });
+  [btnSwitchNotepad, btnNotepadForward, btnToolsForward, btnMonitorForward].forEach(el => {
+    if (el) el.disabled = !hasNext;
+  });
+}
+
+function switchToPage(id) {
+  if (id === state.currentPage) return;
+  if (id === 'main') return switchToMain();
+  if (id === 'notepad') return switchToNotepad();
+  if (id === 'tools') return switchToTools();
+  if (id === 'monitor') return switchToMonitor();
+}
+
+function navigatePage(delta) {
+  const order = getEnabledPageOrder();
+  const i = order.indexOf(state.currentPage);
+  if (i === -1) return;
+  const j = i + delta;
+  if (j < 0 || j >= order.length) return;
+  switchToPage(order[j]);
+}
+
+async function switchToMonitor() {
+  if (state.currentPage === 'monitor') return;
+  if (!canEnterPage('monitor')) return;
+  if (!(await saveCurrentNote())) return;
+  state.currentPage = 'monitor';
+  if (window.electronAPI) window.electronAPI.setPage('monitor');
+  applyPagePosition();
+  await loadMonitorSnapshot();
+  renderMonitor();
+  startMonitorTick();
+}
+
+let monitorTickTimer = null;
+let monitorCollapseTimer = null;
+
+function createMonitorEmptyState(title, desc, buttonText, onClick) {
+  const wrap = document.createElement('div');
+  wrap.className = 'monitor-empty-state';
+  const h = document.createElement('div');
+  h.className = 'monitor-empty-title';
+  h.textContent = title;
+  const p = document.createElement('div');
+  p.className = 'monitor-empty-desc';
+  p.textContent = desc;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'monitor-empty-btn';
+  btn.textContent = buttonText;
+  btn.addEventListener('click', onClick);
+  wrap.append(h, p, btn);
+  return wrap;
+}
+
+async function loadMonitorSnapshot(force) {
+  if (!window.electronAPI?.getMonitorSnapshot) {
+    state.monitorWarnings = {};
+    const list = [];
+    (state.tasks || []).forEach(t => {
+      if (!t || t.source !== 'muse') return;
+      const n = window.MonitorLogic.normalizeTask(t);
+      if (n && n.task) {
+        list.push(n.task);
+        if (Array.isArray(n.warnings) && n.warnings.length) {
+          state.monitorWarnings[n.task.id || t.id] = n.warnings;
+        }
+      }
+    });
+    state.monitorTasks = window.MonitorLogic.sortMonitorTasks(list);
+    state.monitorStatus = 'ready';
+    state.monitorSyncState = 'ok';
+    state.monitorLastSyncAt = new Date();
+    state.monitorError = null;
+    renderMonitor();
+    return;
+  }
+  if (state.monitorTasks.length === 0 && !force) {
+    state.monitorStatus = 'loading';
+    renderMonitor();
+  }
+  try {
+    const data = await window.electronAPI.getMonitorSnapshot();
+    applyMonitorSnapshot(data);
+  } catch (e) {
+    state.monitorStatus = 'error';
+    state.monitorError = '读取失败';
+    state.monitorSyncState = 'error';
+    renderMonitor();
+  }
+}
+
+function applyMonitorSnapshot(data) {
+  if (!data || typeof data.revision !== 'number') return;
+  if (data.revision < state.monitorRevision) return;
+  state.monitorRevision = data.revision;
+  const list = Array.isArray(data.tasks) ? data.tasks : [];
+  state.monitorTasks = list;
+  state.monitorWarnings = {};
+  list.forEach(t => {
+    const n = window.MonitorLogic.normalizeTask(t);
+    if (n && n.task && Array.isArray(n.warnings) && n.warnings.length) {
+      state.monitorWarnings[t.id] = n.warnings;
+    }
+  });
+  state.monitorStatus = 'ready';
+  state.monitorSyncState = (data.errors && data.errors.length) ? 'degraded' : 'ok';
+  state.monitorLastSyncAt = new Date();
+  state.monitorError = null;
+  if (state.monitorExpandedId && !list.some(t => t.id === state.monitorExpandedId)) {
+    collapseMonitorTask(true);
+  }
+  renderMonitor();
+}
+
+async function handleExternalTasksChanged(payload) {
+  taskFileCacheLoaded.clear();
+  taskFileCache.clear();
+
+  if (state.currentPage === 'monitor' || state.monitorTasks.length > 0) {
+    loadMonitorSnapshot();
+  }
+
+  const editing = !!document.querySelector('.task-edit-input') || !!activePickerRow;
+  if (editing) {
+    state.pendingExternalReload = true;
+  } else if (state.currentPage === 'main') {
+    await loadTasks();
+    renderTasks();
+  }
+}
+
+function renderMonitor() {
+  if (!monitorPage || !monitorList) return;
+  const counts = window.MonitorLogic.countByStatus(state.monitorTasks);
+  if (monitorRunningCount) monitorRunningCount.textContent = '运行中 ' + (counts.running || 0);
+  if (monitorSyncStatus) {
+    if (state.monitorStatus === 'loading') {
+      monitorSyncStatus.textContent = '正在读取本地任务…';
+    } else if (state.monitorStatus === 'error') {
+      monitorSyncStatus.textContent = '暂时无法读取任务';
+    } else if (state.monitorSyncState === 'degraded') {
+      monitorSyncStatus.textContent = '部分任务文件无法读取，结果可能不完整';
+    } else if (state.monitorLastSyncAt) {
+      const d = state.monitorLastSyncAt;
+      const hh = String(d.getHours()).padStart(2, '0');
+      const mm = String(d.getMinutes()).padStart(2, '0');
+      monitorSyncStatus.textContent = '已同步 ' + hh + ':' + mm;
+    } else {
+      monitorSyncStatus.textContent = '已同步';
+    }
+  }
+  if (monitorFilters) {
+    monitorFilters.querySelectorAll('.monitor-filter-tab').forEach(tab => {
+      const filter = tab.dataset.filter || 'all';
+      const count = filter === 'all' ? (counts.all ?? state.monitorTasks.length) : (counts[filter] || 0);
+      const countEl = tab.querySelector('.monitor-filter-count');
+      if (countEl) countEl.textContent = String(count);
+      const active = filter === state.monitorFilter;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  }
+  const prevScroll = monitorList.scrollTop;
+  monitorList.innerHTML = '';
+  if (state.monitorStatus === 'loading') {
+    const loadingText = document.createElement('div');
+    loadingText.className = 'monitor-loading-text';
+    loadingText.textContent = '正在读取本地任务…';
+    monitorList.appendChild(loadingText);
+    for (let i = 0; i < 3; i++) {
+      const sk = document.createElement('div');
+      sk.className = 'monitor-skeleton';
+      monitorList.appendChild(sk);
+    }
+  } else if (state.monitorStatus === 'error' && state.monitorTasks.length === 0) {
+    monitorList.appendChild(createMonitorEmptyState('暂时无法读取任务', '任务文件暂时无法读取，请稍后重试', '重试', () => loadMonitorSnapshot(true)));
+  } else if (state.monitorStatus === 'ready' && state.monitorTasks.length === 0) {
+    monitorList.appendChild(createMonitorEmptyState('还没有 Muse 安排的任务', 'Muse 安排的任务会自动显示在这里', '刷新', () => loadMonitorSnapshot(true)));
+  } else {
+    const filtered = window.MonitorLogic.filterMonitorTasks(state.monitorTasks, state.monitorFilter);
+    const sorted = window.MonitorLogic.sortMonitorTasks(filtered);
+    if (sorted.length === 0) {
+      const filterLabel = state.monitorFilter === 'all' ? '全部' : (window.MonitorLogic.STATUS_META[state.monitorFilter]?.label || state.monitorFilter);
+      monitorList.appendChild(createMonitorEmptyState('没有符合条件的任务', '当前筛选：' + filterLabel, '清除筛选', () => { state.monitorFilter = 'all'; renderMonitor(); }));
+    } else {
+      const animated = [];
+      sorted.forEach((t, i) => {
+        const card = buildMonitorTaskCard(t);
+        monitorList.appendChild(card);
+        if (i < 8) animated.push(card);
+      });
+      if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+        animated.forEach((card, i) => {
+          card.animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'translateY(0)' }], { duration: 220, delay: i * 45, easing: 'ease', fill: 'both' });
+        });
+      }
+    }
+  }
+  monitorList.scrollTop = prevScroll;
+}
+
+// NEW BLOCK 3b：监控台任务卡片构建、展开/收起、运行时长计时
+
+function setMonitorOverlayRect(left, top, width, height) {
+  monitorExpandOverlay.style.left = Math.round(left) + 'px';
+  monitorExpandOverlay.style.top = Math.round(top) + 'px';
+  monitorExpandOverlay.style.width = Math.round(width) + 'px';
+  monitorExpandOverlay.style.height = Math.round(height) + 'px';
+}
+
+function buildMonitorTaskCard(task, opts) {
+  const ML = window.MonitorLogic;
+  const expanded = !!(opts && opts.expanded);
+  const card = document.createElement('article');
+  card.className = 'monitor-task task-item';
+  card.dataset.id = task.id;
+
+  // 顶部：项目 / 状态 / 模型
+  const top = document.createElement('div');
+  top.className = 'monitor-card-top';
+  if (task.project) {
+    const project = document.createElement('span');
+    project.className = 'monitor-project';
+    project.textContent = task.project;
+    top.appendChild(project);
+  }
+
+  const statusMeta = (ML.STATUS_META && ML.STATUS_META[task.status]) || {};
+  const status = document.createElement('span');
+  status.className = 'monitor-status';
+  if (statusMeta.color) status.style.backgroundColor = statusMeta.color;
+  if (statusMeta.textColor) status.style.color = statusMeta.textColor;
+  const statusDot = document.createElement('span');
+  statusDot.className = 'monitor-status-dot';
+  statusDot.style.backgroundColor = statusMeta.dotColor || statusMeta.textColor || statusMeta.color || 'currentColor';
+  const statusLabel = document.createElement('span');
+  statusLabel.textContent = statusMeta.label || statusMeta.name || task.status || '';
+  status.appendChild(statusDot);
+  status.appendChild(statusLabel);
+  top.appendChild(status);
+
+  const modelMap = ML.MODEL_META || {};
+  const unspecifiedKey = ML.MODEL_UNSPECIFIED || 'unspecified';
+  const unknownKey = ML.MODEL_UNKNOWN || 'unknown';
+  const modelKey = task.model == null ? unspecifiedKey : task.model;
+  const modelKnown = Object.prototype.hasOwnProperty.call(modelMap, modelKey);
+  const modelEntry = (modelKnown ? modelMap[modelKey] : modelMap[unknownKey]) || {};
+  const model = document.createElement('span');
+  model.className = 'monitor-model';
+  const modelDot = document.createElement('span');
+  modelDot.className = 'monitor-model-dot';
+  modelDot.style.backgroundColor = modelEntry.color || modelEntry.dotColor || '#9aa0a6';
+  const modelLabel = document.createElement('span');
+  modelLabel.textContent = modelKnown ? (modelEntry.label || modelEntry.name || modelKey) : '未知模型';
+  model.appendChild(modelDot);
+  model.appendChild(modelLabel);
+  top.appendChild(model);
+  card.appendChild(top);
+
+  // 任务文字
+  const textEl = document.createElement('div');
+  textEl.className = expanded ? 'monitor-text' : 'monitor-text monitor-text-clamp';
+  textEl.textContent = task.task || '';
+  card.appendChild(textEl);
+
+  // 进度
+  const progress = ML.displayProgress(task);
+  const row = document.createElement('div');
+  row.className = 'monitor-progress-row';
+  const progressLabel = document.createElement('span');
+  progressLabel.className = 'monitor-progress-label';
+  progressLabel.textContent = '进度';
+  const track = document.createElement('div');
+  track.className = 'monitor-progress-track';
+  track.setAttribute('role', 'progressbar');
+  track.setAttribute('aria-valuenow', String(progress));
+  track.setAttribute('aria-valuemin', '0');
+  track.setAttribute('aria-valuemax', '100');
+  const fill = document.createElement('div');
+  fill.className = 'monitor-progress-fill';
+  fill.style.width = progress + '%';
+  fill.style.backgroundColor = statusMeta.progressColor || statusMeta.color || '#4c8bf5';
+  track.appendChild(fill);
+  const progressValue = document.createElement('span');
+  progressValue.className = 'monitor-progress-value';
+  progressValue.textContent = progress + '%';
+  row.appendChild(progressLabel);
+  row.appendChild(track);
+  row.appendChild(progressValue);
+  card.appendChild(row);
+
+  // 元信息
+  const meta = document.createElement('div');
+  meta.className = 'monitor-meta';
+  const lineCreated = document.createElement('div');
+  lineCreated.className = 'monitor-meta-line';
+  lineCreated.textContent = '创建 ' + ML.formatCreatedAt(task.createdAt);
+  const lineRuntime = document.createElement('div');
+  lineRuntime.className = 'monitor-meta-line';
+  lineRuntime.appendChild(document.createTextNode('运行 '));
+  const runtimeValue = document.createElement('span');
+  runtimeValue.className = 'monitor-runtime-value';
+  runtimeValue.textContent = ML.formatRuntime(task, Date.now());
+  lineRuntime.appendChild(runtimeValue);
+  meta.appendChild(lineCreated);
+  meta.appendChild(lineRuntime);
+  card.appendChild(meta);
+
+  // 警告
+  const warnMap = {
+    'source-unknown': '来源未知',
+    'model-unknown': '未知模型',
+    'progress-invalid': '进度格式异常',
+    'status-unknown': '状态未识别',
+    'completed-status-conflict': '完成字段不一致',
+    'createdAt-invalid': '创建时间未知',
+    'completedAt-invalid': '完成时间异常'
+  };
+  const warns = (state.monitorWarnings && state.monitorWarnings[task.id]) || [];
+  if (warns.length) {
+    const warnEl = document.createElement('div');
+    warnEl.className = 'monitor-warn-text';
+    warnEl.textContent = warns.map(w => warnMap[w] || w).join('；');
+    card.appendChild(warnEl);
+    card.classList.add('monitor-task-warning');
+  }
+
+  if (!expanded) {
+    card.addEventListener('click', () => expandMonitorTask(task.id));
+  }
+  return card;
+}
+
+function expandMonitorTask(id) {
+  const task = state.monitorTasks.find(t => t.id === id);
+  if (!task) return;
+  state.monitorExpandedId = id;
+  monitorExpandCard.innerHTML = '';
+  monitorExpandCard.appendChild(buildMonitorTaskCard(task, { expanded: true }));
+
+  const pageRect = monitorPage.getBoundingClientRect();
+  const src = monitorList.querySelector('[data-id="' + id + '"]');
+  if (src) {
+    const r = src.getBoundingClientRect();
+    setMonitorOverlayRect(r.left - pageRect.left, r.top - pageRect.top, r.width, r.height);
+  } else {
+    setMonitorOverlayRect(0, 0, pageRect.width, pageRect.height);
+  }
+  monitorExpandOverlay.hidden = false;
+  monitorExpandOverlay.classList.remove('hidden');
+  void monitorExpandOverlay.offsetWidth;
+  monitorExpandOverlay.classList.add('open');
+  monitorPage.classList.add('monitor-expanded');
+  monitorExpandClose.focus();
+}
+
+function collapseMonitorTask(silent) {
+  if (!state.monitorExpandedId) return;
+  const id = state.monitorExpandedId;
+  state.monitorExpandedId = null;
+  monitorPage.classList.remove('monitor-expanded');
+
+  const pageRect = monitorPage.getBoundingClientRect();
+  const src = monitorList.querySelector('[data-id="' + id + '"]');
+  if (src) {
+    const r = src.getBoundingClientRect();
+    setMonitorOverlayRect(r.left - pageRect.left, r.top - pageRect.top, r.width, r.height);
+  }
+  monitorExpandOverlay.classList.remove('open');
+
+  window.setTimeout(() => {
+    monitorExpandOverlay.hidden = true;
+    monitorExpandOverlay.classList.add('hidden');
+    monitorExpandCard.innerHTML = '';
+  }, 260);
+
+  if (!silent && src) {
+    src.setAttribute('tabindex', '-1');
+    src.focus({ preventScroll: true });
+  }
+}
+
+function updateMonitorRuntimes() {
+  if (state.currentPage !== 'monitor') return;
+  const now = Date.now();
+  document.querySelectorAll('.monitor-runtime-value').forEach(el => {
+    const card = el.closest('[data-id]');
+    const t = card && state.monitorTasks.find(x => x.id === card.dataset.id);
+    if (t) el.textContent = window.MonitorLogic.formatRuntime(t, now);
+  });
+}
+
+function startMonitorTick() {
+  stopMonitorTick();
+  updateMonitorRuntimes();
+  monitorTickTimer = setInterval(updateMonitorRuntimes, 60000);
+}
+
+function stopMonitorTick() {
+  if (monitorTickTimer) {
+    clearInterval(monitorTickTimer);
+    monitorTickTimer = null;
+  }
 }
 
 // ========== 笔记管理 ==========

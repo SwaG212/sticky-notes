@@ -7,6 +7,9 @@ const { Readable, Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 const { pathToFileURL } = require('url');
 const { atomicWriteFileSync } = require('./atomic-write');
+const crypto = require('crypto');
+const MonitorLogic = require('./renderer/monitor-logic');
+const { withTaskFileLock } = require('./task-file-lock');
 const { fitBoundsToWorkArea } = require('./window-bounds');
 
 const APP_ICON = path.join(__dirname, 'assets', 'icon.png');
@@ -76,6 +79,7 @@ function escapeHtml(s) {
 
 // ========== 配置管理（加密存储 + 内存缓存） ==========
 let cachedConfig = null;
+let pageOrderWasInvalid = false;
 
 function normalizeToolsEnabled(value) {
   const source = value && typeof value === 'object' ? value : {};
@@ -98,6 +102,15 @@ function loadConfig() {
       if (!Array.isArray(cachedConfig.videoDownloadDirHistory)) cachedConfig.videoDownloadDirHistory = [];
       if (!cachedConfig.blurHide) cachedConfig.blurHide = { tasks: true, notepad: true, tools: true };
       cachedConfig.toolsEnabled = normalizeToolsEnabled(cachedConfig.toolsEnabled);
+      if (!cachedConfig.pagesEnabled || typeof cachedConfig.pagesEnabled !== 'object' || Array.isArray(cachedConfig.pagesEnabled)) cachedConfig.pagesEnabled = {};
+      if (typeof cachedConfig.pagesEnabled.monitor !== 'boolean') cachedConfig.pagesEnabled.monitor = true;
+      if (!cachedConfig.blurHide || typeof cachedConfig.blurHide !== 'object' || Array.isArray(cachedConfig.blurHide)) cachedConfig.blurHide = { tasks: true, notepad: true, tools: true, monitor: true };
+      if (typeof cachedConfig.blurHide.monitor !== 'boolean') cachedConfig.blurHide.monitor = true;
+      {
+        const normalizedOrder = MonitorLogic.normalizePageOrder(cachedConfig.pageOrder);
+        cachedConfig.pageOrder = normalizedOrder.order;
+        pageOrderWasInvalid = !normalizedOrder.valid;
+      }
       // 迁移：把当前 notesDir 加入历史（修复旧版本遗留数据）
       if (cachedConfig.notesDir && cachedConfig.notesDir.trim() && !cachedConfig.notesDirHistory.includes(cachedConfig.notesDir.trim())) {
         cachedConfig.notesDirHistory = [cachedConfig.notesDir.trim(), ...cachedConfig.notesDirHistory].slice(0, 5);
@@ -108,7 +121,7 @@ function loadConfig() {
       return cachedConfig;
     }
   } catch (e) { /* ignore */ }
-  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', notesDirHistory: [], videoDownloadDir: '', videoDownloadDirHistory: [], projectNames: [], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2', switchTools: 'Alt+3' }, pagesEnabled: { tasks: true, tools: true }, toolsEnabled: { translate: true, videoDownload: true }, blurHide: { tasks: true, notepad: true, tools: true } };
+  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', notesDirHistory: [], videoDownloadDir: '', videoDownloadDirHistory: [], projectNames: [], pageOrder: ['main', 'notepad', 'tools', 'monitor'], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2', switchTools: 'Alt+3' }, pagesEnabled: { tasks: true, tools: true, monitor: true }, toolsEnabled: { translate: true, videoDownload: true }, blurHide: { tasks: true, notepad: true, tools: true, monitor: true } };
   return cachedConfig;
 }
 
@@ -412,7 +425,7 @@ function loadTasksFromFile() {
     // 清除过期已完成任务
     const todayStr = getToday();
     const before = tasks.length;
-    tasks = tasks.filter(t => !(t.completed && t.dueDate && t.dueDate < todayStr));
+    tasks = tasks.filter(t => t.source === 'muse' || !(t.completed && t.dueDate && t.dueDate < todayStr));
     if (tasks.length !== before) changed = true;
 
     // 迁移最近未完成任务——扫描过去14天，找到最近有未完成任务的那天进行迁移
@@ -422,7 +435,7 @@ function loadTasksFromFile() {
       const pastPath = path.join(userDataPath, 'tasks', `${dateStr}.json`);
       const pastTasks = readJSON(pastPath);
       if (!pastTasks) continue;
-      const unfinished = pastTasks.filter(t => !t.completed);
+      const unfinished = pastTasks.filter(t => t.source !== 'muse' && !t.completed);
       if (unfinished.length === 0) continue;
       // 去重保护：跳过今天已存在的同名任务
       const todayTexts = new Set(tasks.map(t => t.task));
@@ -450,9 +463,7 @@ function loadTasksFromFile() {
   return tasks;
 }
 
-function saveTasksToFile(tasks) {
-  writeJSON(path.join(userDataPath, 'tasks', `${getToday()}.json`), tasks);
-}
+function saveTasksToFile(tasks) { writeTasksFileMerged(getToday(), tasks); }
 
 // ========== 笔记文件存储 ==========
 function getNotesDir() {
@@ -985,6 +996,434 @@ async function runVideoDownload(urlValue, directoryValue) {
 }
 
 // ========== IPC 处理 ==========
+// ============ 监控台快照 + 任务文件监听 + 合并保存 ============
+let monitorRevision = 0;
+let monitorSnapshotCache = null;
+let monitorSnapshotKey = '';
+let monitorFileHashes = new Map();
+let monitorFileTasks = new Map();
+let monitorCommittedHashes = new Map();
+let tasksWatcher = null;
+let tasksWatcherHealthy = true;
+let tasksWatcherRetryTimer = null;
+let tasksWatcherRetryCount = 0;
+let tasksPollTimer = null;
+let tasksHashTimer = null;
+let tasksDirtyFiles = new Set();
+let tasksFullRescan = false;
+let tasksDebounceTimer = null;
+let tasksLastDebounceStart = 0;
+let tasksDirListing = new Map(); // 文件名 → {mtimeMs,size}
+
+function getTasksDir() {
+  return path.join(userDataPath, 'tasks');
+}
+
+function sha256Hex(buf) {
+  return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+function readMonitorSnapshotFiles() {
+  const tasksDir = getTasksDir();
+  if (!fs.existsSync(tasksDir)) {
+    return { tasks: [], errors: [], fileCount: 0, dirMissing: true };
+  }
+  let files;
+  try {
+    files = fs.readdirSync(tasksDir);
+  } catch (e) {
+    return { tasks: [], errors: [{ file: '*', error: 'READDIR_FAILED' }], fileCount: 0 };
+  }
+  const entries = [];
+  const newHashes = new Map();
+  const newFileTasks = new Map();
+  const errors = [];
+  for (const file of files) {
+    if (!MonitorLogic.isValidTaskDateFilename(file)) continue;
+    const dateStr = file.slice(0, -5);
+    const filePath = path.join(tasksDir, file);
+    let buf;
+    try {
+      const stat = fs.statSync(filePath);
+      if (!stat.isFile()) continue;
+      if (stat.size > 5 * 1024 * 1024) {
+        errors.push({ file, error: 'FILE_TOO_LARGE' });
+        continue;
+      }
+      buf = fs.readFileSync(filePath);
+    } catch (e) {
+      errors.push({ file, error: 'READ_FAILED' });
+      continue;
+    }
+    newHashes.set(dateStr, sha256Hex(buf));
+    let text = buf.toString('utf-8');
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    let rawArr;
+    try {
+      rawArr = JSON.parse(text);
+    } catch (e) {
+      errors.push({ file, error: 'PARSE_ERROR' });
+      continue;
+    }
+    if (!Array.isArray(rawArr)) {
+      errors.push({ file, error: 'PARSE_ERROR' });
+      continue;
+    }
+    const normalizedAll = [];
+    for (const raw of rawArr) {
+      const nr = MonitorLogic.normalizeTask(raw);
+      normalizedAll.push(nr.task);
+      if (nr.task.source === 'muse') {
+        entries.push({ task: nr.task, fileDate: dateStr, warnings: nr.warnings });
+      }
+    }
+    newFileTasks.set(dateStr, normalizedAll);
+  }
+  monitorFileHashes = newHashes;
+  monitorFileTasks = newFileTasks;
+  const deduped = MonitorLogic.dedupeTaskEntries(entries);
+  const taskList = (deduped.entries || []).map(e => e && e.task ? e.task : e);
+  return {
+    tasks: MonitorLogic.sortMonitorTasks(taskList),
+    errors,
+    fileCount: newHashes.size
+  };
+}
+
+function getMonitorSnapshot() {
+  const snap = readMonitorSnapshotFiles();
+  const key = JSON.stringify({ tasks: snap.tasks, errors: snap.errors });
+  if (key !== monitorSnapshotKey) {
+    monitorRevision++;
+    monitorSnapshotCache = snap.tasks;
+    monitorSnapshotKey = key;
+  }
+  return {
+    revision: monitorRevision,
+    tasks: monitorSnapshotCache || [],
+    errors: snap.errors,
+    fileCount: snap.fileCount
+  };
+}
+
+function emitTasksChanged(reason) {
+  const beforeKey = monitorSnapshotKey;
+  getMonitorSnapshot();
+  if (beforeKey === monitorSnapshotKey) return;
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('tasks:changed', { revision: monitorRevision, reason });
+  }
+}
+
+function processTasksDirty() {
+  // 简化实现：任务文件很小，直接全量重读即可；但先做 100ms 稳定等待，
+  // 两次读取的 hash 一致才接纳，不一致则 300ms 后重试一次，仍不一致放弃本轮等下次轮询。
+  const dir = getTasksDir();
+  const readAllHashes = () => {
+    const map = new Map();
+    try {
+      if (!fs.existsSync(dir)) return map;
+      for (const file of fs.readdirSync(dir)) {
+        if (!MonitorLogic.isValidTaskDateFilename(file)) continue;
+        try {
+          map.set(file, sha256Hex(fs.readFileSync(path.join(dir, file))));
+        } catch (e) {}
+      }
+    } catch (e) {}
+    return map;
+  };
+  const mapsEqual = (a, b) => {
+    if (a.size !== b.size) return false;
+    for (const [k, v] of a) {
+      if (b.get(k) !== v) return false;
+    }
+    return true;
+  };
+  const finish = () => {
+    tasksDirtyFiles.clear();
+    tasksFullRescan = false;
+    emitTasksChanged('watch');
+  };
+  const first = readAllHashes();
+  setTimeout(() => {
+    const second = readAllHashes();
+    if (mapsEqual(first, second)) {
+      finish();
+      return;
+    }
+    setTimeout(() => {
+      const third = readAllHashes();
+      if (mapsEqual(second, third)) finish();
+    }, 300);
+  }, 100);
+}
+
+function markTasksDirty(filename) {
+  if (filename && MonitorLogic.isValidTaskDateFilename(filename)) {
+    tasksDirtyFiles.add(filename);
+  } else {
+    tasksFullRescan = true;
+  }
+  scheduleTasksDirtyProcess();
+}
+
+function scheduleTasksDirtyProcess() {
+  const now = Date.now();
+  if (tasksDebounceTimer) {
+    if (now - tasksLastDebounceStart > 1000) {
+      clearTimeout(tasksDebounceTimer);
+      tasksDebounceTimer = null;
+      processTasksDirty();
+    }
+    return;
+  }
+  tasksLastDebounceStart = now;
+  tasksDebounceTimer = setTimeout(() => {
+    tasksDebounceTimer = null;
+    processTasksDirty();
+  }, 250);
+}
+
+function attachTasksWatcher() {
+  const dir = getTasksDir();
+  if (tasksWatcher) {
+    try { tasksWatcher.close(); } catch (e) {}
+    tasksWatcher = null;
+  }
+  if (!fs.existsSync(dir)) {
+    tasksWatcherHealthy = false;
+    return false;
+  }
+  try {
+    tasksWatcher = fs.watch(dir, (eventType, filename) => {
+      try {
+        const name = typeof filename === 'string' ? filename : '';
+        markTasksDirty(name || null);
+      } catch (e) {}
+    });
+    tasksWatcherHealthy = true;
+    tasksWatcherRetryCount = 0;
+    tasksWatcher.on('error', () => {
+      tasksWatcherHealthy = false;
+      try { tasksWatcher.close(); } catch (e) {}
+      tasksWatcher = null;
+      scheduleTasksWatcherRebuild();
+    });
+    return true;
+  } catch (e) {
+    tasksWatcherHealthy = false;
+    return false;
+  }
+}
+
+function scheduleTasksWatcherRebuild() {
+  if (tasksWatcherRetryTimer) return;
+  const delays = [1000, 3000, 10000, 30000];
+  const delay = delays[Math.min(tasksWatcherRetryCount, delays.length - 1)];
+  tasksWatcherRetryTimer = setTimeout(() => {
+    tasksWatcherRetryTimer = null;
+    tasksWatcherRetryCount++;
+    if (!attachTasksWatcher()) {
+      scheduleTasksWatcherRebuild();
+    }
+  }, delay);
+}
+
+function startTasksWatcher() {
+  stopTasksWatcher();
+  const dir = getTasksDir();
+  tasksDirListing = new Map();
+  try {
+    if (fs.existsSync(dir)) {
+      for (const file of fs.readdirSync(dir)) {
+        try {
+          const st = fs.statSync(path.join(dir, file));
+          tasksDirListing.set(file, { mtimeMs: st.mtimeMs, size: st.size });
+        } catch (e) {}
+      }
+    }
+  } catch (e) {}
+  getMonitorSnapshot();
+
+  tasksPollTimer = setInterval(() => {
+    const current = new Map();
+    let dirExists = false;
+    try {
+      dirExists = fs.existsSync(dir);
+      if (dirExists) {
+        for (const file of fs.readdirSync(dir)) {
+          try {
+            const st = fs.statSync(path.join(dir, file));
+            current.set(file, { mtimeMs: st.mtimeMs, size: st.size });
+          } catch (e) {}
+        }
+      }
+    } catch (e) {}
+    let changed = false;
+    for (const [file, info] of current) {
+      const prev = tasksDirListing.get(file);
+      if (!prev || prev.mtimeMs !== info.mtimeMs || prev.size !== info.size) {
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) {
+      for (const file of tasksDirListing.keys()) {
+        if (!current.has(file)) {
+          changed = true;
+          break;
+        }
+      }
+    }
+    tasksDirListing = current;
+    if (changed) markTasksDirty(null);
+    if (!dirExists) {
+      tasksWatcherHealthy = false;
+      if (!tasksWatcher) scheduleTasksWatcherRebuild();
+    }
+  }, 5000);
+
+  tasksHashTimer = setInterval(() => {
+    let files = [];
+    try {
+      const d = getTasksDir();
+      if (!fs.existsSync(d)) return;
+      files = fs.readdirSync(d).filter(f => MonitorLogic.isValidTaskDateFilename(f));
+    } catch (e) {
+      return;
+    }
+    let changed = false;
+    for (const file of files) {
+      try {
+        const h = sha256Hex(fs.readFileSync(path.join(getTasksDir(), file)));
+        const dateStr = file.slice(0, -5);
+        if (monitorFileHashes.get(dateStr) !== h) {
+          changed = true;
+          break;
+        }
+      } catch (e) {
+        changed = true;
+        break;
+      }
+    }
+    if (changed) markTasksDirty(null);
+  }, 30000);
+
+  if (fs.existsSync(dir)) {
+    attachTasksWatcher();
+  } else {
+    tasksWatcherHealthy = false;
+    scheduleTasksWatcherRebuild();
+  }
+}
+
+function stopTasksWatcher() {
+  if (tasksWatcher) {
+    try { tasksWatcher.close(); } catch (e) {}
+    tasksWatcher = null;
+  }
+  if (tasksWatcherRetryTimer) {
+    clearTimeout(tasksWatcherRetryTimer);
+    tasksWatcherRetryTimer = null;
+  }
+  if (tasksPollTimer) {
+    clearInterval(tasksPollTimer);
+    tasksPollTimer = null;
+  }
+  if (tasksHashTimer) {
+    clearInterval(tasksHashTimer);
+    tasksHashTimer = null;
+  }
+  if (tasksDebounceTimer) {
+    clearTimeout(tasksDebounceTimer);
+    tasksDebounceTimer = null;
+  }
+  tasksDirtyFiles.clear();
+  tasksFullRescan = false;
+  tasksWatcherRetryCount = 0;
+}
+
+function readTasksFileRaw(dateStr) {
+  const filePath = path.join(getTasksDir(), `${dateStr}.json`);
+  if (!fs.existsSync(filePath)) {
+    return { tasks: [], error: null, missing: true };
+  }
+  try {
+    const buf = fs.readFileSync(filePath);
+    let text = buf.toString('utf-8');
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) {
+      return { tasks: null, error: 'PARSE_ERROR', missing: false };
+    }
+    return { tasks: parsed, error: null, missing: false };
+  } catch (e) {
+    return { tasks: null, error: 'PARSE_ERROR', missing: false };
+  }
+}
+
+function writeTasksFileMerged(dateStr, incomingTasks) {
+  if (typeof dateStr !== 'string' || !MonitorLogic.isValidTaskDateFilename(`${dateStr}.json`) || !Array.isArray(incomingTasks)) {
+    return { success: false, error: 'INVALID_INPUT' };
+  }
+  const tasksDir = getTasksDir();
+  try {
+    return withTaskFileLock(tasksDir, dateStr, { owner: 'app' }, () => {
+      const filePath = path.join(tasksDir, `${dateStr}.json`);
+      let attempt = 0;
+      while (attempt < 3) {
+        attempt++;
+        const read1 = readTasksFileRaw(dateStr);
+        if (read1.error) return { success: false, error: 'FILE_INVALID' };
+        const diskTasks = read1.tasks || [];
+        let readHash = null;
+        try {
+          if (fs.existsSync(filePath)) readHash = sha256Hex(fs.readFileSync(filePath));
+        } catch (e) {}
+        const base = monitorFileTasks.get(dateStr) || null;
+        const merged = MonitorLogic.mergeTaskArrays(diskTasks, incomingTasks, base);
+        if (!merged.changed) {
+          monitorFileTasks.set(dateStr, diskTasks.map(t => MonitorLogic.normalizeTask(t).task));
+          return { success: true, unchanged: true };
+        }
+        let currentHash = null;
+        try {
+          if (fs.existsSync(filePath)) currentHash = sha256Hex(fs.readFileSync(filePath));
+        } catch (e) {}
+        if (readHash !== currentHash) {
+          // 磁盘在读取后变化，重新读盘再合并
+          continue;
+        }
+        const serialized = JSON.stringify(merged.tasks, null, 2);
+        const writeHash = sha256Hex(Buffer.from(serialized, 'utf-8'));
+        try {
+          writeJSON(filePath, merged.tasks);
+        } catch (e) {
+          return { success: false, error: 'WRITE_FAILED' };
+        }
+        let verifyHash = null;
+        try {
+          verifyHash = sha256Hex(fs.readFileSync(filePath));
+        } catch (e) {
+          verifyHash = null;
+        }
+        if (verifyHash !== writeHash) {
+          return { success: false, error: 'VERIFY_FAILED' };
+        }
+        monitorFileHashes.set(dateStr, verifyHash);
+        monitorCommittedHashes.set(dateStr, verifyHash);
+        monitorFileTasks.set(dateStr, merged.tasks.map(t => MonitorLogic.normalizeTask(t).task));
+        emitTasksChanged('save');
+        return { success: true };
+      }
+      return { success: false, error: 'FILE_CHANGING' };
+    });
+  } catch (e) {
+    const msg = e && (e.code || e.message) ? String(e.code || e.message) : String(e);
+    if (msg.includes('LOCK_TIMEOUT')) return { success: false, error: 'LOCK_TIMEOUT' };
+    return { success: false, error: 'WRITE_FAILED' };
+  }
+}
 function setupIPC() {
   ipcMain.handle('organize-request', async (_event, { text, images, project }) => {
     try {
@@ -1011,7 +1450,7 @@ function setupIPC() {
     if (!isTrustedSender(_event)) return null;
     const cfg = loadConfig();
     const { apiKey, ...safe } = cfg; // 不向渲染层返回 API Key
-    return { ...safe, videoDownloadDefaultDir: app.getPath('downloads') };
+    return { ...safe, videoDownloadDefaultDir: app.getPath('downloads'), pageOrderInvalid: pageOrderWasInvalid };
   });
   ipcMain.handle('has-api-key', (_event) => {
     if (!isTrustedSender(_event)) return false;
@@ -1019,7 +1458,7 @@ function setupIPC() {
   });
   ipcMain.handle('set-settings-open', (_e, open) => { if (isTrustedSender(_e)) settingsOpen = open; });
   // 配置白名单:渲染层只能改这些字段,其余字段(含 apiKey 结构)一律丢弃
-  const CONFIG_WHITELIST = ['baseUrl', 'reportName', 'notesDir', 'projectNames', 'shortcuts', 'pagesEnabled', 'blurHide', 'winFixed', 'showSheetBar', 'showProjectBadge', 'showDailyReport', 'showCalendar'];
+  const CONFIG_WHITELIST = ['baseUrl', 'reportName', 'notesDir', 'projectNames', 'pageOrder', 'shortcuts', 'pagesEnabled', 'blurHide', 'winFixed', 'showSheetBar', 'showProjectBadge', 'showDailyReport', 'showCalendar'];
   ipcMain.handle('save-config', async (_event, cfg) => {
     if (!isTrustedSender(_event)) return { success: false, error: 'FORBIDDEN' };
     const cur = loadConfig();
@@ -1029,6 +1468,15 @@ function setupIPC() {
     }
     if (cfg && cfg.toolsEnabled !== undefined) {
       merged.toolsEnabled = normalizeToolsEnabled(cfg.toolsEnabled);
+    }
+    const pageOrderResult = MonitorLogic.normalizePageOrder(merged.pageOrder);
+    merged.pageOrder = pageOrderResult.order;
+    const pageOrderInvalid = !pageOrderResult.valid;
+    if (merged.pagesEnabled && typeof merged.pagesEnabled === 'object') {
+      if (typeof merged.pagesEnabled.monitor !== 'boolean') merged.pagesEnabled.monitor = true;
+    }
+    if (merged.blurHide && typeof merged.blurHide === 'object') {
+      if (typeof merged.blurHide.monitor !== 'boolean') merged.blurHide.monitor = true;
     }
     // API Key:渲染层拿不到旧 Key;仅显式输入新 Key 才更新,留空/占位则保留旧 Key
     if (cfg && typeof cfg.apiKey === 'string' && cfg.apiKey.trim() && !cfg.apiKey.trim().startsWith('*')) {
@@ -1054,7 +1502,7 @@ function setupIPC() {
     }
     try { saveConfig(merged); }
     catch (e) { return { success: false, error: 'WRITE_FAILED' }; }
-    return { success: true };
+    return { success: true, pageOrder: merged.pageOrder, pageOrderInvalid };
   });
   ipcMain.handle('get-login-settings', (_e) => { if (!isTrustedSender(_e)) return false; return app.getLoginItemSettings().openAtLogin; });
   ipcMain.handle('set-login-settings', (_e, enabled) => { if (isTrustedSender(_e)) app.setLoginItemSettings({ openAtLogin: enabled }); });
@@ -1063,8 +1511,9 @@ function setupIPC() {
     if (!isTrustedSender(_event)) return { success: false, error: 'FORBIDDEN' };
     try { validateTasks(tasks); }
     catch (e) { return { success: false, error: e.message }; }
-    try { saveTasksToFile(tasks); return { success: true }; }
-    catch (e) { return { success: false, error: 'WRITE_FAILED' }; }
+    const result = writeTasksFileMerged(getToday(), tasks);
+    if (result && result.success) return { success: true };
+    return { success: false, error: (result && result.error) || 'WRITE_FAILED' };
   });
   // 按日期读/写历史任务文件(day 视图显示该日期全部任务,含已完成);日期格式校验防目录穿越
   const TASK_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -1082,12 +1531,9 @@ function setupIPC() {
     if (!isTrustedSender(_e) || !TASK_DATE_RE.test(dateStr || '')) return { success: false, error: 'FORBIDDEN' };
     try { validateTasks(tasks); }
     catch (e) { return { success: false, error: e.message }; }
-    try {
-      writeJSON(path.join(userDataPath, 'tasks', `${dateStr}.json`), tasks);
-      return { success: true };
-    } catch (e) {
-      return { success: false, error: 'WRITE_FAILED' };
-    }
+    const result = writeTasksFileMerged(dateStr, tasks);
+    if (result && result.success) return { success: true };
+    return { success: false, error: (result && result.error) || 'WRITE_FAILED' };
   });
 
   ipcMain.on('renderer-ready-to-quit', (_event, saved) => {
@@ -1110,8 +1556,20 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle('set-page', (_e, page) => { if (isTrustedSender(_e)) currentPage = page; });
+  ipcMain.handle('set-page', (_e, page) => {
+    if (!isTrustedSender(_e)) return;
+    if (page === 'main' || page === 'notepad' || page === 'tools' || page === 'monitor') currentPage = page;
+  });
   ipcMain.handle('get-page', (_e) => isTrustedSender(_e) ? currentPage : 'main');
+  ipcMain.handle('tasks:get-snapshot', (_e) => {
+    if (!isTrustedSender(_e)) return { revision: 0, tasks: [], errors: [], fileCount: 0 };
+    return getMonitorSnapshot();
+  });
+  ipcMain.handle('tasks:refresh', (_e) => {
+    if (!isTrustedSender(_e)) return { revision: monitorRevision };
+    emitTasksChanged('refresh');
+    return { revision: monitorRevision };
+  });
   ipcMain.handle('list-notes', (_e) => { if (!isTrustedSender(_e)) return []; return listNotes(); });
   ipcMain.handle('get-pinned-notes', (_e) => { if (!isTrustedSender(_e)) return []; return getPinnedNotes(); });
   ipcMain.handle('toggle-pin-note', (_e, filename) => { if (!isTrustedSender(_e)) return getPinnedNotes(); return togglePinNote(filename); });
@@ -1346,8 +1804,8 @@ function createWindow() {
     if (win && !win.isDestroyed() && !animating && !settingsOpen) {
       // 按当前页查失焦隐藏开关；main 页对应配置里的 tasks
       const cfg = loadConfig();
-      const blurHide = cfg.blurHide || { tasks: true, notepad: true, tools: true };
-      const pageKey = currentPage === 'notepad' ? 'notepad' : currentPage === 'tools' ? 'tools' : 'tasks';
+      const blurHide = cfg.blurHide || { tasks: true, notepad: true, tools: true, monitor: true };
+      const pageKey = currentPage === 'notepad' ? 'notepad' : currentPage === 'tools' ? 'tools' : currentPage === 'monitor' ? 'monitor' : 'tasks';
       if (blurHide[pageKey] !== false) hideWindow();
     }
   });
@@ -1464,6 +1922,7 @@ app.whenReady().then(() => {
   });
 
   setupIPC();
+  startTasksWatcher();
   createTray();
 
   const cfg = loadConfig();
@@ -1508,6 +1967,7 @@ app.on('before-quit', (event) => {
 });
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  stopTasksWatcher();
   if (activeVideoDownload?.status === 'downloading') {
     activeVideoDownload.quitting = true;
     try { activeVideoDownload.controller.abort(); } catch (error) { /* already settled */ }
