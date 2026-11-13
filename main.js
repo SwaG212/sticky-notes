@@ -1367,6 +1367,7 @@ let dispatchWatcherRetryTimer = null;
 let dispatchWatcherRetryCount = 0;
 let dispatchPollTimer = null;
 let dispatchHashTimer = null;
+let dispatchMissingRecheckTimer = null;
 let dispatchDirtyFiles = new Set();
 let dispatchFullRescan = false;
 let dispatchDebounceTimer = null;
@@ -1441,7 +1442,7 @@ function readDispatchSnapshotFiles() {
     var r = readDispatchFileOnce(path.join(dir, dates[j] + '.json'), dates[j]);
     if (r) fileResults.push(r);
   }
-  return { fileResults: fileResults, dirMissing: false };
+  return { fileResults: fileResults, dates: dates, dirMissing: false };
 }
 
 function getDispatchSnapshot() {
@@ -1470,8 +1471,12 @@ function getDispatchSnapshot() {
     };
   }
   dispatchGeneration++;
-  var merged = DispatchStore.mergeFileSnapshots(dispatchPrevState, read.fileResults, dispatchGeneration);
+  var merged = DispatchStore.mergeFileSnapshots(dispatchPrevState, read.fileResults, dispatchGeneration, {
+    enumeratedDates: read.dates,
+    nowMs: Date.now()
+  });
   dispatchPrevState = merged.state;
+  scheduleDispatchMissingRecheck(merged.state);
   var key = JSON.stringify({ records: merged.records, complete: merged.complete, errors: merged.errors, unreadDates: merged.unreadDates, staleFileCount: merged.staleFileCount });
   if (key !== dispatchSnapshotKey) {
     dispatchRevision++;
@@ -1505,6 +1510,21 @@ function getDispatchSnapshot() {
     watcherHealthy: dispatchWatcherHealthy,
     dirMissing: false
   };
+}
+
+// §6.3 第 5 条：文件失踪要间隔 1 秒再次枚举、目录仍可访问才确认移除。
+// 这里补一次延迟复核，避免 watcher 只报一次删除时快照停在“stale 但仍在”。
+function scheduleDispatchMissingRecheck(state) {
+  if (dispatchMissingRecheckTimer) return;
+  var byFile = (state && state.byFile) || {};
+  var missing = Object.keys(byFile).some(function (date) {
+    return byFile[date] && byFile[date].missingSince;
+  });
+  if (!missing) return;
+  dispatchMissingRecheckTimer = setTimeout(function () {
+    dispatchMissingRecheckTimer = null;
+    emitDispatchChanged('missing-recheck');
+  }, 1000);
 }
 
 function emitDispatchChanged(reason) {
@@ -1736,6 +1756,10 @@ function stopDispatchWatcher() {
   if (dispatchHashTimer) {
     clearInterval(dispatchHashTimer);
     dispatchHashTimer = null;
+  }
+  if (dispatchMissingRecheckTimer) {
+    clearTimeout(dispatchMissingRecheckTimer);
+    dispatchMissingRecheckTimer = null;
   }
   if (dispatchDebounceTimer) {
     clearTimeout(dispatchDebounceTimer);

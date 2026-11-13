@@ -257,11 +257,12 @@ notes/attachments/*         笔记图片
 | 修改区域 | 优先检查的测试 |
 |---|---|
 | 原子写入 | `tests/test_atomic_write.js` |
-| 派活存储不变量 | `tests/test_dispatch_store.js`（Node 直接跑，133 断言） |
+| 派活存储不变量 | `tests/test_dispatch_store.js`（Node 直接跑，143 断言，含文件失踪确认移除回归） |
 | 派活写入口/锁/备份 | `tests/test_dispatch_record_ps1.ps1`（只在 Windows PowerShell 5.1 上跑，用临时数据根） |
-| 派活渲染函数 | `tests/test_monitor_dispatch_logic.js`（Node 直接跑，167 断言） |
-| 派活快照/IPC/Flag/监听 | `tests/test_dispatch_snapshot_electron.js`（Electron 主进程测试，隔离 userData，20 断言；只能走交互式计划任务跑） |
-| 派活专区页面（标签/卡片/分页/满窗展开/空态） | `tests/test_monitor_dispatch_dom.js`（Electron DOM 测试，54 断言；只能走交互式计划任务跑） |
+| 派活渲染函数 | `tests/test_monitor_dispatch_logic.js`（Node 直接跑，171 断言） |
+| 派活快照/IPC/Flag/监听 | `tests/test_dispatch_snapshot_electron.js`（Electron 主进程测试，隔离 userData，20+3 断言；只能走交互式计划任务跑） |
+| 派活专区页面（标签/卡片/分页/满窗展开/空态） | `tests/test_monitor_dispatch_dom.js`（Electron DOM 测试，54+6 断言；只能走交互式计划任务跑） |
+| 派活详情层切页清理（Alt+1/前后按钮不残留覆盖层） | `tests/test_monitor_page_switch_cleanup.js`（Node 源码契约，可直接跑）+ `tests/test_monitor_dispatch_dom.js` M4b |
 | 窗口定位/多屏 | `tests/test_window_bounds.js` |
 | 任务加载与跨天迁移 | `tests/test_load_tasks.js`、`tests/test_sort_order.js`、`tests/m3-test.js` |
 | 排序与拖拽 | `tests/test_sort_order.js` |
@@ -312,4 +313,5 @@ notes/attachments/*         笔记图片
 - README 中的技术版本或目录示例可能滞后，以 `package.json` 和实际源码为准。
 - 新增 IPC、文件读写和图片处理时，安全边界与大小限制属于必要逻辑，不能为缩小改动而绕过。
 - 监控台有两条互斥的数据源：Flag `monitorDispatchesEnabled` 关闭走旧日程（`tasks:get-snapshot`），开启走派活（`dispatches:get-snapshot`）。切换时必须走 `setMonitorSource` 清空 `monitorRevision`/`monitorEpoch`，两条链的版本号各自独立，混用会把新源的低 revision 快照误判为过期而整份丢弃。
-- 派活展开是简化契约：覆盖层临时挂到 `body` 上用 `position:fixed` 铺满窗口（`(0,0,360,500)`），没有位移缩放动画，也不用右上 ×，只留“← 返回”；旧日程展开路径保持原实现。
+- 派活展开是简化契约：覆盖层临时挂到 `body` 上用 `position:fixed` 铺满窗口（`(0,0,360,500)`），没有位移缩放动画，也不用右上 ×，只留“← 返回”；旧日程展开路径保持原实现。切页（`switchToMain`/`switchToNotepad`/`switchToTools`）必须先 `collapseMonitorTask(true)`，否则覆盖层会残留在主页之上。
+- 派活快照按“每文件最后成功内容”合并；文件从目录消失时先标 stale 保留一轮，间隔 1 秒再次枚举仍缺失才移除（`mergeFileSnapshots` 的 `options.enumeratedDates`），否则幽灵记录会永久留在 `complete=true` 的快照里。

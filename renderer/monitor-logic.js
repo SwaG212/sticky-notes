@@ -761,6 +761,18 @@
     return days + ' 天 ' + pad2(hours) + ' 小时 ' + pad2(minutes) + ' 分钟';
   }
 
+  // §2.5：只有两端时钟来源一致且可核实才能相减；不同来源、缺失或 unknown 一律
+  // 标“时间不确定”，不能把 Muse 派出 + PC 结束强行算成耗时。
+  function clockSourcesComparable(startSource, endSource) {
+    if (!startSource || !endSource) {
+      return false;
+    }
+    if (startSource === 'unknown' || endSource === 'unknown') {
+      return false;
+    }
+    return startSource === endSource;
+  }
+
   function formatTotalElapsed(record, nowMs) {
     if (!record || typeof record !== 'object') {
       return '—';
@@ -772,9 +784,7 @@
       if (startMs === null || endMs === null || endMs < startMs) {
         return '—';
       }
-      var ds = getDispatchClockSource(record, 'dispatchedAt');
-      var fs = getDispatchClockSource(record, 'finishedAt');
-      if (ds && fs && (ds === 'unknown' || fs === 'unknown')) {
+      if (!clockSourcesComparable(getDispatchClockSource(record, 'dispatchedAt'), getDispatchClockSource(record, 'finishedAt'))) {
         return '时间不确定';
       }
       return formatDurationText(endMs - startMs);

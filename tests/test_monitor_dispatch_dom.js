@@ -127,7 +127,8 @@ async function run() {
         oldestSnapshotAt: null, unreadDates: [], lastReadAt: new Date().toISOString(), watcherHealthy: true
       }),
       onDispatchChanged: () => () => {},
-      onTasksChanged: () => () => {}
+      onTasksChanged: () => () => {},
+      setPage: () => {}
     };
     state.monitorFilter = 'all';
     state.currentPage = 'main';
@@ -306,6 +307,44 @@ async function run() {
   check('M4 收起后覆盖层回到监控台页面', m4.afterEsc.inHome);
   check('M4 返回按钮收起覆盖层', m4.afterBack.hidden && m4.afterBack.expandedId === null);
   check('M4 收起后焦点回原卡', m4.afterBack.focusOnCard);
+
+  // M4b（回归，缺陷 1）：展开详情后切页必须收起覆盖层，不能残留满窗遮住主页（§3.4/U06）
+  const m4b = await runInPage(async function (runningId) {
+    const target = document.querySelector('#monitor-list [data-id="' + runningId + '"]');
+    if (!target) return { found: false };
+    target.click();
+    await new Promise((r) => setTimeout(r, 120));
+    const overlay = document.querySelector('#monitor-expand-overlay');
+    const opened = {
+      open: overlay.classList.contains('open') && !overlay.classList.contains('hidden'),
+      expandedId: state.monitorExpandedId,
+      focusInOverlay: overlay.contains(document.activeElement)
+    };
+    await switchToMain();
+    await new Promise((r) => setTimeout(r, 60));
+    const after = {
+      page: state.currentPage,
+      hidden: overlay.classList.contains('hidden'),
+      open: overlay.classList.contains('open'),
+      windowClass: overlay.classList.contains('monitor-expand-window'),
+      expandedId: state.monitorExpandedId,
+      inHome: overlay.parentNode === document.querySelector('.page-monitor'),
+      pageExpanded: document.querySelector('.page-monitor').classList.contains('monitor-expanded'),
+      focusInOverlay: overlay.contains(document.activeElement),
+      display: getComputedStyle(overlay).display
+    };
+    // 切回监控台重新进入，后续用例仍有可用状态
+    state.currentPage = 'main';
+    await switchToMonitor();
+    await new Promise((r) => setTimeout(r, 80));
+    return { found: true, opened: opened, after: after };
+  }, dispatchId(1));
+  check('M4b 切页前详情确实展开且焦点在层内', m4b.found && m4b.opened.open && m4b.opened.focusInOverlay, JSON.stringify(m4b.opened));
+  check('M4b Alt+1 切主页后覆盖层收起', m4b.after.page === 'main' && m4b.after.hidden && !m4b.after.open, JSON.stringify(m4b.after));
+  check('M4b 切页后 monitorExpandedId 清空', m4b.after.expandedId === null, String(m4b.after.expandedId));
+  check('M4b 切页后覆盖层回到监控台页面且去掉满窗类', m4b.after.inHome && !m4b.after.windowClass, JSON.stringify(m4b.after));
+  check('M4b 切页后焦点不再困在隐藏层', !m4b.after.focusInOverlay, JSON.stringify(m4b.after));
+  check('M4b 切页后 monitor-expanded 移除', !m4b.after.pageExpanded);
 
   // M5: 分页 50/51 与标签切回首页
   const m5 = await runInPage(async function (makeIds) {

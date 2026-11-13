@@ -735,9 +735,11 @@ function computeSnapshotComplete(byFile, unreadDates, errors) {
 
 // 合并一批文件读取结果。prevState：{generation, byFile:{date:{records,hash,readAt,stale,error}}}。
 // fileResults：[{date, ok, records, hash, bytes, error}]，调用方按日期降序提供。
+// options.enumeratedDates：本次目录枚举到的合法日期文件；提供时才做“文件失踪”检测。
+// options.nowMs：判定失踪间隔用的当前时间（默认 Date.now()）。
 // 旧 generation 晚到不覆盖新批次。返回 {state, records, complete, staleFileCount,
 // oldestSnapshotAt, unreadDates, errors, warnings, changed}。
-function mergeFileSnapshots(prevState, fileResults, generation) {
+function mergeFileSnapshots(prevState, fileResults, generation, options) {
   const prev = isPlainObject(prevState) ? prevState : { generation: 0, byFile: {} };
   const prevGeneration = Number.isSafeInteger(prev.generation) ? prev.generation : 0;
   const byFilePrev = isPlainObject(prev.byFile) ? prev.byFile : {};
@@ -779,6 +781,29 @@ function mergeFileSnapshots(prevState, fileResults, generation) {
   const warnings = [];
   const unreadDates = [];
   let totalBytes = 0;
+
+  // 文件失踪（§6.3 第 4/5 条）：目录仍可访问时，先标记并保留旧快照，间隔 1 秒
+  // 再次枚举仍缺失才确认移除；否则幽灵记录会永远留在 complete=true 的快照里。
+  if (isPlainObject(options) && Array.isArray(options.enumeratedDates)) {
+    const nowMs = typeof options.nowMs === 'number' ? options.nowMs : Date.now();
+    const present = new Set(options.enumeratedDates);
+    for (const date of Object.keys(byFile)) {
+      if (present.has(date)) {
+        if (byFile[date]) delete byFile[date].missingSince;
+        continue;
+      }
+      const slot = byFile[date];
+      if (!slot) continue;
+      const since = slot.missingSince ? Date.parse(slot.missingSince) : NaN;
+      if (Number.isFinite(since) && nowMs - since >= 1000) {
+        delete byFile[date];
+        continue;
+      }
+      if (!Number.isFinite(since)) slot.missingSince = new Date(nowMs).toISOString();
+      slot.stale = true;
+      warnings.push('file-missing:' + date);
+    }
+  }
 
   for (const fileResult of fileResults || []) {
     if (!isPlainObject(fileResult) || !isValidCalendarDateString(fileResult.date)) {
@@ -987,7 +1012,7 @@ if (require.main === module) {
         const result = normalizeDispatchRecord(req.raw, req.fileDate, req.index || 0);
         out = { ok: true, dispatch: result.dispatch, warnings: result.warnings, error: result.error || null };
       } else if (command === 'merge') {
-        out = Object.assign({ ok: true }, mergeFileSnapshots(req.prevState, req.fileResults, req.generation));
+        out = Object.assign({ ok: true }, mergeFileSnapshots(req.prevState, req.fileResults, req.generation, req.options));
       } else {
         throw makeError('INVALID_FIELD', '未知命令：' + String(command));
       }

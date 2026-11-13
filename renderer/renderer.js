@@ -4251,6 +4251,7 @@ async function autoVerify(card, seq) {
 async function switchToNotepad() {
   if (state.currentPage === 'notepad') return;
   stopMonitorTick();
+  collapseMonitorTask(true);
   // 日历状态切页:不播关闭动画,日历随任务页直接右滑;切回任务页时由 switchToMain 保持状态
   state.currentPage = 'notepad';
   if (window.electronAPI) {
@@ -4282,6 +4283,7 @@ async function switchToMain() {
   if (state.currentPage === 'main') return;
   stopMonitorTick();
   if (!state.pagesEnabled.tasks) return;
+  collapseMonitorTask(true);
   // 保存当前笔记
   if (!await saveCurrentNote()) return;
   state.currentPage = 'main';
@@ -4295,6 +4297,7 @@ async function switchToTools() {
   if (state.currentPage === 'tools') return;
   stopMonitorTick();
   if (!isToolsPageEnabled()) return;
+  collapseMonitorTask(true);
   // 日历状态切页:不播关闭动画,日历随任务页直接右滑(同 switchToNotepad)
   // 保存当前笔记
   if (!await saveCurrentNote()) return;
@@ -5301,6 +5304,8 @@ function collapseMonitorTask(silent) {
   const wasDispatch = state.monitorSource === 'dispatches';
   state.monitorExpandedId = null;
   monitorPage.classList.remove('monitor-expanded');
+  // 收起时若焦点还在覆盖层内（如“← 返回”），先释放，避免焦点困在隐藏层
+  if (monitorExpandOverlay.contains(document.activeElement)) document.activeElement.blur();
 
   if (wasDispatch) {
     monitorExpandOverlay.classList.remove('open');

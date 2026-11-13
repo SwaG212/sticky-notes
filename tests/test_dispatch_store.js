@@ -2,6 +2,7 @@
 
 // 派活存储不变量测试（设计文档 §2/§5.2/§6.3，测试矩阵 L01-L06、W01-W06 中存储层部分）。
 // 只测 dispatch-store.js 纯逻辑；文件锁、原子写入、故障注入见 tests/test_dispatch_record_ps1.ps1（须在 PC 上跑）。
+// 注：受限沙箱禁止子进程管道 stdio，runCli 会自动退回临时文件句柄，断言不变。
 
 const store = require('../dispatch-store');
 const childProcess = require('child_process');
@@ -318,6 +319,34 @@ const badSchema = store.mergeFileSnapshots(merged.state, [
 equal(badSchema.complete, false, '未知 schema 文件 complete=false');
 equal(badSchema.records.length, 3, '未知 schema 文件保留旧快照');
 
+// 回归（缺陷 2）：日期文件被删除后幽灵记录不能永久残留（§6.3 第 4/5 条）
+console.log('文件失踪检测（§6.3 第 4/5 条，回归）');
+const twoFiles = store.mergeFileSnapshots({ generation: 0, byFile: {} }, [
+  { date: '2026-11-01', ok: true, records: [makeRecord({ intentId: 'ghost-a', dispatchedAt: '2026-11-01T06:10:00.000Z' })], hash: 'g1', bytes: 100, readAt: '2026-11-12T06:11:00.000Z' },
+  { date: '2026-11-02', ok: true, records: [makeRecord({ intentId: 'keep-b', dispatchedAt: '2026-11-02T06:10:00.000Z' })], hash: 'g2', bytes: 100, readAt: '2026-11-12T06:11:00.000Z' }
+], 1, { enumeratedDates: ['2026-11-01', '2026-11-02'], nowMs: Date.parse('2026-11-12T06:11:00.000Z') });
+equal(twoFiles.records.length, 2, '两文件两记录');
+const t0 = Date.parse('2026-11-12T06:20:00.000Z');
+const firstMissing = store.mergeFileSnapshots(twoFiles.state, [
+  { date: '2026-11-02', ok: true, records: [makeRecord({ intentId: 'keep-b', dispatchedAt: '2026-11-02T06:10:00.000Z' })], hash: 'g2', bytes: 100, readAt: '2026-11-12T06:20:00.000Z' }
+], 2, { enumeratedDates: ['2026-11-02'], nowMs: t0 });
+equal(firstMissing.records.length, 2, '失踪首轮保留旧快照');
+equal(firstMissing.state.byFile['2026-11-01'].stale, true, '失踪文件标记 stale');
+equal(firstMissing.complete, false, '失踪未确认时 complete=false');
+ok(firstMissing.warnings.indexOf('file-missing:2026-11-01') !== -1, '记录 file-missing 警告');
+const confirmedGone = store.mergeFileSnapshots(firstMissing.state, [
+  { date: '2026-11-02', ok: true, records: [makeRecord({ intentId: 'keep-b', dispatchedAt: '2026-11-02T06:10:00.000Z' })], hash: 'g2', bytes: 100, readAt: '2026-11-12T06:20:01.000Z' }
+], 3, { enumeratedDates: ['2026-11-02'], nowMs: t0 + 1000 });
+equal(confirmedGone.records.length, 1, '间隔 1 秒后确认移除幽灵记录');
+equal(confirmedGone.state.byFile['2026-11-01'], undefined, '幽灵文件槽位被清理');
+equal(confirmedGone.complete, true, '清理后 complete 恢复 true');
+equal(confirmedGone.changed, true, '删除文件记 changed');
+// 未提供 enumeratedDates（如 CLI merge）时不做失踪判定，避免误删
+const noEnumeration = store.mergeFileSnapshots(twoFiles.state, [
+  { date: '2026-11-02', ok: true, records: [makeRecord({ intentId: 'keep-b', dispatchedAt: '2026-11-02T06:10:00.000Z' })], hash: 'g2', bytes: 100, readAt: '2026-11-12T06:20:00.000Z' }
+], 2);
+equal(noEnumeration.records.length, 2, '未提供枚举列表时保留旧快照');
+
 console.log('观测健康与版本（L05/§2.4/§2.7）');
 const healthRec = makeRecord();
 equal(store.computeObservationHealth(healthRec, Date.parse('2026-11-12T06:11:00.000Z')), 'fresh', '15 分钟内为 fresh');
@@ -342,11 +371,28 @@ assertThrows(
 
 console.log('命令行 transact（供 dispatch-record.ps1 调用）');
 function runCli(input) {
-  const result = childProcess.spawnSync(
+  const json = JSON.stringify(Object.assign({ command: 'transact' }, input));
+  let result = childProcess.spawnSync(
     process.execPath,
     [path.join(__dirname, '..', 'dispatch-store.js')],
-    { input: JSON.stringify(Object.assign({ command: 'transact' }, input)), encoding: 'utf8' }
+    { input: json, encoding: 'utf8' }
   );
+  // 受限沙箱禁止子进程使用管道 stdio（EPERM），退回临时文件句柄，断言完全一致。
+  if (result.error && result.error.code === 'EPERM') {
+    const os = require('os');
+    const fsMod = require('fs');
+    const dir = fsMod.mkdtempSync(path.join(os.tmpdir(), 'dispatch-cli-'));
+    const inFile = path.join(dir, 'in.json');
+    const outFile = path.join(dir, 'out.json');
+    fsMod.writeFileSync(inFile, json, 'utf8');
+    const fi = fsMod.openSync(inFile, 'r');
+    const fo = fsMod.openSync(outFile, 'w+');
+    const fdResult = childProcess.spawnSync(process.execPath, [path.join(__dirname, '..', 'dispatch-store.js')], { stdio: [fi, fo, fo] });
+    fsMod.closeSync(fi);
+    fsMod.closeSync(fo);
+    result = { status: fdResult.status, stdout: fsMod.readFileSync(outFile, 'utf8') };
+    fsMod.rmSync(dir, { recursive: true, force: true });
+  }
   return { status: result.status, out: JSON.parse(result.stdout || '{}') };
 }
 const cliCreate = runCli({

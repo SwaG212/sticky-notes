@@ -204,6 +204,39 @@ async function run() {
   });
   check('S6 refreshDispatchSnapshot 返回 revision', ref && typeof ref.revision === 'number', JSON.stringify(ref));
 
+  // S7（回归，缺陷 2）：删掉日期文件后幽灵记录必须消失（§6.3 第 4/5 条）。
+  // 先清掉 fixture 里那个损坏文件（等过 1 秒确认期），让 complete 只受“删除日期文件”影响。
+  fs.rmSync(path.join(dispDir, '2026-11-11.json'), { force: true });
+  await runInPage(async function () { return await window.electronAPI.refreshDispatchSnapshot(); });
+  await sleep(1300);
+  await runInPage(async function () { return await window.electronAPI.refreshDispatchSnapshot(); });
+  const ghost = makeRecord('dispatch_2026-11-10_00000000-0000-4000-8000-000000000005', 'GLM', 'running', 30);
+  fs.writeFileSync(path.join(dispDir, '2026-11-10.json'), JSON.stringify([ghost]), 'utf-8');
+  const withGhost = await runInPage(async function () {
+    return await window.electronAPI.refreshDispatchSnapshot();
+  });
+  const beforeDelete = await runInPage(async function () {
+    return await window.electronAPI.getDispatchSnapshot();
+  });
+  check('S7 删除前快照含幽灵记录', (beforeDelete.records || []).some((r) => r.id === 'dispatch_2026-11-10_00000000-0000-4000-8000-000000000005'), JSON.stringify((beforeDelete.records || []).length));
+  check('S7 删除前目录完整', beforeDelete.complete === true, JSON.stringify({ errors: beforeDelete.errors, complete: beforeDelete.complete }));
+  fs.rmSync(path.join(dispDir, '2026-11-10.json'), { force: true });
+  await runInPage(async function () {
+    return await window.electronAPI.refreshDispatchSnapshot();
+  });
+  // 1 秒间隔的“先 stale 再确认移除”语义由 tests/test_dispatch_store.js 的纯逻辑用例
+  // 确定性覆盖；这里只断言最终结果，避免真实时钟造成 flaky。
+  await sleep(1300);
+  const afterSecond = await runInPage(async function () {
+    return await window.electronAPI.refreshDispatchSnapshot();
+  });
+  const afterSecondSnap = await runInPage(async function () {
+    return await window.electronAPI.getDispatchSnapshot();
+  });
+  check('S7 间隔 1 秒后幽灵记录移除', !(afterSecondSnap.records || []).some((r) => r.id === 'dispatch_2026-11-10_00000000-0000-4000-8000-000000000005'), JSON.stringify((afterSecondSnap.records || []).map((r) => r.id)));
+  check('S7 目录仍可访问时恢复 complete', afterSecondSnap.complete === true, JSON.stringify({ errors: afterSecondSnap.errors, complete: afterSecondSnap.complete }));
+  check('S7 revision 随删除推进', typeof afterSecond.revision === 'number' && afterSecond.revision >= withGhost.revision, 'before=' + withGhost.revision + ' after=' + afterSecond.revision);
+
   await finish(fail === 0 ? 0 : 1);
 }
 

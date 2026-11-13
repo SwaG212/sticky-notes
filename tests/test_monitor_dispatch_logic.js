@@ -335,6 +335,36 @@ test('天数格式', function () {
   var r = { status: 'completed', dispatchedAt: '2026-11-10T10:00:00Z', finishedAt: '2026-11-12T12:00:00Z', clockSource: 'local' };
   eq(logic.formatTotalElapsed(r, NOW), '2 天 02 小时 00 分钟', '2 天格式');
 });
+test('混合时钟源的终态标时间不确定（回归：muse 派出 + pc 结束）', function () {
+  var r = {
+    status: 'completed',
+    dispatchedAt: '2026-11-12T10:00:00Z',
+    finishedAt: '2026-11-12T10:22:00Z',
+    clockSource: { dispatchedAt: 'muse', finishedAt: 'pc', recordedAt: 'pc' }
+  };
+  eq(logic.formatTotalElapsed(r, NOW), '时间不确定', '不同来源不强行相减');
+  r = {
+    status: 'failed',
+    dispatchedAt: '2026-11-12T10:00:00Z',
+    finishedAt: '2026-11-12T10:22:00Z',
+    clockSource: { dispatchedAt: 'pc', finishedAt: 'executor', recordedAt: 'pc' }
+  };
+  eq(logic.formatTotalElapsed(r, NOW), '时间不确定', 'pc + executor 混合也不计算');
+  r = {
+    status: 'cancelled',
+    dispatchedAt: '2026-11-12T10:00:00Z',
+    finishedAt: '2026-11-12T10:22:00Z',
+    clockSource: { dispatchedAt: 'muse' }
+  };
+  eq(logic.formatTotalElapsed(r, NOW), '时间不确定', '缺 finishedAt 来源按不确定处理');
+  r = {
+    status: 'completed',
+    dispatchedAt: '2026-11-12T10:00:00Z',
+    finishedAt: '2026-11-12T10:22:00Z',
+    clockSource: { dispatchedAt: 'muse', finishedAt: 'muse', recordedAt: 'pc' }
+  };
+  eq(logic.formatTotalElapsed(r, NOW), '22 分钟', '同源终态仍正常冻结');
+});
 
 console.log('\n[11] 时间与汇总');
 test('formatDispatchTime 合法格式与非法值', function () {
