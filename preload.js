@@ -29,6 +29,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveTasksByDate: (dateStr, tasks) => ipcRenderer.invoke('save-tasks-by-date', dateStr, tasks),
   getMonitorSnapshot: () => ipcRenderer.invoke('tasks:get-snapshot'),
   refreshMonitorSnapshot: () => ipcRenderer.invoke('tasks:refresh'),
+  getDispatchSnapshot: () => ipcRenderer.invoke('dispatches:get-snapshot'),
+  refreshDispatchSnapshot: () => ipcRenderer.invoke('dispatches:refresh'),
+  getMonitorDispatchSource: () => ipcRenderer.invoke('monitor:get-dispatch-source'),
+  setMonitorDispatchSource: (enabled) => ipcRenderer.invoke('monitor:set-dispatch-source', enabled),
+  onDispatchChanged: (cb) => { const handler = (_event, payload) => cb(payload); ipcRenderer.on('dispatches:changed', handler); return () => ipcRenderer.removeListener('dispatches:changed', handler); },
+  onMonitorChanged: (cb) => { const handler = (_event, payload) => cb(payload); ipcRenderer.on('dispatches:changed', handler); return () => ipcRenderer.removeListener('dispatches:changed', handler); },
   onTasksChanged: (cb) => { const handler = (_event, payload) => cb(payload); ipcRenderer.on('tasks:changed', handler); return () => ipcRenderer.removeListener('tasks:changed', handler); },
 
   // 窗口位置

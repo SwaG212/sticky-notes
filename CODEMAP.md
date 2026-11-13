@@ -56,12 +56,15 @@ package.json (`main: main.js`)
 
 | 文件或目录 | 职责 | 何时修改 |
 |---|---|---|
-| `main.js` | Electron 生命周期、窗口、托盘、快捷键、配置、任务/笔记文件、AI、OCR、提醒、IPC | 系统能力、文件存储、IPC、AI/OCR、安全校验 |
-| `preload.js` | 将允许的 IPC 方法暴露为 `window.electronAPI` | 新增或改变渲染层与主进程通信 |
-| `renderer/index.html` | 三个页面与设置遮罩的静态 DOM 骨架 | 新增控件、页面区域、设置项 |
-| `renderer/renderer.js` | 全局前端状态、事件绑定、渲染、任务/日历/笔记/工具箱交互 | 几乎所有产品交互与前端逻辑 |
-| `renderer/styles.css` | 全局变量、布局、组件状态、动画、三个页面样式 | 视觉、动效、响应状态、可访问性样式 |
+| `main.js` | Electron 生命周期、窗口、托盘、快捷键、配置、任务/笔记文件、AI、OCR、提醒、IPC；另有派活快照/监听/IPC 链（`getDispatchSnapshot`、`emitDispatchChanged`、`startDispatchWatcher`，与任务链完全独立） | 系统能力、文件存储、IPC、AI/OCR、安全校验 |
+| `preload.js` | 将允许的 IPC 方法暴露为 `window.electronAPI`；派活只读桥（`getDispatchSnapshot`/`refreshDispatchSnapshot`/`onDispatchChanged`/`onMonitorChanged`/`getMonitorDispatchSource`/`setMonitorDispatchSource`），原有任务桥保留 | 新增或改变渲染层与主进程通信 |
+| `renderer/index.html` | 四个页面与设置遮罩的静态 DOM 骨架（含监控台派活分页与展开返回头） | 新增控件、页面区域、设置项 |
+| `renderer/renderer.js` | 全局前端状态、事件绑定、渲染、任务/日历/笔记/工具箱交互，监控台双数据源（旧日程/派活专区） | 几乎所有产品交互与前端逻辑 |
+| `renderer/styles.css` | 全局变量、布局、组件状态、动画、四个页面样式 | 视觉、动效、响应状态、可访问性样式 |
 | `atomic-write.js` | 同目录临时文件 + 刷盘 + 替换的原子写入 | 可靠写盘策略 |
+| `task-file-lock.js` | 任务日期文件的共享互斥（M1 残留回收锁，仅日程用） | 日程写盘并发 |
+| `dispatch-store.js` | 派活记录存储不变量：字段/状态机/幂等/版本/去重/快照合并/预算；纯逻辑，可被 main 与 PC 写入口复用；另有命令行 transact 入口 | 派活存储规则变化 |
+| `scripts/dispatch-record.ps1` | 派活记录 PC 写入口（SSH 白名单）：FileStream 独占句柄锁 + 原子替换 + 双版本备份 + 回读 | 派活写入/锁/备份规则变化 |
 | `window-bounds.js` | 将窗口位置限制在显示器工作区 | 多屏与窗口定位 |
 | `tests/` | 生产应用的纯逻辑、DOM 仿真、回归和历史里程碑测试 | 修改对应行为时补充或运行测试 |
 | `assets/` | 应用图标、OCR 语言包 | 图标或 OCR 资源 |
@@ -76,11 +79,12 @@ package.json (`main: main.js`)
 
 ### DOM 页面
 
-`renderer/index.html` 中的 `.pages-container` 横向承载三个页面：
+`renderer/index.html` 中的 `.pages-container` 横向承载四个页面：
 
 1. `.page-main`：任务列表、项目页签、日历、文本/图片输入、整理、日报。
 2. `.page-notepad`：Markdown 笔记编辑器、文件列表、文件/内容搜索、设置入口。
 3. `.page-tools`：翻译卡、视频下载卡；所有功能卡通过 `#tool-card-template` 与 `createToolCard()` 统一创建。
+4. `.page-monitor`：监控台。Flag 关闭显示 Muse 日程；Flag 开启显示派活专区（四标签计数、卡片、50 条分页、满窗展开详情）。
 
 新增功能卡时不要手写 `.tool-card` 根节点，统一使用：
 
@@ -99,7 +103,8 @@ toolsCards.appendChild(card);
 - 任务：`tasks`、`activeSheet`、`projectNames`、输入图片和整理状态。
 - 日历：当前月、选中日期、当日视图、历史任务缓存映射和周条状态。
 - 笔记：文件列表、当前文件、原始/当前内容、置顶、搜索和图片缓存。
-- 页面/设置：`currentPage`、快捷键、页面与工具启用开关。
+- 监控台：`monitorSource`（`'tasks'` 旧日程 / `'dispatches'` 派活专区）、`monitorTasks`、`monitorDispatches`、`monitorEpoch`/`monitorRevision`（按数据源独立计数）、`monitorPage`/`monitorPageSize`、`monitorSnapshotMeta`（完整性/错误/监听健康）、`monitorExpandedId`。
+- 页面/设置：`currentPage`、快捷键、页面与工具启用开关、`monitorDispatchesEnabled`。
 
 `init()` 负责读取配置、恢复页面、加载数据并绑定全部 DOM/IPC 事件。新增交互入口通常需要同时检查 `index.html`、`init()` 和对应的渲染函数。
 
@@ -119,6 +124,9 @@ toolsCards.appendChild(card);
 | AI 命名 | `aiNameNote` |
 | 提醒 | `checkAlarms`、`showAlarmWindow`、`startAlarmTimer` |
 | 安全校验 | `isTrustedSender`、任务/笔记/图片输入校验 |
+| 派活快照/监听 | `getDispatchSnapshot`、`emitDispatchChanged`、`startDispatchWatcher`、`readDispatchSnapshotFiles`（只读 dispatches 目录，不创建；与任务快照链完全独立） |
+| 派活 Feature Flag | 配置字段 `monitorDispatchesEnabled`（默认 false）；IPC `monitor:get-dispatch-source` / `monitor:set-dispatch-source`（仅受信发送方，非法值忽略） |
+| 派活页面渲染 | 渲染层 `renderDispatchMonitor`、`buildDispatchCard`、`buildDispatchDetail`、`expandDispatchDetail`、`shiftMonitorPage`、`setMonitorSource`；旧日程路径 `renderMonitor`/`buildMonitorTaskCard` 保留在 Flag 关闭时 |
 | IPC | `setupIPC` |
 | 窗口 | `createWindow`、`showWindow`、`hideWindow`、`getWindowPosition` |
 | 托盘/快捷键 | `createTray`、`registerToggleShortcut` |
@@ -138,7 +146,7 @@ renderer/renderer.js 调用 window.electronAPI.xxx
   → 返回 renderer 更新 state 并重新渲染
 ```
 
-IPC 按功能分为：窗口事件、AI 整理、配置、自启动、任务文件、窗口位置、页面状态、笔记及图片、日报、翻译、视频下载。新增通道一般必须同时修改 `preload.js` 与 `main.js`；还需在主进程处理器中验证发送方和参数。
+IPC 按功能分为：窗口事件、AI 整理、配置、自启动、任务文件、窗口位置、页面状态、笔记及图片、日报、翻译、视频下载、派活快照（`dispatches:get-snapshot` / `dispatches:refresh` / `dispatches:changed` / `monitor:get-dispatch-source` / `monitor:set-dispatch-source`）。新增通道一般必须同时修改 `preload.js` 与 `main.js`；还需在主进程处理器中验证发送方和参数。
 
 ## 7. 关键业务调用链
 
@@ -228,6 +236,7 @@ config.enc                  加密配置、API Key、页面开关、快捷键
                             以及视频下载目录与最近 5 条目录历史
 window-state.json           非固定窗口的位置
 tasks/YYYY-MM-DD.json       每日任务数组
+dispatches/YYYY-MM-DD.json  每日派活记录数组（监控台派活专区的数据源，见 docs/monitor-sessions-design.md V1 基线）
 notes/*.md                  默认笔记文件（可在设置中改成自定义目录）
 notes/pins.json             置顶文件名列表
 notes/attachments/*         笔记图片
@@ -236,6 +245,7 @@ notes/attachments/*         笔记图片
 关键约束：
 
 - JSON 和笔记保存优先走 `atomicWriteFileSync`，避免异常退出留下半文件。
+- 派活记录只走 `scripts/dispatch-record.ps1` 的 FileStream 句柄锁事务，不走任务 M1 残留回收锁，不走 `atomicWriteFileSync` 的通用路径。
 - 笔记只允许存储目录根层的 `.md` 文件。
 - 路径同时做词法与真实路径校验，防止 `..`、符号链接或 Junction 越界。
 - 删除笔记优先发送到 Windows 回收站，失败时才直接删除。
@@ -247,6 +257,11 @@ notes/attachments/*         笔记图片
 | 修改区域 | 优先检查的测试 |
 |---|---|
 | 原子写入 | `tests/test_atomic_write.js` |
+| 派活存储不变量 | `tests/test_dispatch_store.js`（Node 直接跑，133 断言） |
+| 派活写入口/锁/备份 | `tests/test_dispatch_record_ps1.ps1`（只在 Windows PowerShell 5.1 上跑，用临时数据根） |
+| 派活渲染函数 | `tests/test_monitor_dispatch_logic.js`（Node 直接跑，167 断言） |
+| 派活快照/IPC/Flag/监听 | `tests/test_dispatch_snapshot_electron.js`（Electron 主进程测试，隔离 userData，20 断言；只能走交互式计划任务跑） |
+| 派活专区页面（标签/卡片/分页/满窗展开/空态） | `tests/test_monitor_dispatch_dom.js`（Electron DOM 测试，54 断言；只能走交互式计划任务跑） |
 | 窗口定位/多屏 | `tests/test_window_bounds.js` |
 | 任务加载与跨天迁移 | `tests/test_load_tasks.js`、`tests/test_sort_order.js`、`tests/m3-test.js` |
 | 排序与拖拽 | `tests/test_sort_order.js` |
@@ -279,6 +294,7 @@ notes/attachments/*         笔记图片
 | 修改窗口、托盘、失焦隐藏、多屏 | `main.js` 窗口/托盘区块 | `window-bounds.js`、`renderer.js:init` |
 | 修改翻译工具 | `renderer.js` 工具箱翻译区块 | `main.js:translateText`、`preload.js` |
 | 修改视频下载工具 | `renderer.js` 视频下载卡区块 | `main.js:runVideoDownload`、`preload.js`、视频下载测试 |
+| 修改监控台（派活专区/标签/卡片/展开） | `renderer.js` 派活区块、`styles.css` 派活样式 | `index.html` 监控台 DOM、`renderer/monitor-logic.js`、`main.js` 派活链、派活 DOM/逻辑测试 |
 | 修改小智助手原型 | `assistant-prototype/README.md`、`DEVELOPMENT_GUIDE.md` | 对应 `src/` 分层；不要改生产主链路 |
 | 修改打包、版本、安装器 | `package.json` | `scripts/clean-locales.js`、图标资源 |
 
@@ -295,3 +311,5 @@ notes/attachments/*         笔记图片
 - `main.js` 和 `renderer/renderer.js` 都是大型单文件；当前功能按区块组织，不要仅为“看起来更架构化”就拆文件。
 - README 中的技术版本或目录示例可能滞后，以 `package.json` 和实际源码为准。
 - 新增 IPC、文件读写和图片处理时，安全边界与大小限制属于必要逻辑，不能为缩小改动而绕过。
+- 监控台有两条互斥的数据源：Flag `monitorDispatchesEnabled` 关闭走旧日程（`tasks:get-snapshot`），开启走派活（`dispatches:get-snapshot`）。切换时必须走 `setMonitorSource` 清空 `monitorRevision`/`monitorEpoch`，两条链的版本号各自独立，混用会把新源的低 revision 快照误判为过期而整份丢弃。
+- 派活展开是简化契约：覆盖层临时挂到 `body` 上用 `position:fixed` 铺满窗口（`(0,0,360,500)`），没有位移缩放动画，也不用右上 ×，只留“← 返回”；旧日程展开路径保持原实现。

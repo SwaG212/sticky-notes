@@ -2965,6 +2965,178 @@ body {
   transition: opacity 250ms ease;
 }
 
+/* ===== 派活专区（监控台 Feature Flag 开启时；仅监控作用域） ===== */
+.monitor-footer {
+  gap: 8px;
+}
+.monitor-pager {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+}
+.monitor-pager[hidden] {
+  display: none;
+}
+.monitor-pager-btn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.monitor-pager-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.monitor-pager-status {
+  font-size: 11px;
+  color: #5F6B7A;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.monitor-dispatch-card {
+  gap: 6px;
+}
+.monitor-dispatch-card:focus-visible {
+  outline: 2px solid #0A24E9;
+  outline-offset: 1px;
+}
+.monitor-dispatch-alert {
+  border-color: #FECACA;
+}
+.monitor-dispatch-alert .monitor-status {
+  color: #B91C1C;
+}
+.monitor-dispatch-progress-label {
+  font-size: 11px;
+  color: #5F6B7A;
+  flex-shrink: 0;
+}
+.monitor-stage {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #5F6B7A;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.monitor-dispatch-card .monitor-progress-row {
+  gap: 6px;
+}
+.monitor-last-update {
+  color: #7C8798;
+}
+.monitor-issue-banner {
+  flex-shrink: 0;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid #FECACA;
+  border-radius: 8px;
+  background: #FEF2F2;
+  color: #B91C1C;
+  font-size: 11px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* 简化展开契约：满窗 (0,0,360,500)，覆盖层临时挂到 body 上用 fixed 定位，
+   几何直接是窗口尺寸，不做原卡位移缩放动画；不用右上 ×，只留“← 返回”。 */
+.monitor-expand-overlay.monitor-expand-window {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 100vw;
+  height: 100vh;
+  border-radius: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  transition: none;
+}
+.monitor-expand-overlay.monitor-expand-window .monitor-expand-close {
+  display: none;
+}
+/* 旧日程监控（Flag 关闭）沿用原展开态，不显示新的返回头 */
+.monitor-expand-overlay:not(.monitor-expand-window) .monitor-expand-head {
+  display: none;
+}
+.monitor-expand-head {
+  height: 40px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 8px 12px 0;
+  box-sizing: content-box;
+}
+.monitor-expand-back {
+  min-width: 64px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid var(--border);
+  color: #0B0D17;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.monitor-expand-back:hover {
+  border-color: #CACED6;
+}
+.monitor-expand-back:focus-visible {
+  outline: 2px solid #0A24E9;
+  outline-offset: 1px;
+}
+.monitor-expand-window #monitor-expand-card {
+  flex: 1;
+  min-height: 0;
+  padding: 0 16px 12px;
+  overflow-y: auto;
+}
+#monitor-expand-card .monitor-detail-head.monitor-task {
+  height: auto;
+  cursor: default;
+}
+.monitor-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.monitor-detail-section {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.monitor-detail-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0B0D17;
+  margin: 0 0 4px;
+}
+.monitor-detail-line {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #3C4655;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
 /* 设置：页面顺序 */
 .page-order-row {
   display: flex;

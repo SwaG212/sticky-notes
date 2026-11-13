@@ -9,6 +9,7 @@ const { pathToFileURL } = require('url');
 const { atomicWriteFileSync } = require('./atomic-write');
 const crypto = require('crypto');
 const MonitorLogic = require('./renderer/monitor-logic');
+const DispatchStore = require('./dispatch-store');
 const { withTaskFileLock } = require('./task-file-lock');
 const { fitBoundsToWorkArea } = require('./window-bounds');
 
@@ -104,6 +105,7 @@ function loadConfig() {
       cachedConfig.toolsEnabled = normalizeToolsEnabled(cachedConfig.toolsEnabled);
       if (!cachedConfig.pagesEnabled || typeof cachedConfig.pagesEnabled !== 'object' || Array.isArray(cachedConfig.pagesEnabled)) cachedConfig.pagesEnabled = {};
       if (typeof cachedConfig.pagesEnabled.monitor !== 'boolean') cachedConfig.pagesEnabled.monitor = true;
+      if (typeof cachedConfig.monitorDispatchesEnabled !== 'boolean') cachedConfig.monitorDispatchesEnabled = false;
       if (!cachedConfig.blurHide || typeof cachedConfig.blurHide !== 'object' || Array.isArray(cachedConfig.blurHide)) cachedConfig.blurHide = { tasks: true, notepad: true, tools: true, monitor: true };
       if (typeof cachedConfig.blurHide.monitor !== 'boolean') cachedConfig.blurHide.monitor = true;
       {
@@ -121,7 +123,7 @@ function loadConfig() {
       return cachedConfig;
     }
   } catch (e) { /* ignore */ }
-  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', notesDirHistory: [], videoDownloadDir: '', videoDownloadDirHistory: [], projectNames: [], pageOrder: ['main', 'notepad', 'tools', 'monitor'], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2', switchTools: 'Alt+3' }, pagesEnabled: { tasks: true, tools: true, monitor: true }, toolsEnabled: { translate: true, videoDownload: true }, blurHide: { tasks: true, notepad: true, tools: true, monitor: true } };
+  cachedConfig = { apiKey: '', baseUrl: 'https://api.deepseek.com', reportName: '', notesDir: '', notesDirHistory: [], videoDownloadDir: '', videoDownloadDirHistory: [], projectNames: [], monitorDispatchesEnabled: false, pageOrder: ['main', 'notepad', 'tools', 'monitor'], shortcuts: { toggle: 'Alt+`', organize: 'Ctrl+Enter', switchTask: 'Alt+1', switchNotepad: 'Alt+2', switchTools: 'Alt+3' }, pagesEnabled: { tasks: true, tools: true, monitor: true }, toolsEnabled: { translate: true, videoDownload: true }, blurHide: { tasks: true, notepad: true, tools: true, monitor: true } };
   return cachedConfig;
 }
 
@@ -1101,6 +1103,7 @@ function getMonitorSnapshot() {
   }
   return {
     revision: monitorRevision,
+    source: 'tasks',
     tasks: monitorSnapshotCache || [],
     errors: snap.errors,
     fileCount: snap.fileCount
@@ -1349,6 +1352,400 @@ function stopTasksWatcher() {
   tasksWatcherRetryCount = 0;
 }
 
+// ============ 派活快照 + dispatches 目录监听（与任务链完全独立） ============
+let dispatchEpoch = 0;
+let dispatchGeneration = 0;
+let dispatchPrevState = { generation: 0, byFile: {} };
+let dispatchRevision = 0;
+let dispatchEmittedRevision = 0; // 已通过 dispatches:changed 广播的 revision
+let dispatchSnapshotCache = null; // 上次合并结果 {records, complete, staleFileCount, oldestSnapshotAt, unreadDates, errors, warnings}
+let dispatchSnapshotKey = '';
+let dispatchFileHashes = new Map();
+let dispatchWatcher = null;
+let dispatchWatcherHealthy = true;
+let dispatchWatcherRetryTimer = null;
+let dispatchWatcherRetryCount = 0;
+let dispatchPollTimer = null;
+let dispatchHashTimer = null;
+let dispatchDirtyFiles = new Set();
+let dispatchFullRescan = false;
+let dispatchDebounceTimer = null;
+let dispatchLastDebounceStart = 0;
+let dispatchDirListing = new Map();
+
+function getDispatchesDir() {
+  return path.join(userDataPath, 'dispatches');
+}
+
+function readDispatchFileOnce(filePath, dateStr) {
+  var stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch (e) {
+    return { date: dateStr, ok: false, error: 'READ_FAILED', bytes: 0 };
+  }
+  if (!stat.isFile()) return null;
+  if (stat.size > DispatchStore.DISPATCH_FILE_MAX_BYTES) {
+    return { date: dateStr, ok: false, error: 'FILE_TOO_LARGE', bytes: stat.size };
+  }
+  var buf = null;
+  var lastErr = null;
+  for (var attempt = 0; attempt < 3; attempt++) {
+    try {
+      buf = fs.readFileSync(filePath);
+      lastErr = null;
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 2) {
+        var until = Date.now() + 100;
+        while (Date.now() < until) { /* 短暂等待后重试 */ }
+      }
+    }
+  }
+  if (!buf) {
+    return { date: dateStr, ok: false, error: 'READ_FAILED', bytes: stat.size };
+  }
+  var text = buf.toString('utf-8');
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  var rawArr;
+  try {
+    rawArr = JSON.parse(text);
+  } catch (e) {
+    return { date: dateStr, ok: false, error: 'PARSE_ERROR', bytes: buf.length };
+  }
+  if (!Array.isArray(rawArr)) {
+    return { date: dateStr, ok: false, error: 'PARSE_ERROR', bytes: buf.length };
+  }
+  return { date: dateStr, ok: true, records: rawArr, hash: sha256Hex(buf), bytes: buf.length, readAt: new Date().toISOString() };
+}
+
+function readDispatchSnapshotFiles() {
+  var dir = getDispatchesDir();
+  if (!fs.existsSync(dir)) {
+    return { fileResults: [], dirMissing: true };
+  }
+  var files;
+  try {
+    files = fs.readdirSync(dir);
+  } catch (e) {
+    return { fileResults: [], dirMissing: false, readDirError: true };
+  }
+  var dates = [];
+  for (var i = 0; i < files.length; i++) {
+    if (MonitorLogic.isValidTaskDateFilename(files[i])) dates.push(files[i].slice(0, -5));
+  }
+  dates.sort().reverse();
+  var fileResults = [];
+  for (var j = 0; j < dates.length; j++) {
+    var r = readDispatchFileOnce(path.join(dir, dates[j] + '.json'), dates[j]);
+    if (r) fileResults.push(r);
+  }
+  return { fileResults: fileResults, dirMissing: false };
+}
+
+function getDispatchSnapshot() {
+  var read = readDispatchSnapshotFiles();
+  var nowIso = new Date().toISOString();
+  if (read.dirMissing || read.readDirError) {
+    var prev = dispatchSnapshotCache;
+    var hadData = !!(prev && prev.records && prev.records.length);
+    var cacheRecords = (prev && prev.records) ? prev.records : [];
+    var cacheStale = (prev && typeof prev.staleFileCount === 'number') ? prev.staleFileCount : 0;
+    var cacheOldest = (prev && prev.oldestSnapshotAt) ? prev.oldestSnapshotAt : null;
+    return {
+      epoch: dispatchEpoch,
+      revision: dispatchRevision,
+      source: 'dispatches',
+      records: cacheRecords,
+      warnings: [],
+      errors: [{ file: '*', error: read.dirMissing ? 'DIR_MISSING' : 'READDIR_FAILED' }],
+      complete: !hadData && !read.readDirError ? true : false,
+      staleFileCount: cacheStale,
+      oldestSnapshotAt: cacheOldest,
+      unreadDates: [],
+      lastReadAt: nowIso,
+      watcherHealthy: dispatchWatcherHealthy,
+      dirMissing: !!read.dirMissing
+    };
+  }
+  dispatchGeneration++;
+  var merged = DispatchStore.mergeFileSnapshots(dispatchPrevState, read.fileResults, dispatchGeneration);
+  dispatchPrevState = merged.state;
+  var key = JSON.stringify({ records: merged.records, complete: merged.complete, errors: merged.errors, unreadDates: merged.unreadDates, staleFileCount: merged.staleFileCount });
+  if (key !== dispatchSnapshotKey) {
+    dispatchRevision++;
+    dispatchSnapshotKey = key;
+  }
+  dispatchSnapshotCache = {
+    records: merged.records,
+    complete: merged.complete,
+    staleFileCount: merged.staleFileCount,
+    oldestSnapshotAt: merged.oldestSnapshotAt,
+    unreadDates: merged.unreadDates,
+    errors: merged.errors,
+    warnings: merged.warnings
+  };
+  for (var i = 0; i < read.fileResults.length; i++) {
+    var fr = read.fileResults[i];
+    if (fr && fr.hash) dispatchFileHashes.set(fr.date, fr.hash);
+  }
+  return {
+    epoch: dispatchEpoch,
+    revision: dispatchRevision,
+    source: 'dispatches',
+    records: merged.records,
+    warnings: merged.warnings,
+    errors: merged.errors,
+    complete: merged.complete,
+    staleFileCount: merged.staleFileCount,
+    oldestSnapshotAt: merged.oldestSnapshotAt,
+    unreadDates: merged.unreadDates,
+    lastReadAt: nowIso,
+    watcherHealthy: dispatchWatcherHealthy,
+    dirMissing: false
+  };
+}
+
+function emitDispatchChanged(reason) {
+  getDispatchSnapshot();
+  if (dispatchEmittedRevision === dispatchRevision) return;
+  if (win && !win.isDestroyed()) {
+    dispatchEmittedRevision = dispatchRevision;
+    win.webContents.send('dispatches:changed', { epoch: dispatchEpoch, revision: dispatchRevision, reason: reason });
+  }
+}
+
+function processDispatchDirty() {
+  var dir = getDispatchesDir();
+  var readAllHashes = function () {
+    var map = new Map();
+    try {
+      if (!fs.existsSync(dir)) return map;
+      var files = fs.readdirSync(dir);
+      for (var i = 0; i < files.length; i++) {
+        if (!MonitorLogic.isValidTaskDateFilename(files[i])) continue;
+        try { map.set(files[i], sha256Hex(fs.readFileSync(path.join(dir, files[i])))); } catch (e) {}
+      }
+    } catch (e) {}
+    return map;
+  };
+  var mapsEqual = function (a, b) {
+    if (a.size !== b.size) return false;
+    var equal = true;
+    a.forEach(function (val, key) {
+      if (b.get(key) !== val) equal = false;
+    });
+    return equal;
+  };
+  var finish = function () {
+    dispatchDirtyFiles.clear();
+    dispatchFullRescan = false;
+    emitDispatchChanged('watch');
+  };
+  var first = readAllHashes();
+  setTimeout(function () {
+    var second = readAllHashes();
+    if (mapsEqual(first, second)) {
+      finish();
+      return;
+    }
+    setTimeout(function () {
+      var third = readAllHashes();
+      if (mapsEqual(second, third)) finish();
+    }, 300);
+  }, 100);
+}
+
+function markDispatchDirty(filename) {
+  if (filename && MonitorLogic.isValidTaskDateFilename(filename)) {
+    dispatchDirtyFiles.add(filename);
+  } else {
+    dispatchFullRescan = true;
+  }
+  scheduleDispatchDirtyProcess();
+}
+
+function scheduleDispatchDirtyProcess() {
+  var now = Date.now();
+  if (dispatchDebounceTimer) {
+    if (now - dispatchLastDebounceStart > 1000) {
+      clearTimeout(dispatchDebounceTimer);
+      dispatchDebounceTimer = null;
+      processDispatchDirty();
+    }
+    return;
+  }
+  dispatchLastDebounceStart = now;
+  dispatchDebounceTimer = setTimeout(function () {
+    dispatchDebounceTimer = null;
+    processDispatchDirty();
+  }, 250);
+}
+
+function attachDispatchWatcher() {
+  var dir = getDispatchesDir();
+  if (dispatchWatcher) {
+    try { dispatchWatcher.close(); } catch (e) {}
+    dispatchWatcher = null;
+  }
+  if (!fs.existsSync(dir)) {
+    dispatchWatcherHealthy = false;
+    return false;
+  }
+  try {
+    dispatchWatcher = fs.watch(dir, function (eventType, filename) {
+      try {
+        var name = typeof filename === 'string' ? filename : '';
+        markDispatchDirty(name || null);
+      } catch (e) {}
+    });
+    dispatchWatcherHealthy = true;
+    dispatchWatcherRetryCount = 0;
+    dispatchWatcher.on('error', function () {
+      dispatchWatcherHealthy = false;
+      try { dispatchWatcher.close(); } catch (e) {}
+      dispatchWatcher = null;
+      scheduleDispatchWatcherRebuild();
+    });
+    return true;
+  } catch (e) {
+    dispatchWatcherHealthy = false;
+    return false;
+  }
+}
+
+function scheduleDispatchWatcherRebuild() {
+  if (dispatchWatcherRetryTimer) return;
+  var delays = [1000, 3000, 10000, 30000];
+  var delay = delays[Math.min(dispatchWatcherRetryCount, delays.length - 1)];
+  dispatchWatcherRetryTimer = setTimeout(function () {
+    dispatchWatcherRetryTimer = null;
+    dispatchWatcherRetryCount++;
+    if (!attachDispatchWatcher()) {
+      scheduleDispatchWatcherRebuild();
+    }
+  }, delay);
+}
+
+function startDispatchWatcher() {
+  stopDispatchWatcher();
+  dispatchEpoch++;
+  var dir = getDispatchesDir();
+  dispatchDirListing = new Map();
+  try {
+    if (fs.existsSync(dir)) {
+      var files = fs.readdirSync(dir);
+      for (var i = 0; i < files.length; i++) {
+        try {
+          var st = fs.statSync(path.join(dir, files[i]));
+          dispatchDirListing.set(files[i], { mtimeMs: st.mtimeMs, size: st.size });
+        } catch (e) {}
+      }
+    }
+  } catch (e) {}
+  getDispatchSnapshot();
+  dispatchEmittedRevision = dispatchRevision;
+
+  dispatchPollTimer = setInterval(function () {
+    var current = new Map();
+    var dirExists = false;
+    try {
+      dirExists = fs.existsSync(dir);
+      if (dirExists) {
+        var fl = fs.readdirSync(dir);
+        for (var i = 0; i < fl.length; i++) {
+          try {
+            var s = fs.statSync(path.join(dir, fl[i]));
+            current.set(fl[i], { mtimeMs: s.mtimeMs, size: s.size });
+          } catch (e) {}
+        }
+      }
+    } catch (e) {}
+    var changed = false;
+    current.forEach(function (val, key) {
+      if (changed) return;
+      var prev = dispatchDirListing.get(key);
+      if (!prev || prev.mtimeMs !== val.mtimeMs || prev.size !== val.size) {
+        changed = true;
+      }
+    });
+    if (!changed) {
+      dispatchDirListing.forEach(function (val, key) {
+        if (changed) return;
+        if (!current.has(key)) {
+          changed = true;
+        }
+      });
+    }
+    dispatchDirListing = current;
+    if (changed) markDispatchDirty(null);
+    if (!dirExists) {
+      dispatchWatcherHealthy = false;
+      if (!dispatchWatcher) scheduleDispatchWatcherRebuild();
+    }
+  }, 5000);
+
+  dispatchHashTimer = setInterval(function () {
+    var d = getDispatchesDir();
+    var list = [];
+    try {
+      if (!fs.existsSync(d)) return;
+      list = fs.readdirSync(d).filter(function (f) { return MonitorLogic.isValidTaskDateFilename(f); });
+    } catch (e) {
+      return;
+    }
+    var changed = false;
+    for (var i = 0; i < list.length; i++) {
+      try {
+        var h = sha256Hex(fs.readFileSync(path.join(getDispatchesDir(), list[i])));
+        var dateStr = list[i].slice(0, -5);
+        if (dispatchFileHashes.get(dateStr) !== h) {
+          changed = true;
+          break;
+        }
+      } catch (e) {
+        changed = true;
+        break;
+      }
+    }
+    if (changed) markDispatchDirty(null);
+  }, 30000);
+
+  if (fs.existsSync(dir)) {
+    attachDispatchWatcher();
+  } else {
+    dispatchWatcherHealthy = false;
+    scheduleDispatchWatcherRebuild();
+  }
+}
+
+function stopDispatchWatcher() {
+  if (dispatchWatcher) {
+    try { dispatchWatcher.close(); } catch (e) {}
+    dispatchWatcher = null;
+  }
+  if (dispatchWatcherRetryTimer) {
+    clearTimeout(dispatchWatcherRetryTimer);
+    dispatchWatcherRetryTimer = null;
+  }
+  if (dispatchPollTimer) {
+    clearInterval(dispatchPollTimer);
+    dispatchPollTimer = null;
+  }
+  if (dispatchHashTimer) {
+    clearInterval(dispatchHashTimer);
+    dispatchHashTimer = null;
+  }
+  if (dispatchDebounceTimer) {
+    clearTimeout(dispatchDebounceTimer);
+    dispatchDebounceTimer = null;
+  }
+  dispatchDirtyFiles.clear();
+  dispatchFullRescan = false;
+  dispatchWatcherRetryCount = 0;
+}
+
 function readTasksFileRaw(dateStr) {
   const filePath = path.join(getTasksDir(), `${dateStr}.json`);
   if (!fs.existsSync(filePath)) {
@@ -1464,7 +1861,7 @@ function setupIPC() {
   });
   ipcMain.handle('set-settings-open', (_e, open) => { if (isTrustedSender(_e)) settingsOpen = open; });
   // 配置白名单:渲染层只能改这些字段,其余字段(含 apiKey 结构)一律丢弃
-  const CONFIG_WHITELIST = ['baseUrl', 'reportName', 'notesDir', 'projectNames', 'pageOrder', 'shortcuts', 'pagesEnabled', 'blurHide', 'winFixed', 'showSheetBar', 'showProjectBadge', 'showDailyReport', 'showCalendar'];
+  const CONFIG_WHITELIST = ['baseUrl', 'reportName', 'notesDir', 'projectNames', 'pageOrder', 'shortcuts', 'pagesEnabled', 'blurHide', 'winFixed', 'showSheetBar', 'showProjectBadge', 'showDailyReport', 'showCalendar', 'monitorDispatchesEnabled'];
   ipcMain.handle('save-config', async (_event, cfg) => {
     if (!isTrustedSender(_event)) return { success: false, error: 'FORBIDDEN' };
     const cur = loadConfig();
@@ -1575,6 +1972,27 @@ function setupIPC() {
     if (!isTrustedSender(_e)) return { revision: monitorRevision };
     emitTasksChanged('refresh');
     return { revision: monitorRevision };
+  });
+  ipcMain.handle('dispatches:get-snapshot', (_e) => {
+    if (!isTrustedSender(_e)) return { epoch: 0, revision: 0, source: 'dispatches', records: [], warnings: [], errors: [{ file: '*', error: 'FORBIDDEN' }], complete: false, staleFileCount: 0, oldestSnapshotAt: null, unreadDates: [], lastReadAt: new Date().toISOString(), watcherHealthy: false, dirMissing: false };
+    return getDispatchSnapshot();
+  });
+  ipcMain.handle('dispatches:refresh', (_e) => {
+    if (!isTrustedSender(_e)) return { revision: dispatchRevision };
+    emitDispatchChanged('refresh');
+    return { revision: dispatchRevision };
+  });
+  ipcMain.handle('monitor:get-dispatch-source', (_e) => {
+    if (!isTrustedSender(_e)) return false;
+    return loadConfig().monitorDispatchesEnabled === true;
+  });
+  ipcMain.handle('monitor:set-dispatch-source', (_e, enabled) => {
+    if (!isTrustedSender(_e)) return false;
+    if (typeof enabled !== 'boolean') return loadConfig().monitorDispatchesEnabled === true;
+    const cfg = loadConfig();
+    cfg.monitorDispatchesEnabled = enabled;
+    saveConfig(cfg);
+    return enabled;
   });
   ipcMain.handle('list-notes', (_e) => { if (!isTrustedSender(_e)) return []; return listNotes(); });
   ipcMain.handle('get-pinned-notes', (_e) => { if (!isTrustedSender(_e)) return []; return getPinnedNotes(); });
@@ -1929,6 +2347,7 @@ app.whenReady().then(() => {
 
   setupIPC();
   startTasksWatcher();
+  startDispatchWatcher();
   createTray();
 
   const cfg = loadConfig();
@@ -1974,6 +2393,7 @@ app.on('before-quit', (event) => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   stopTasksWatcher();
+  stopDispatchWatcher();
   if (activeVideoDownload?.status === 'downloading') {
     activeVideoDownload.quitting = true;
     try { activeVideoDownload.controller.abort(); } catch (error) { /* already settled */ }

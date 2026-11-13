@@ -133,11 +133,19 @@
         <button class="monitor-filter-tab" data-filter="completed" role="tab" aria-pressed="false">已完成 <span class="monitor-filter-count">0</span></button>
       </div>
       <div id="monitor-list" class="monitor-list"></div>
-      <div class="notepad-footer">
+      <div class="notepad-footer monitor-footer">
         <button id="btn-monitor-back">←</button>
+        <div id="monitor-pager" class="monitor-pager" hidden>
+          <button id="monitor-pager-prev" class="monitor-pager-btn" type="button" title="上一页">←</button>
+          <span id="monitor-pager-status" class="monitor-pager-status" aria-live="polite"></span>
+          <button id="monitor-pager-next" class="monitor-pager-btn" type="button" title="下一页">→</button>
+        </div>
         <button id="btn-monitor-forward">→</button>
       </div>
       <div id="monitor-expand-overlay" class="monitor-expand-overlay hidden">
+        <div class="monitor-expand-head">
+          <button id="monitor-expand-back" class="monitor-expand-back" type="button">← 返回</button>
+        </div>
         <div id="monitor-expand-card"></div>
         <button id="monitor-expand-close" class="monitor-expand-close" title="收起">×</button>
       </div>
@@ -243,6 +251,11 @@
             <span class="page-row-name">监控台</span>
             <label class="checkbox-label page-col"><input type="checkbox" id="settings-monitor-page"></label>
             <label class="checkbox-label page-col"><input type="checkbox" id="settings-blurhide-monitor" checked></label>
+          </div>
+          <div class="page-row page-row-sub">
+            <span class="page-row-name">监控台显示派活</span>
+            <label class="checkbox-label page-col"><input type="checkbox" id="settings-monitor-dispatches" title="开启后监控台只显示 Muse 派给 agent 的派活；关闭时保持旧日程监控"></label>
+            <span class="page-col"></span>
           </div>
         </div>
         <div class="settings-card">

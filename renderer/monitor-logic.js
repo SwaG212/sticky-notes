@@ -16,7 +16,8 @@
     Muse: { label: 'Muse', color: '#2563eb' },
     Sol: { label: 'Sol', color: '#16a34a' },
     DeepSeek: { label: 'DeepSeek', color: '#1e40af' },
-    Astra: { label: 'Astra', color: '#7c3aed' }
+    Astra: { label: 'Astra', color: '#7c3aed' },
+    GLM: { label: 'GLM', color: '#0F766E', bg: '#F0FDFA' }
   };
   var MODEL_UNKNOWN = { label: '未知模型', color: '#64748B' };
   var MODEL_UNSPECIFIED = { label: '未指定', color: '#64748B' };
@@ -27,6 +28,17 @@
     completed: { label: '已完成', color: '#64748B', bg: '#F1F5F9', progressColor: '#64748B' },
     blocked: { label: '阻塞', color: '#B91C1C', bg: '#FEF2F2', progressColor: '#B91C1C' },
     failed: { label: '失败', color: '#B91C1C', bg: '#FEF2F2', progressColor: '#B91C1C' }
+  };
+
+  var DISPATCH_STATUSES = ['waiting', 'running', 'blocked', 'completed', 'failed', 'cancelled'];
+
+  var DISPATCH_STATUS_META = {
+    waiting: { label: '已派·等待中', color: '#92400E', bg: '#FFFBEB', progressColor: '#B45309' },
+    running: { label: '运行中', color: '#15803D', bg: '#F0FDF4', progressColor: '#15803D' },
+    blocked: { label: '阻塞', color: '#B91C1C', bg: '#FEF2F2', progressColor: '#B91C1C' },
+    completed: { label: '已完成', color: '#64748B', bg: '#F1F5F9', progressColor: '#64748B' },
+    failed: { label: '失败', color: '#B91C1C', bg: '#FEF2F2', progressColor: '#B91C1C' },
+    cancelled: { label: '已取消', color: '#64748B', bg: '#F1F5F9', progressColor: '#64748B' }
   };
 
   function isTaskObject(value) {
@@ -498,6 +510,402 @@
     return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d;
   }
 
+  function isTerminalDispatchStatus(status) {
+    return status === 'completed' || status === 'failed' || status === 'cancelled';
+  }
+
+  function normalizeDispatch(raw, fileDate, index) {
+    var warnings = [];
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { dispatch: null, warnings: ['not-an-object'] };
+    }
+    var out = Object.assign({}, raw);
+    if (typeof out.id !== 'string' || out.id === '') {
+      warnings.push('id-missing');
+      out.id = '_noid_' + (fileDate || 'unknown') + '_' + (index || 0);
+    } else {
+      var idMatch = /^dispatch_(\d{4})-(\d{2})-(\d{2})_([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/.exec(out.id);
+      if (!idMatch) {
+        warnings.push('id-invalid');
+      } else {
+        var iy = parseInt(idMatch[1], 10);
+        var im = parseInt(idMatch[2], 10) - 1;
+        var iday = parseInt(idMatch[3], 10);
+        var idt = new Date(iy, im, iday);
+        if (idt.getFullYear() !== iy || idt.getMonth() !== im || idt.getDate() !== iday) {
+          warnings.push('id-invalid');
+        }
+      }
+    }
+    if (typeof out.model === 'string' && out.model !== '') {
+      if (!Object.prototype.hasOwnProperty.call(MODEL_META, out.model)) {
+        warnings.push('model-unknown');
+      }
+    } else {
+      out.model = null;
+      warnings.push('model-missing');
+    }
+    if (typeof out.status === 'string' && DISPATCH_STATUSES.indexOf(out.status) >= 0) {
+      // 保留
+    } else {
+      warnings.push('status-unknown');
+      if (typeof out.status !== 'string' || out.status === '') {
+        out.status = null;
+      }
+    }
+    var p = out.progress;
+    if (p === null || typeof p === 'undefined') {
+      out.progress = null;
+    } else if (typeof p === 'number' && isFinite(p)) {
+      if (Math.floor(p) !== p) {
+        p = Math.round(p);
+      }
+      if (p < 0) { p = 0; }
+      if (p > 100) { p = 100; }
+      out.progress = p;
+    } else {
+      warnings.push('progress-invalid');
+      out.progress = null;
+    }
+    if (out.progress !== null) {
+      if (out.status === 'completed') {
+        if (out.progress !== 100) {
+          warnings.push('progress-invalid');
+          out.progress = null;
+        }
+      } else if (out.progress === 100) {
+        warnings.push('progress-invalid');
+        out.progress = null;
+      }
+    }
+    if (typeof out.dispatchedAt !== 'string' || !isValidDateString(out.dispatchedAt)) {
+      out.dispatchedAt = null;
+      warnings.push('dispatchedAt-invalid');
+    }
+    if (out.finishedAt === null || typeof out.finishedAt === 'undefined') {
+      out.finishedAt = null;
+    } else if (typeof out.finishedAt !== 'string' || !isValidDateString(out.finishedAt)) {
+      out.finishedAt = null;
+      warnings.push('finishedAt-invalid');
+    }
+    if (typeof out.recordedAt !== 'string' || !isValidDateString(out.recordedAt)) {
+      out.recordedAt = null;
+      warnings.push('recordedAt-invalid');
+    }
+    if (isTerminalDispatchStatus(out.status) && out.finishedAt === null) {
+      warnings.push('finishedAt-missing');
+    }
+    if (out.observationHealth !== 'fresh' && out.observationHealth !== 'stale' && out.observationHealth !== 'unknown') {
+      out.observationHealth = 'fresh';
+      warnings.push('observation-invalid');
+    }
+    if (typeof out.observationDetail !== 'string' && out.observationDetail !== null) {
+      out.observationDetail = null;
+    }
+    if (typeof out.task !== 'string' || out.task === '') {
+      out.task = '';
+      warnings.push('task-missing');
+    }
+    var textFields = ['project', 'goal', 'statusDetail', 'executorRef'];
+    for (var fi = 0; fi < textFields.length; fi++) {
+      var fv = out[textFields[fi]];
+      if (typeof fv !== 'string' && fv !== null) {
+        out[textFields[fi]] = null;
+      }
+    }
+    if (out.tokenUsage === null || typeof out.tokenUsage === 'undefined') {
+      out.tokenUsage = null;
+    } else if (typeof out.tokenUsage === 'object' && !Array.isArray(out.tokenUsage)) {
+      var tu = out.tokenUsage;
+      var tuOk = true;
+      var tuKeys = ['inputTokens', 'outputTokens', 'totalTokens'];
+      for (var ti = 0; ti < tuKeys.length; ti++) {
+        var tv = tu[tuKeys[ti]];
+        if (!(tv === null || typeof tv === 'undefined' || (typeof tv === 'number' && isFinite(tv) && Math.floor(tv) === tv && tv >= 0 && tv <= 9007199254740991))) {
+          tuOk = false;
+        }
+      }
+      if (tuOk) {
+        out.tokenUsage = {
+          inputTokens: typeof tu.inputTokens === 'number' ? tu.inputTokens : null,
+          outputTokens: typeof tu.outputTokens === 'number' ? tu.outputTokens : null,
+          totalTokens: typeof tu.totalTokens === 'number' ? tu.totalTokens : null
+        };
+      } else {
+        out.tokenUsage = null;
+        warnings.push('tokenUsage-invalid');
+      }
+    } else {
+      out.tokenUsage = null;
+      warnings.push('tokenUsage-invalid');
+    }
+    if (!(typeof out.clockSource === 'string' || (out.clockSource && typeof out.clockSource === 'object' && !Array.isArray(out.clockSource)))) {
+      out.clockSource = null;
+    }
+    return { dispatch: out, warnings: warnings };
+  }
+
+  function displayDispatchProgress(dispatch) {
+    if (!dispatch || typeof dispatch !== 'object') {
+      return null;
+    }
+    if (dispatch.progress === null || typeof dispatch.progress === 'undefined') {
+      return null;
+    }
+    if (dispatch.status === 'completed') {
+      return 100;
+    }
+    return dispatch.progress;
+  }
+
+  function formatDispatchProgressLabel(dispatch) {
+    var value = displayDispatchProgress(dispatch);
+    if (value === null) {
+      return '暂不可估算';
+    }
+    return 'Muse 估算约 ' + value + '%';
+  }
+
+  function filterDispatches(records, filter) {
+    if (!Array.isArray(records)) {
+      return [];
+    }
+    if (filter === 'running' || filter === 'waiting' || filter === 'completed') {
+      return records.filter(function (record) {
+        return record && record.status === filter;
+      });
+    }
+    return records.slice();
+  }
+
+  function countDispatches(records) {
+    var counts = { all: 0, running: 0, waiting: 0, completed: 0, blocked: 0, failed: 0, cancelled: 0, unknown: 0 };
+    if (!Array.isArray(records)) {
+      return counts;
+    }
+    for (var i = 0; i < records.length; i++) {
+      var status = records[i] && records[i].status;
+      counts.all += 1;
+      if (DISPATCH_STATUSES.indexOf(status) >= 0) {
+        counts[status] += 1;
+      } else {
+        counts.unknown += 1;
+      }
+    }
+    return counts;
+  }
+
+  function dispatchSortGroup(status) {
+    if (status === 'running') { return 0; }
+    if (status === 'blocked') { return 1; }
+    if (status === 'failed') { return 2; }
+    if (status === 'waiting') { return 4; }
+    if (status === 'completed') { return 5; }
+    if (status === 'cancelled') { return 6; }
+    return 3;
+  }
+
+  function sortDispatches(records) {
+    var arr = Array.isArray(records) ? records.slice() : [];
+    arr.sort(function (a, b) {
+      var ga = dispatchSortGroup(a && a.status);
+      var gb = dispatchSortGroup(b && b.status);
+      if (ga !== gb) {
+        return ga - gb;
+      }
+      var ma = parseDateMs(a && a.dispatchedAt);
+      var mb = parseDateMs(b && b.dispatchedAt);
+      var va = ma === null;
+      var vb = mb === null;
+      if (va !== vb) {
+        return va ? 1 : -1;
+      }
+      if (!va && ma !== mb) {
+        return mb - ma;
+      }
+      var ia = a && typeof a.id === 'string' ? a.id : '';
+      var ib = b && typeof b.id === 'string' ? b.id : '';
+      if (ia < ib) { return -1; }
+      if (ia > ib) { return 1; }
+      return 0;
+    });
+    return arr;
+  }
+
+  function getDispatchClockSource(record, key) {
+    var cs = record && record.clockSource;
+    if (typeof cs === 'string') {
+      return cs;
+    }
+    if (cs && typeof cs === 'object' && !Array.isArray(cs)) {
+      return typeof cs[key] === 'string' ? cs[key] : null;
+    }
+    return null;
+  }
+
+  function formatDurationText(ms) {
+    if (ms < 60000) {
+      return '不足 1 分钟';
+    }
+    var totalMinutes = Math.floor(ms / 60000);
+    if (totalMinutes < 60) {
+      return totalMinutes + ' 分钟';
+    }
+    var totalHours = Math.floor(totalMinutes / 60);
+    var minutes = totalMinutes % 60;
+    if (totalHours < 24) {
+      return totalHours + ' 小时 ' + pad2(minutes) + ' 分钟';
+    }
+    var days = Math.floor(totalHours / 24);
+    var hours = totalHours % 24;
+    return days + ' 天 ' + pad2(hours) + ' 小时 ' + pad2(minutes) + ' 分钟';
+  }
+
+  function formatTotalElapsed(record, nowMs) {
+    if (!record || typeof record !== 'object') {
+      return '—';
+    }
+    nowMs = typeof nowMs === 'number' ? nowMs : Date.now();
+    var startMs = parseDateMs(record.dispatchedAt);
+    if (isTerminalDispatchStatus(record.status)) {
+      var endMs = parseDateMs(record.finishedAt);
+      if (startMs === null || endMs === null || endMs < startMs) {
+        return '—';
+      }
+      var ds = getDispatchClockSource(record, 'dispatchedAt');
+      var fs = getDispatchClockSource(record, 'finishedAt');
+      if (ds && fs && (ds === 'unknown' || fs === 'unknown')) {
+        return '时间不确定';
+      }
+      return formatDurationText(endMs - startMs);
+    }
+    if (startMs === null || startMs > nowMs) {
+      return '—';
+    }
+    if (getDispatchClockSource(record, 'dispatchedAt') === 'unknown') {
+      return '时间不确定';
+    }
+    return formatDurationText(nowMs - startMs);
+  }
+
+  function formatDispatchTime(iso) {
+    var ms = parseDateMs(iso);
+    if (ms === null) {
+      return '未知';
+    }
+    var dt = new Date(ms);
+    return pad4(dt.getFullYear()) + '-' + pad2(dt.getMonth() + 1) + '-' + pad2(dt.getDate()) + ' ' + pad2(dt.getHours()) + ':' + pad2(dt.getMinutes());
+  }
+
+  function paginateDispatches(records, page, pageSize) {
+    var arr = Array.isArray(records) ? records : [];
+    var size = typeof pageSize === 'number' && pageSize > 0 ? Math.floor(pageSize) : 50;
+    if (size <= 0) {
+      size = 50;
+    }
+    var total = arr.length;
+    var totalPages = Math.max(1, Math.ceil(total / size));
+    var current = parseInt(page, 10);
+    if (!isFinite(current)) {
+      current = 1;
+    }
+    if (current < 1) { current = 1; }
+    if (current > totalPages) { current = totalPages; }
+    var start = (current - 1) * size;
+    return { pageRecords: arr.slice(start, start + size), page: current, totalPages: totalPages, total: total };
+  }
+
+  function dispatchSummary(counts) {
+    counts = counts || {};
+    return '进行中 ' + (counts.running || 0) + ' / 已完成 ' + (counts.completed || 0) + ' / 等待 ' + (counts.waiting || 0);
+  }
+
+  function formatTokenUsage(usage) {
+    if (usage === null || typeof usage === 'undefined') {
+      return '未提供';
+    }
+    function v(value) {
+      if (value === null || typeof value === 'undefined') {
+        return '—';
+      }
+      return String(value);
+    }
+    return '输入 ' + v(usage.inputTokens) + ' / 输出 ' + v(usage.outputTokens) + ' / 合计 ' + v(usage.totalTokens);
+  }
+
+  function computeDispatchObservation(record, nowMs) {
+    if (!record || typeof record !== 'object') {
+      return 'fresh';
+    }
+    nowMs = typeof nowMs === 'number' ? nowMs : Date.now();
+    var stored = record.observationHealth;
+    if (stored !== 'fresh' && stored !== 'stale' && stored !== 'unknown') {
+      stored = 'fresh';
+    }
+    if (isTerminalDispatchStatus(record.status)) {
+      return stored;
+    }
+    if (stored === 'unknown') {
+      return 'unknown';
+    }
+    var lastMs = parseDateMs(record.lastFactAt);
+    if (lastMs !== null && nowMs - lastMs > 15 * 60 * 1000) {
+      return 'stale';
+    }
+    return stored;
+  }
+
+  function observationLabel(record, nowMs) {
+    var health = computeDispatchObservation(record, nowMs);
+    if (health === 'stale') {
+      return { health: 'stale', label: '最后已知状态', detail: (record && record.observationDetail) || '超过 15 分钟没有新的执行事实' };
+    }
+    if (health === 'unknown') {
+      return { health: 'unknown', label: '执行状态待核实', detail: (record && record.observationDetail) || '启动结果或当前状态无法核实' };
+    }
+    return { health: 'fresh', label: '', detail: '' };
+  }
+
+  function formatLastUpdate(record) {
+    if (!record || typeof record !== 'object') {
+      return '';
+    }
+    var ms = parseDateMs(record.lastFactAt || record.updatedAt);
+    if (ms === null) {
+      return '';
+    }
+    var dt = new Date(ms);
+    return 'Muse 最近更新 ' + pad2(dt.getHours()) + ':' + pad2(dt.getMinutes());
+  }
+
+  function dispatchCardWarnings(warnings) {
+    if (!Array.isArray(warnings)) {
+      return [];
+    }
+    var map = {
+      'model-unknown': '未知模型',
+      'model-missing': '未指定模型',
+      'status-unknown': '状态未识别',
+      'progress-invalid': '进度格式异常',
+      'dispatchedAt-invalid': '派出时间未知',
+      'finishedAt-invalid': '结束时间异常',
+      'finishedAt-missing': '缺少结束时间',
+      'recordedAt-invalid': '记录时间未知',
+      'id-missing': '缺少记录 ID',
+      'id-invalid': '记录 ID 格式异常',
+      'task-missing': '缺少任务内容',
+      'tokenUsage-invalid': '用量数据异常',
+      'observation-invalid': '观测状态异常',
+      'not-an-object': '记录不是对象'
+    };
+    var out = [];
+    for (var i = 0; i < warnings.length; i++) {
+      var code = warnings[i];
+      out.push(Object.prototype.hasOwnProperty.call(map, code) ? map[code] : code);
+    }
+    return out;
+  }
+
   return {
     PAGE_IDS: PAGE_IDS,
     PAGE_NAMES: PAGE_NAMES,
@@ -521,6 +929,23 @@
     normalizePageOrder: normalizePageOrder,
     mergeTaskArrays: mergeTaskArrays,
     dedupeTaskEntries: dedupeTaskEntries,
-    isValidTaskDateFilename: isValidTaskDateFilename
+    isValidTaskDateFilename: isValidTaskDateFilename,
+    DISPATCH_STATUSES: DISPATCH_STATUSES,
+    DISPATCH_STATUS_META: DISPATCH_STATUS_META,
+    normalizeDispatch: normalizeDispatch,
+    displayDispatchProgress: displayDispatchProgress,
+    formatDispatchProgressLabel: formatDispatchProgressLabel,
+    filterDispatches: filterDispatches,
+    countDispatches: countDispatches,
+    sortDispatches: sortDispatches,
+    formatTotalElapsed: formatTotalElapsed,
+    formatDispatchTime: formatDispatchTime,
+    paginateDispatches: paginateDispatches,
+    dispatchSummary: dispatchSummary,
+    formatTokenUsage: formatTokenUsage,
+    computeDispatchObservation: computeDispatchObservation,
+    observationLabel: observationLabel,
+    formatLastUpdate: formatLastUpdate,
+    dispatchCardWarnings: dispatchCardWarnings
   };
 });

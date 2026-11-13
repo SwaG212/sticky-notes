@@ -25,6 +25,18 @@ const state = {
   monitorLastSyncAt: null,
   monitorError: null,
   monitorWarnings: {},
+  // 派活专区（Feature Flag 开启时监控台的数据源；关闭时保持旧日程行为）
+  monitorSource: 'tasks',
+  monitorDispatches: [],
+  monitorEpoch: 0,
+  monitorPage: 1,
+  monitorPageSize: 50,
+  monitorSnapshotMeta: null,
+  monitorDetailSnapshot: null,
+  monitorDetailSnapshotAt: null,
+  monitorDispatchSubscribed: false,
+  monitorDispatchesEnabled: false,
+  monitorExpandScrollTop: 0,
   pendingExternalReload: false,
   showSheetBar: true, // 项目页签栏显示开关(设置页,默认显示)
   showProjectBadge: true, // 任务行项目胶囊显示开关(设置页,默认显示)
@@ -82,6 +94,11 @@ const monitorRefreshBtn = $('#monitor-refresh');
 const monitorExpandOverlay = $('#monitor-expand-overlay');
 const monitorExpandCard = $('#monitor-expand-card');
 const monitorExpandClose = $('#monitor-expand-close');
+const monitorExpandBack = $('#monitor-expand-back');
+const monitorPager = $('#monitor-pager');
+const monitorPagerPrev = $('#monitor-pager-prev');
+const monitorPagerNext = $('#monitor-pager-next');
+const monitorPagerStatus = $('#monitor-pager-status');
 const btnMonitorBack = $('#btn-monitor-back');
 const btnMonitorForward = $('#btn-monitor-forward');
 const toolCardTemplate = $('#tool-card-template');
@@ -189,10 +206,21 @@ document.querySelector('#btn-page-order-reset')?.addEventListener('click', () =>
     const tab = e.target.closest('.monitor-filter-tab');
     if (!tab) return;
     state.monitorFilter = tab.dataset.filter || 'all';
+    state.monitorPage = 1;
     renderMonitor();
   });
   if (monitorExpandClose) monitorExpandClose.addEventListener('click', () => collapseMonitorTask());
+  if (monitorExpandBack) monitorExpandBack.addEventListener('click', () => collapseMonitorTask());
+  if (monitorPagerPrev) monitorPagerPrev.addEventListener('click', () => shiftMonitorPage(-1));
+  if (monitorPagerNext) monitorPagerNext.addEventListener('click', () => shiftMonitorPage(1));
   if (window.electronAPI?.onTasksChanged) window.electronAPI.onTasksChanged((payload) => { handleExternalTasksChanged(payload); });
+  if (!state.monitorDispatchSubscribed && window.electronAPI?.onDispatchChanged) {
+    state.monitorDispatchSubscribed = true;
+    window.electronAPI.onDispatchChanged(() => {
+      if (state.monitorSource !== 'dispatches') return;
+      loadMonitorSnapshot();
+    });
+  }
   btnNoteList.addEventListener('click', toggleNoteList);
   btnNoteNew.addEventListener('click', createNote);
   btnDailyReport.addEventListener('click', generateDailyReport);
@@ -2282,6 +2310,7 @@ async function loadShortcutsFromConfig() {
       state.pagesEnabled = { ...state.pagesEnabled, ...cfg.pagesEnabled };
     }
     if (cfg.pageOrder) { const po = window.MonitorLogic.normalizePageOrder(cfg.pageOrder); state.pageOrder = po.order; state.pageOrderInvalid = !po.valid; }
+    state.monitorDispatchesEnabled = cfg.monitorDispatchesEnabled === true;
     state.toolsEnabled = {
       translate: cfg.toolsEnabled?.translate !== false,
       videoDownload: cfg.toolsEnabled?.videoDownload !== false,
@@ -2375,6 +2404,7 @@ async function openSettings() {
     $('#settings-blurhide-tools').checked = blurHide.tools !== false;
     $('#settings-monitor-page').checked = state.pagesEnabled.monitor !== false;
     $('#settings-blurhide-monitor').checked = (cfg.blurHide?.monitor !== false);
+    $('#settings-monitor-dispatches').checked = state.monitorDispatchesEnabled === true;
     if (cfg.shortcuts) {
       state.shortcuts = { ...state.shortcuts, ...cfg.shortcuts };
     }
@@ -2444,7 +2474,8 @@ async function confirmSettings() {
     tools: $('#settings-blurhide-tools').checked,
     monitor: $('#settings-blurhide-monitor').checked,
   };
-  const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, showSheetBar, showProjectBadge, showDailyReport, showCalendar, pagesEnabled, toolsEnabled: toolFeatures, blurHide, pageOrder: [...settingsDraftPageOrder] };
+  const monitorDispatchesEnabled = $('#settings-monitor-dispatches').checked;
+  const cfg = { apiKey, baseUrl, reportName, notesDir, notesDirHistory: oldCfg.notesDirHistory || [], projectNames: [...state.projectNames], shortcuts: { ...state.shortcuts }, winFixed, showSheetBar, showProjectBadge, showDailyReport, showCalendar, pagesEnabled, toolsEnabled: toolFeatures, blurHide, pageOrder: [...settingsDraftPageOrder], monitorDispatchesEnabled };
 
   let saveResult;
   if (window.electronAPI) {
@@ -2488,6 +2519,16 @@ async function confirmSettings() {
     switchToMain();
   }
   if (state.pagesEnabled.monitor === false && state.currentPage === 'monitor') { switchToNotepad(); }
+  // Feature Flag 切换后，若正停在监控台则按新数据源重载（关闭时回到旧日程监控）
+  const flagChanged = state.monitorDispatchesEnabled !== monitorDispatchesEnabled;
+  state.monitorDispatchesEnabled = monitorDispatchesEnabled;
+  if (flagChanged && state.currentPage === 'monitor') {
+    setMonitorSource(monitorDispatchesEnabled ? 'dispatches' : 'tasks');
+    monitorPage.classList.remove('monitor-expanded');
+    monitorExpandOverlay.classList.add('hidden');
+    monitorExpandOverlay.classList.remove('open');
+    loadMonitorSnapshot(true);
+  }
   state.toolsEnabled = toolFeatures;
   if (state.currentPage === 'tools') renderToolsPage();
 
@@ -4338,6 +4379,19 @@ function navigatePage(delta) {
   switchToPage(order[j]);
 }
 
+// 切换数据源时必须清空 revision/epoch：日程链与派活链各自独立计数，
+// 复用旧计数会把派活的低 revision 快照误判成过期而整份丢弃。
+function setMonitorSource(next) {
+  const source = next === 'dispatches' ? 'dispatches' : 'tasks';
+  if (state.monitorSource === source) return;
+  state.monitorSource = source;
+  state.monitorRevision = 0;
+  state.monitorEpoch = 0;
+  state.monitorPage = 1;
+  state.monitorExpandedId = null;
+  state.monitorSnapshotMeta = null;
+}
+
 async function switchToMonitor() {
   if (state.currentPage === 'monitor') return;
   if (!canEnterPage('monitor')) return;
@@ -4345,6 +4399,13 @@ async function switchToMonitor() {
   state.currentPage = 'monitor';
   if (window.electronAPI) window.electronAPI.setPage('monitor');
   applyPagePosition();
+  let dispatchOn = false;
+  try {
+    dispatchOn = window.electronAPI?.getMonitorDispatchSource
+      ? (await window.electronAPI.getMonitorDispatchSource()) === true
+      : false;
+  } catch (e) { dispatchOn = false; }
+  setMonitorSource(dispatchOn ? 'dispatches' : 'tasks');
   await loadMonitorSnapshot();
   renderMonitor();
   startMonitorTick();
@@ -4352,6 +4413,7 @@ async function switchToMonitor() {
 
 let monitorTickTimer = null;
 let monitorCollapseTimer = null;
+let monitorExpandHome = null;
 
 function createMonitorEmptyState(title, desc, buttonText, onClick) {
   const wrap = document.createElement('div');
@@ -4372,6 +4434,30 @@ function createMonitorEmptyState(title, desc, buttonText, onClick) {
 }
 
 async function loadMonitorSnapshot(force) {
+  if (state.monitorSource === 'dispatches') {
+    if (!window.electronAPI?.getDispatchSnapshot) {
+      state.monitorStatus = 'error';
+      state.monitorError = '派活读取接口不可用';
+      state.monitorSyncState = 'error';
+      renderMonitor();
+      return;
+    }
+    if (state.monitorDispatches.length === 0 && !force) {
+      state.monitorStatus = 'loading';
+      renderMonitor();
+    }
+    try {
+      const data = await window.electronAPI.getDispatchSnapshot();
+      applyDispatchSnapshot(data);
+    } catch (e) {
+      state.monitorStatus = 'error';
+      state.monitorError = '读取失败';
+      state.monitorSyncState = 'error';
+      renderMonitor();
+    }
+    return;
+  }
+  // 旧日程监控（Flag 关闭时保持原行为；派活模式绝不回退到这里）
   if (!window.electronAPI?.getMonitorSnapshot) {
     state.monitorWarnings = {};
     const list = [];
@@ -4408,6 +4494,44 @@ async function loadMonitorSnapshot(force) {
   }
 }
 
+function applyDispatchSnapshot(data) {
+  if (!data || typeof data.revision !== 'number') return;
+  if (typeof data.epoch === 'number' && data.epoch > 0) {
+    if (state.monitorEpoch && data.epoch < state.monitorEpoch) return;
+    state.monitorEpoch = data.epoch;
+  }
+  if (data.revision < state.monitorRevision) return;
+  state.monitorRevision = data.revision;
+  const list = Array.isArray(data.records) ? data.records : [];
+  const ML = window.MonitorLogic;
+  state.monitorDispatches = [];
+  state.monitorWarnings = {};
+  list.forEach(r => {
+    const n = ML.normalizeDispatch(r);
+    if (!n || !n.dispatch) return;
+    state.monitorDispatches.push(n.dispatch);
+    if (Array.isArray(n.warnings) && n.warnings.length) state.monitorWarnings[n.dispatch.id] = n.warnings;
+  });
+  state.monitorSnapshotMeta = {
+    warnings: Array.isArray(data.warnings) ? data.warnings : [],
+    errors: Array.isArray(data.errors) ? data.errors : [],
+    complete: data.complete === true,
+    staleFileCount: typeof data.staleFileCount === 'number' ? data.staleFileCount : 0,
+    oldestSnapshotAt: data.oldestSnapshotAt || null,
+    unreadDates: Array.isArray(data.unreadDates) ? data.unreadDates : [],
+    lastReadAt: data.lastReadAt || null,
+    watcherHealthy: data.watcherHealthy !== false
+  };
+  state.monitorStatus = 'ready';
+  state.monitorSyncState = (state.monitorSnapshotMeta.errors.length || !state.monitorSnapshotMeta.complete) ? 'degraded' : 'ok';
+  state.monitorLastSyncAt = state.monitorSnapshotMeta.lastReadAt ? new Date(state.monitorSnapshotMeta.lastReadAt) : new Date();
+  state.monitorError = null;
+  if (state.monitorExpandedId && !state.monitorDispatches.some(d => d.id === state.monitorExpandedId)) {
+    collapseMonitorTask(true);
+  }
+  renderMonitor();
+}
+
 function applyMonitorSnapshot(data) {
   if (!data || typeof data.revision !== 'number') return;
   if (data.revision < state.monitorRevision) return;
@@ -4435,7 +4559,7 @@ async function handleExternalTasksChanged(payload) {
   taskFileCacheLoaded.clear();
   taskFileCache.clear();
 
-  if (state.currentPage === 'monitor' || state.monitorTasks.length > 0) {
+  if (state.monitorSource !== 'dispatches' && (state.currentPage === 'monitor' || state.monitorTasks.length > 0)) {
     loadMonitorSnapshot();
   }
 
@@ -4450,6 +4574,11 @@ async function handleExternalTasksChanged(payload) {
 
 function renderMonitor() {
   if (!monitorPage || !monitorList) return;
+  if (state.monitorSource === 'dispatches') {
+    renderDispatchMonitor();
+    return;
+  }
+  if (monitorPager) monitorPager.hidden = true;
   const counts = window.MonitorLogic.countByStatus(state.monitorTasks);
   if (monitorRunningCount) monitorRunningCount.textContent = '运行中 ' + (counts.running || 0);
   if (monitorSyncStatus) {
@@ -4519,6 +4648,436 @@ function renderMonitor() {
 }
 
 // NEW BLOCK 3b：监控台任务卡片构建、展开/收起、运行时长计时
+
+// ===== 派活专区（Feature Flag 开启时的监控台） =====
+function formatDispatchCount(count) {
+  return count > 999 ? '999+' : String(count);
+}
+
+function setDispatchFilterTab(tab, count, active) {
+  const countEl = tab.querySelector('.monitor-filter-count');
+  if (countEl) {
+    if (count === null) {
+      countEl.textContent = '—';
+      countEl.removeAttribute('aria-label');
+    } else {
+      countEl.textContent = formatDispatchCount(count);
+      countEl.setAttribute('aria-label', String(count));
+    }
+  }
+  tab.classList.toggle('active', active);
+  tab.setAttribute('aria-pressed', active ? 'true' : 'false');
+}
+
+function captureMonitorAnchor() {
+  const cards = monitorList ? monitorList.querySelectorAll('[data-id]') : [];
+  const listTop = monitorList ? monitorList.getBoundingClientRect().top : 0;
+  for (const card of cards) {
+    const r = card.getBoundingClientRect();
+    if (r.bottom > listTop) {
+      return { id: card.dataset.id, offset: r.top - listTop };
+    }
+  }
+  return null;
+}
+
+function restoreMonitorAnchor(anchor) {
+  if (!monitorList || !anchor) return;
+  const card = monitorList.querySelector('[data-id="' + anchor.id + '"]');
+  if (!card) return;
+  const listTop = monitorList.getBoundingClientRect().top;
+  const delta = (card.getBoundingClientRect().top - listTop) - anchor.offset;
+  if (delta) monitorList.scrollTop += delta;
+}
+
+function renderDispatchMonitor() {
+  const ML = window.MonitorLogic;
+  const counts = ML.countDispatches(state.monitorDispatches);
+  if (monitorRunningCount) {
+    // 首次读取还没拿到任何记录时用 — 占位，不把“未读取”写成 0（设计 §3.5）
+    monitorRunningCount.textContent = state.monitorStatus === 'loading'
+      ? '进行中 — / 已完成 — / 等待 —'
+      : ML.dispatchSummary(counts);
+  }
+
+  const meta = state.monitorSnapshotMeta;
+  if (monitorSyncStatus) {
+    if (state.monitorStatus === 'loading') {
+      monitorSyncStatus.textContent = '正在读取本地派活记录…';
+    } else if (state.monitorStatus === 'error') {
+      monitorSyncStatus.textContent = state.monitorError || '暂时无法读取派活记录';
+    } else {
+      let text = '已读取 ' + formatClock(state.monitorLastSyncAt);
+      if (meta && meta.complete !== true) {
+        const bits = ['部分记录，统计不完整'];
+        if (meta.staleFileCount > 0) bits.push('stale ' + meta.staleFileCount + ' 个文件');
+        if (meta.unreadDates && meta.unreadDates.length) bits.push('未读 ' + meta.unreadDates.length + ' 天');
+        if (meta.oldestSnapshotAt) bits.push('最旧快照 ' + formatClock(new Date(meta.oldestSnapshotAt)));
+        text += '（' + bits.join('，') + '）';
+      }
+      if (meta && meta.watcherHealthy === false) text += ' · 实时监听不可用，每 5 秒检查';
+      monitorSyncStatus.textContent = text;
+    }
+  }
+
+  if (monitorFilters) {
+    const filterCounts = {
+      all: counts.all,
+      running: counts.running,
+      waiting: counts.waiting,
+      completed: counts.completed
+    };
+    monitorFilters.querySelectorAll('.monitor-filter-tab').forEach(tab => {
+      const filter = tab.dataset.filter || 'all';
+      // 首次读取尚无数据时计数显示“—”，不把“还没读到”画成 0（设计 §3.5）
+      setDispatchFilterTab(tab, state.monitorStatus === 'loading' ? null : (filterCounts[filter] || 0), filter === state.monitorFilter);
+    });
+  }
+
+  const anchor = captureMonitorAnchor();
+  const prevScroll = monitorList.scrollTop;
+  monitorList.innerHTML = '';
+
+  if (state.monitorStatus === 'loading') {
+    const loadingText = document.createElement('div');
+    loadingText.className = 'monitor-loading-text';
+    loadingText.textContent = '正在读取本地派活记录…';
+    monitorList.appendChild(loadingText);
+    for (let i = 0; i < 3; i++) {
+      const sk = document.createElement('div');
+      sk.className = 'monitor-skeleton';
+      monitorList.appendChild(sk);
+    }
+    if (monitorPager) monitorPager.hidden = true;
+    return;
+  }
+
+  if (state.monitorStatus === 'error' && state.monitorDispatches.length === 0) {
+    monitorList.appendChild(createMonitorEmptyState(
+      state.monitorError === '派活读取接口不可用' ? '派活读取接口不可用' : '暂时无法读取派活',
+      state.monitorError === '派活读取接口不可用'
+        ? '当前窗口没有派活读取桥，无法显示派活记录'
+        : '派活文件暂时无法读取，请稍后重试',
+      '重试',
+      () => loadMonitorSnapshot(true)
+    ));
+    if (monitorPager) monitorPager.hidden = true;
+    return;
+  }
+
+  if (state.monitorDispatches.length === 0) {
+    // 无旧数据时明确失败，不把读取错误冒充空集合（设计 §3.5）
+    const readFailed = meta && meta.complete !== true && ((meta.errors && meta.errors.length) || (meta.unreadDates && meta.unreadDates.length));
+    if (readFailed) {
+      monitorList.appendChild(createMonitorEmptyState(
+        '暂时无法读取派活',
+        '派活文件暂时无法读取，结果不完整，请稍后重试',
+        '重试',
+        () => loadMonitorSnapshot(true)
+      ));
+    } else {
+      monitorList.appendChild(createMonitorEmptyState(
+        '还没有派活记录',
+        'Muse 派给 agent 的工作会显示在这里；你的日程仍在便利贴和 Day 中',
+        '刷新',
+        () => loadMonitorSnapshot(true)
+      ));
+    }
+    if (monitorPager) monitorPager.hidden = true;
+    return;
+  }
+
+  // 异常只在全部标签展示；其他标签顶部提示“另有 N 项阻塞/失败”
+  if (state.monitorFilter !== 'all' && (counts.blocked + counts.failed) > 0) {
+    const banner = document.createElement('button');
+    banner.type = 'button';
+    banner.className = 'monitor-issue-banner';
+    banner.textContent = '另有 ' + (counts.blocked + counts.failed) + ' 项阻塞/失败，查看全部';
+    banner.addEventListener('click', () => {
+      state.monitorFilter = 'all';
+      state.monitorPage = 1;
+      renderMonitor();
+    });
+    monitorList.appendChild(banner);
+  }
+
+  const filtered = ML.sortDispatches(ML.filterDispatches(state.monitorDispatches, state.monitorFilter));
+  const paged = ML.paginateDispatches(filtered, state.monitorPage, state.monitorPageSize);
+  state.monitorPage = paged.page;
+
+  if (filtered.length === 0) {
+    const filterLabel = state.monitorFilter === 'all'
+      ? '全部'
+      : (ML.DISPATCH_STATUS_META[state.monitorFilter]?.label || state.monitorFilter);
+    monitorList.appendChild(createMonitorEmptyState('没有符合条件的派活', '当前筛选：' + filterLabel, '查看全部', () => {
+      state.monitorFilter = 'all';
+      state.monitorPage = 1;
+      renderMonitor();
+    }));
+  } else {
+    paged.pageRecords.forEach((dispatch) => {
+      monitorList.appendChild(buildDispatchCard(dispatch));
+    });
+  }
+
+  if (monitorPager) {
+    const showPager = paged.totalPages > 1;
+    monitorPager.hidden = !showPager;
+    if (monitorPagerStatus) monitorPagerStatus.textContent = '第 ' + paged.page + '/' + paged.totalPages + ' 页';
+    if (monitorPagerPrev) monitorPagerPrev.disabled = paged.page <= 1;
+    if (monitorPagerNext) monitorPagerNext.disabled = paged.page >= paged.totalPages;
+  }
+
+  if (anchor) restoreMonitorAnchor(anchor);
+  else monitorList.scrollTop = prevScroll;
+}
+
+function shiftMonitorPage(delta) {
+  if (state.monitorSource !== 'dispatches') return;
+  const next = state.monitorPage + delta;
+  if (next < 1) return;
+  state.monitorPage = next;
+  renderMonitor();
+  if (monitorList) monitorList.scrollTop = 0;
+}
+
+function formatClock(date) {
+  if (!(date instanceof Date) || isNaN(date.getTime())) return '—';
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  return hh + ':' + mm;
+}
+
+function isDispatchAlertStatus(status) {
+  return status === 'blocked' || status === 'failed';
+}
+
+function buildDispatchCard(dispatch, opts) {
+  const ML = window.MonitorLogic;
+  const expanded = !!(opts && opts.expanded);
+  const card = document.createElement('article');
+  card.className = 'monitor-task monitor-dispatch-card';
+  if (isDispatchAlertStatus(dispatch.status)) card.classList.add('monitor-dispatch-alert');
+  card.dataset.id = dispatch.id;
+  card.setAttribute('role', 'button');
+  card.setAttribute('tabindex', '0');
+
+  const top = document.createElement('div');
+  top.className = 'monitor-card-top';
+  if (dispatch.project) {
+    const project = document.createElement('span');
+    project.className = 'monitor-project';
+    project.textContent = dispatch.project;
+    top.appendChild(project);
+  }
+
+  const statusMeta = ML.DISPATCH_STATUS_META[dispatch.status] || {};
+  const status = document.createElement('span');
+  status.className = 'monitor-status';
+  if (statusMeta.bg) status.style.backgroundColor = statusMeta.bg;
+  if (statusMeta.color) status.style.color = statusMeta.color;
+  const statusDot = document.createElement('span');
+  statusDot.className = 'monitor-status-dot';
+  statusDot.style.backgroundColor = statusMeta.color || 'currentColor';
+  const statusLabel = document.createElement('span');
+  statusLabel.textContent = statusMeta.label || '状态未识别';
+  status.appendChild(statusDot);
+  status.appendChild(statusLabel);
+  top.appendChild(status);
+
+  const modelMap = ML.MODEL_META || {};
+  let modelEntry = ML.MODEL_UNKNOWN;
+  let modelLabelText = '未知模型';
+  if (dispatch.model == null || dispatch.model === '') {
+    modelEntry = ML.MODEL_UNSPECIFIED;
+    modelLabelText = '未指定';
+  } else if (Object.prototype.hasOwnProperty.call(modelMap, dispatch.model)) {
+    modelEntry = modelMap[dispatch.model];
+    modelLabelText = modelEntry.label || dispatch.model;
+  }
+  const model = document.createElement('span');
+  model.className = 'monitor-model';
+  if (modelEntry.bg) model.style.backgroundColor = modelEntry.bg;
+  const modelDot = document.createElement('span');
+  modelDot.className = 'monitor-model-dot';
+  modelDot.style.backgroundColor = modelEntry.color || '#9aa0a6';
+  const modelLabel = document.createElement('span');
+  modelLabel.textContent = modelLabelText;
+  model.appendChild(modelDot);
+  model.appendChild(modelLabel);
+  top.appendChild(model);
+  card.appendChild(top);
+
+  const textEl = document.createElement('div');
+  textEl.className = expanded ? 'monitor-text' : 'monitor-text monitor-text-clamp';
+  textEl.textContent = dispatch.task || '';
+  card.appendChild(textEl);
+
+  const progressValue = ML.displayDispatchProgress(dispatch);
+  const row = document.createElement('div');
+  row.className = 'monitor-progress-row';
+  const progressLabel = document.createElement('span');
+  progressLabel.className = 'monitor-progress-label monitor-dispatch-progress-label';
+  progressLabel.textContent = ML.formatDispatchProgressLabel(dispatch);
+  row.appendChild(progressLabel);
+  if (progressValue !== null) {
+    const track = document.createElement('div');
+    track.className = 'monitor-progress-track';
+    track.setAttribute('role', 'progressbar');
+    track.setAttribute('aria-valuenow', String(progressValue));
+    track.setAttribute('aria-valuemin', '0');
+    track.setAttribute('aria-valuemax', '100');
+    track.setAttribute('aria-label', 'Muse 估算进度');
+    const fill = document.createElement('div');
+    fill.className = 'monitor-progress-fill';
+    fill.style.width = progressValue + '%';
+    fill.style.backgroundColor = statusMeta.progressColor || '#4c8bf5';
+    track.appendChild(fill);
+    row.appendChild(track);
+  }
+  card.appendChild(row);
+
+  if (dispatch.statusDetail) {
+    const stage = document.createElement('div');
+    stage.className = 'monitor-stage';
+    stage.textContent = '阶段：' + dispatch.statusDetail;
+    card.appendChild(stage);
+  }
+
+  const meta = document.createElement('div');
+  meta.className = 'monitor-meta';
+  const lineDispatched = document.createElement('div');
+  lineDispatched.className = 'monitor-meta-line';
+  lineDispatched.textContent = '派出 ' + ML.formatDispatchTime(dispatch.dispatchedAt);
+  const lineRuntime = document.createElement('div');
+  lineRuntime.className = 'monitor-meta-line';
+  lineRuntime.appendChild(document.createTextNode('总历时 '));
+  const runtimeValue = document.createElement('span');
+  runtimeValue.className = 'monitor-runtime-value';
+  runtimeValue.textContent = ML.formatTotalElapsed(dispatch, Date.now());
+  lineRuntime.appendChild(runtimeValue);
+  meta.appendChild(lineDispatched);
+  meta.appendChild(lineRuntime);
+  const lastUpdate = ML.formatLastUpdate(dispatch);
+  if (lastUpdate) {
+    const lineUpdate = document.createElement('div');
+    lineUpdate.className = 'monitor-meta-line monitor-last-update';
+    lineUpdate.textContent = lastUpdate;
+    meta.appendChild(lineUpdate);
+  }
+  card.appendChild(meta);
+
+  const warns = ML.dispatchCardWarnings((state.monitorWarnings && state.monitorWarnings[dispatch.id]) || []);
+  if (warns.length) {
+    const warnEl = document.createElement('div');
+    warnEl.className = 'monitor-warn-text';
+    warnEl.textContent = warns.join('；');
+    card.appendChild(warnEl);
+    card.classList.add('monitor-task-warning');
+  }
+
+  if (!expanded) {
+    card.addEventListener('click', () => expandMonitorTask(dispatch.id));
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        expandMonitorTask(dispatch.id);
+      }
+    });
+  }
+  return card;
+}
+
+function buildDispatchDetail(dispatch) {
+  const ML = window.MonitorLogic;
+  const MLsafe = ML || {};
+  const wrap = document.createElement('div');
+  wrap.className = 'monitor-detail monitor-dispatch-detail';
+
+  const statusMeta = MLsafe.DISPATCH_STATUS_META?.[dispatch.status] || {};
+  const observation = MLsafe.observationLabel(dispatch, Date.now());
+  const card = buildDispatchCard(dispatch, { expanded: true });
+  card.classList.add('monitor-detail-head');
+  wrap.appendChild(card);
+
+  const addSection = (title, lines) => {
+    const section = document.createElement('section');
+    section.className = 'monitor-detail-section';
+    const h = document.createElement('h3');
+    h.className = 'monitor-detail-title';
+    h.textContent = title;
+    section.appendChild(h);
+    lines.forEach((line) => {
+      if (!line) return;
+      const p = document.createElement('div');
+      p.className = 'monitor-detail-line';
+      p.textContent = line;
+      section.appendChild(p);
+    });
+    wrap.appendChild(section);
+  };
+
+  const clockText = (key) => {
+    const cs = dispatch.clockSource;
+    if (cs && typeof cs === 'object' && typeof cs[key] === 'string') return cs[key];
+    if (typeof cs === 'string') return cs;
+    return '未知';
+  };
+
+  addSection('任务', [
+    dispatch.task || '（无内容）',
+    dispatch.project ? '项目：' + dispatch.project : '项目：未指定',
+    dispatch.goal ? '目标：' + dispatch.goal : '目标：未指定'
+  ]);
+
+  addSection('状态', [
+    '执行状态：' + (statusMeta.label || '状态未识别'),
+    '观测状态：' + (observation.health === 'fresh' ? '正常' : observation.label) +
+      (observation.detail ? '（' + observation.detail + '）' : ''),
+    dispatch.statusDetail ? '阶段/原因：' + dispatch.statusDetail : null,
+    '估算进度：' + MLsafe.formatDispatchProgressLabel(dispatch) + '（Muse 主观估算）'
+  ]);
+
+  addSection('时间', [
+    '派出：' + MLsafe.formatDispatchTime(dispatch.dispatchedAt) + '（时钟来源：' + clockText('dispatchedAt') + '）',
+    '记录：' + MLsafe.formatDispatchTime(dispatch.recordedAt) + '（时钟来源：' + clockText('recordedAt') + '）',
+    '结束：' + (dispatch.finishedAt
+      ? MLsafe.formatDispatchTime(dispatch.finishedAt) + '（时钟来源：' + clockText('finishedAt') + '）'
+      : '尚未结束'),
+    '总历时：' + MLsafe.formatTotalElapsed(dispatch, Date.now()) + '（含登记等待、排队和阻塞）'
+  ]);
+
+  addSection('用量', [
+    'Token：' + MLsafe.formatTokenUsage(dispatch.tokenUsage),
+    '来源：' + (dispatch.usageSource || '未提供'),
+    '口径：' + (dispatch.usageScope || '口径未知')
+  ]);
+
+  addSection('记录', [
+    '执行模型：' + (dispatch.model || '未指定'),
+    '执行标识：' + (dispatch.executorRef || '未提供'),
+    '记录 ID：' + (dispatch.id || '未知'),
+    dispatch.workItemId ? '工作 ID：' + dispatch.workItemId : null
+  ]);
+
+  const meta = state.monitorSnapshotMeta;
+  const snapshotAt = state.monitorLastSyncAt ? formatClock(state.monitorLastSyncAt) : '—';
+  const dataLines = ['读取时间：' + snapshotAt + '（详情为打开时的快照，返回列表后显示最新状态）'];
+  if (meta && meta.complete !== true) {
+    dataLines.push('数据完整性：部分记录，统计不完整');
+    if (meta.staleFileCount > 0) dataLines.push('stale 文件：' + meta.staleFileCount + ' 个');
+    if (meta.unreadDates && meta.unreadDates.length) dataLines.push('未读日期：' + meta.unreadDates.join('、'));
+    if (meta.oldestSnapshotAt) dataLines.push('最旧快照：' + formatClock(new Date(meta.oldestSnapshotAt)));
+    if (meta.errors && meta.errors.length) {
+      dataLines.push('读取错误：' + meta.errors.map(e => (e.date || e.file || '未知') + ' ' + (e.error || '')).join('；'));
+    }
+  }
+  const warns = MLsafe.dispatchCardWarnings((state.monitorWarnings && state.monitorWarnings[dispatch.id]) || []);
+  if (warns.length) dataLines.push('数据警告：' + warns.join('；'));
+  addSection('数据', dataLines);
+
+  return wrap;
+}
 
 function setMonitorOverlayRect(left, top, width, height) {
   monitorExpandOverlay.style.left = Math.round(left) + 'px';
@@ -4664,7 +5223,40 @@ function buildMonitorTaskCard(task, opts) {
   return card;
 }
 
+function expandDispatchDetail(id) {
+  const dispatch = state.monitorDispatches.find(d => d.id === id);
+  if (!dispatch) return;
+  state.monitorExpandedId = id;
+  state.monitorDetailSnapshot = dispatch;
+  state.monitorDetailSnapshotAt = state.monitorLastSyncAt || new Date();
+  state.monitorExpandScrollTop = monitorList ? monitorList.scrollTop : 0;
+  monitorExpandCard.innerHTML = '';
+  monitorExpandCard.appendChild(buildDispatchDetail(dispatch));
+  monitorExpandCard.scrollTop = 0;
+  // 简化展开契约（设计 §3.4）：不做原卡位移缩放动画，直接满窗显示。
+  // 终点必须是窗口内 (0,0,360,500)；而 .pages-container 有 transform，
+  // 会成为 position:fixed 的包含块，所以展开时把覆盖层临时挂到 body 上，
+  // 收起时再放回监控台页面（旧日程路径的几何测量不受影响）。
+  if (!monitorExpandHome) monitorExpandHome = monitorExpandOverlay.parentNode;
+  if (monitorExpandOverlay.parentNode !== document.body) document.body.appendChild(monitorExpandOverlay);
+  monitorExpandOverlay.classList.add('monitor-expand-window');
+  monitorExpandOverlay.style.left = '';
+  monitorExpandOverlay.style.top = '';
+  monitorExpandOverlay.style.width = '';
+  monitorExpandOverlay.style.height = '';
+  monitorExpandOverlay.hidden = false;
+  monitorExpandOverlay.classList.remove('hidden');
+  monitorExpandOverlay.classList.add('open');
+  monitorPage.classList.add('monitor-expanded');
+  if (monitorExpandBack) monitorExpandBack.focus();
+  else if (monitorExpandClose) monitorExpandClose.focus();
+}
+
 function expandMonitorTask(id) {
+  if (state.monitorSource === 'dispatches') {
+    expandDispatchDetail(id);
+    return;
+  }
   const task = state.monitorTasks.find(t => t.id === id);
   if (!task) return;
   state.monitorExpandedId = id;
@@ -4699,14 +5291,39 @@ function expandMonitorTask(id) {
     monitorExpandOverlay.style.height = '';
   }, 280);
   monitorPage.classList.add('monitor-expanded');
-  monitorExpandClose.focus();
+  if (monitorExpandClose) monitorExpandClose.focus();
+  else if (monitorExpandBack) monitorExpandBack.focus();
 }
 
 function collapseMonitorTask(silent) {
   if (!state.monitorExpandedId) return;
   const id = state.monitorExpandedId;
+  const wasDispatch = state.monitorSource === 'dispatches';
   state.monitorExpandedId = null;
   monitorPage.classList.remove('monitor-expanded');
+
+  if (wasDispatch) {
+    monitorExpandOverlay.classList.remove('open');
+    monitorExpandOverlay.classList.remove('monitor-expand-window');
+    monitorExpandOverlay.hidden = true;
+    monitorExpandOverlay.classList.add('hidden');
+    monitorExpandOverlay.style.left = '';
+    monitorExpandOverlay.style.top = '';
+    monitorExpandOverlay.style.width = '';
+    monitorExpandOverlay.style.height = '';
+    monitorExpandCard.innerHTML = '';
+    state.monitorDetailSnapshot = null;
+    state.monitorDetailSnapshotAt = null;
+    if (monitorExpandHome && monitorExpandOverlay.parentNode !== monitorExpandHome) {
+      monitorExpandHome.appendChild(monitorExpandOverlay);
+    }
+    if (monitorList) monitorList.scrollTop = state.monitorExpandScrollTop;
+    if (!silent) {
+      const card = monitorList.querySelector('[data-id="' + id + '"]');
+      if (card) card.focus({ preventScroll: true });
+    }
+    return;
+  }
 
   const pageRect = monitorPage.getBoundingClientRect();
   const src = monitorList.querySelector('[data-id="' + id + '"]');
@@ -4731,6 +5348,15 @@ function collapseMonitorTask(silent) {
 function updateMonitorRuntimes() {
   if (state.currentPage !== 'monitor') return;
   const now = Date.now();
+  if (state.monitorSource === 'dispatches') {
+    document.querySelectorAll('.monitor-runtime-value').forEach(el => {
+      const card = el.closest('[data-id]');
+      if (!card) return;
+      const d = state.monitorDispatches.find(x => x.id === card.dataset.id);
+      if (d) el.textContent = window.MonitorLogic.formatTotalElapsed(d, now);
+    });
+    return;
+  }
   document.querySelectorAll('.monitor-runtime-value').forEach(el => {
     const card = el.closest('[data-id]');
     const t = card && state.monitorTasks.find(x => x.id === card.dataset.id);
