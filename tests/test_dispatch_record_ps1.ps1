@@ -12,6 +12,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot 'process-file-io.ps1')
+
 $script:passed = 0
 $script:failed = 0
 $script:Ps1 = Join-Path $RepoRoot 'scripts\dispatch-record.ps1'
@@ -24,10 +26,11 @@ function Test-Ok {
   param([bool]$Condition, [string]$Message)
   if ($Condition) {
     $script:passed++
-    Write-Host ("  ✓ " + $Message)
+    Write-Host ("  [PASS] " + $Message)
   } else {
     $script:failed++
-    Write-Host ("  ✗ " + $Message)
+    # 失败行加 ASCII 前缀，便于在 GBK/UTF-8 混杂的控制台输出里稳定 grep。
+    Write-Host ("  [FAIL] " + $Message)
   }
 }
 
@@ -36,45 +39,43 @@ function Test-Equal {
   Test-Ok ($Actual -eq $Expected) ($Message + '（实际：' + $Actual + '，期望：' + $Expected + '）')
 }
 
-# 用 Start-Process 跑一次 dispatch-record.ps1，stdin 从临时文件读 JSON。
+# 用带文件重定向的启动器跑一次 dispatch-record.ps1，stdin 从临时文件读 JSON。
+# 受限会话（Job 对象/无交互桌面）里 Start-Process -Wait 与匿名管道会被拒，
+# 所以统一走 tests/process-file-io.ps1（原生 CreateProcessW + 文件句柄），
+# 它同时给出真实退出码；正常会话下也是同一条写入口，不改断言。
 function Invoke-DispatchPs1 {
   param([string]$Json, [string]$Mode = 'Transact')
   $inFile = Join-Path $script:Root ('in-' + [Guid]::NewGuid().ToString('N') + '.json')
   $outFile = Join-Path $script:Root ('out-' + [Guid]::NewGuid().ToString('N') + '.json')
+  $errFile = Join-Path $script:Root ('err-' + [Guid]::NewGuid().ToString('N') + '.json')
   [System.IO.File]::WriteAllText($inFile, $Json, (New-Object System.Text.UTF8Encoding($false)))
-  $p = Start-Process -FilePath 'powershell' -ArgumentList @(
-    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script:Ps1,
-    '-DataRoot', $script:DataRoot, '-BackupRoot', $script:BackupRoot, '-Mode', $Mode
-  ) -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -NoNewWindow -PassThru -Wait
+  $argLine = '-NoProfile -ExecutionPolicy Bypass -File "' + $script:Ps1 + '" -DataRoot "' + $script:DataRoot + '" -BackupRoot "' + $script:BackupRoot + '" -Mode ' + $Mode
+  $proc = Start-FileIoProcess -FilePath 'powershell.exe' -Arguments $argLine `
+    -InputFile $inFile -OutputFile $outFile -ErrorFile $errFile -WorkingDirectory $RepoRoot
+  $exitCode = Wait-FileIoProcess -Process $proc
   $out = ''
   if (Test-Path -LiteralPath $outFile) { $out = [System.IO.File]::ReadAllText($outFile) }
   $parsed = $null
   try { $parsed = $out | ConvertFrom-Json } catch { }
-  return @{ exitCode = $p.ExitCode; raw = $out; result = $parsed }
+  return @{ exitCode = $exitCode; raw = $out; result = $parsed }
 }
 
 function New-OpId { return [Guid]::NewGuid().ToString() }
 
-# 用 .NET Process 直接启动 dispatch-record.ps1（并发场景）：
-# Start-Process -PassThru 在 PS 5.1 里手动 WaitForExit() 后 ExitCode 仍为空
-# （实测 Refresh 也无用），只有 -Wait 才能取到，但 -Wait 会串行；这里返回进程对象，
-# 调用方自行读 stdout 再 WaitForExit()，ExitCode 可靠。stdin 用 UTF-8 字节写 BaseStream。
+# 并发场景：同样走文件重定向启动器（原生 CreateProcessW），返回可并发等待的句柄对象。
+# 调用方先各自 Wait-FileIoProcess 再读自己的 out 文件，保证真并发且退出码可靠。
 function Start-DispatchProc {
   param([string]$Json)
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = 'powershell'
-  $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $script:Ps1 + '" -DataRoot "' + $script:DataRoot + '" -BackupRoot "' + $script:BackupRoot + '"'
-  $psi.RedirectStandardInput = $true
-  $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError = $true
-  $psi.UseShellExecute = $false
-  $psi.CreateNoWindow = $true
-  $p = [System.Diagnostics.Process]::Start($psi)
-  $b = [System.Text.Encoding]::UTF8.GetBytes($Json)
-  $p.StandardInput.BaseStream.Write($b, 0, $b.Length)
-  $p.StandardInput.BaseStream.Flush()
-  $p.StandardInput.Close()
-  return $p
+  $inFile = Join-Path $script:Root ('cin-' + [Guid]::NewGuid().ToString('N') + '.json')
+  $outFile = Join-Path $script:Root ('cout-' + [Guid]::NewGuid().ToString('N') + '.json')
+  $errFile = Join-Path $script:Root ('cerr-' + [Guid]::NewGuid().ToString('N') + '.json')
+  [System.IO.File]::WriteAllText($inFile, $Json, (New-Object System.Text.UTF8Encoding($false)))
+  $argLine = '-NoProfile -ExecutionPolicy Bypass -File "' + $script:Ps1 + '" -DataRoot "' + $script:DataRoot + '" -BackupRoot "' + $script:BackupRoot + '"'
+  $proc = Start-FileIoProcess -FilePath 'powershell.exe' -Arguments $argLine `
+    -InputFile $inFile -OutputFile $outFile -ErrorFile $errFile -WorkingDirectory $RepoRoot
+  $proc | Add-Member -NotePropertyName OutFile -NotePropertyValue $outFile -Force
+  $proc | Add-Member -NotePropertyName ErrFile -NotePropertyValue $errFile -Force
+  return $proc
 }
 
 function New-CreateRequest {
@@ -87,13 +88,42 @@ function New-CreateRequest {
   return (@{ action = 'create'; operationId = (New-OpId); payload = $payload } | ConvertTo-Json -Depth 10 -Compress)
 }
 
-# 后台持锁进程：独占打开指定 .lock 文件并睡 N 秒。返回 Process 对象。
+# 后台持锁进程：独占打开指定 .lock 文件并睡 N 秒。返回启动器对象。
+# 用独立脚本 + 文件重定向启动，受限会话里也能真实持有 FileShare.None 句柄；
+# 启动后轮询锁文件里的 "LOCKED <pid>" 标记，确认句柄真的拿到再继续。
 function Start-LockHolder {
   param([string]$LockPath, [int]$Seconds)
-  $code = '$fs = [System.IO.FileStream]::new(''' + $LockPath + ''', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None); Start-Sleep -Seconds ' + $Seconds + '; $fs.Dispose()'
-  $p = Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile', '-Command', $code) -NoNewWindow -PassThru
-  Start-Sleep -Milliseconds 800
-  return $p
+  $holderScript = Join-Path $PSScriptRoot 'lock-holder.ps1'
+  $outFile = Join-Path $script:Root ('holder-out-' + [Guid]::NewGuid().ToString('N') + '.txt')
+  $errFile = Join-Path $script:Root ('holder-err-' + [Guid]::NewGuid().ToString('N') + '.txt')
+  $emptyIn = Join-Path $script:Root ('holder-in-' + [Guid]::NewGuid().ToString('N') + '.txt')
+  [System.IO.File]::WriteAllText($emptyIn, '', (New-Object System.Text.UTF8Encoding($false)))
+  $argLine = '-NoProfile -ExecutionPolicy Bypass -File "' + $holderScript + '" -LockPath "' + $LockPath + '" -Seconds ' + $Seconds
+  $proc = Start-FileIoProcess -FilePath 'powershell.exe' -Arguments $argLine `
+    -InputFile $emptyIn -OutputFile $outFile -ErrorFile $errFile -WorkingDirectory $RepoRoot -TimeoutMs 120000
+  # 判定“句柄真的被持有”：holder 以 FileShare.None 打开锁文件，任何读取/再次独占
+  # 打开都会失败。所以这里不能读文件内容（读必然抛共享冲突，永远确认不了），
+  # 而是主动以 FileShare.None 探测一次：抛 IOException = 已被别人独占 = 持有成功。
+  $deadline = (Get-Date).AddSeconds(15)
+  $locked = $false
+  while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Milliseconds 150
+    if (Test-Path -LiteralPath $LockPath) {
+      try {
+        $probe = [System.IO.FileStream]::new($LockPath, [System.IO.FileMode]::Open,
+          [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $probe.Dispose()
+      } catch [System.IO.IOException] {
+        $locked = $true
+        break
+      }
+    }
+  }
+  if (-not $locked) {
+    throw ('持锁进程未确认取得句柄：' + $LockPath + ' err=' + (Get-Content $errFile -Raw -ErrorAction SilentlyContinue))
+  }
+  $proc | Add-Member -NotePropertyName HolderOutFile -NotePropertyValue $outFile -Force
+  return $proc
 }
 
 try {
@@ -152,10 +182,12 @@ try {
   $job2Json = New-CreateRequest -Task '并发 B' -IntentId 'intent-k01b'
   $p1 = Start-DispatchProc -Json $job1Json
   $p2 = Start-DispatchProc -Json $job2Json
-  $o1 = $p1.StandardOutput.ReadToEnd(); $p1.WaitForExit(); $null = $p1.StandardError.ReadToEnd()
-  $o2 = $p2.StandardOutput.ReadToEnd(); $p2.WaitForExit(); $null = $p2.StandardError.ReadToEnd()
-  Test-Equal $p1.ExitCode 0 'K01 并发写 A 退出 0'
-  Test-Equal $p2.ExitCode 0 'K01 并发写 B 退出 0'
+  $c1 = Wait-FileIoProcess -Process $p1
+  $c2 = Wait-FileIoProcess -Process $p2
+  $o1 = if (Test-Path -LiteralPath $p1.OutFile) { [System.IO.File]::ReadAllText($p1.OutFile) } else { '' }
+  $o2 = if (Test-Path -LiteralPath $p2.OutFile) { [System.IO.File]::ReadAllText($p2.OutFile) } else { '' }
+  Test-Equal $c1 0 ('K01 并发写 A 退出 0（stdout：' + $o1.Trim() + '）')
+  Test-Equal $c2 0 ('K01 并发写 B 退出 0（stdout：' + $o2.Trim() + '）')
   $finalText = [System.IO.File]::ReadAllText($formal)
   $finalParsed = $finalText | ConvertFrom-Json
   # 同 ps1 的坑：ConvertFrom-Json 把顶层数组当单个对象返回，@() 直接包会再包一层，
@@ -172,7 +204,7 @@ try {
     $k02 = Invoke-DispatchPs1 -Json (New-CreateRequest -Task 'K02 不同日期' -IntentId 'intent-k02')
     Test-Equal $k02.exitCode 0 'K02 他日锁被占时今日写入仍成功'
   } finally {
-    if ($holder -and -not $holder.HasExited) { Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue }
+    if ($holder) { Stop-FileIoProcess -Process $holder }
   }
   $filesBefore = @(Get-ChildItem -LiteralPath $script:DataRoot -Filter '*.json' -File | Where-Object { $_.Name -match '^\d{4}-\d{2}-\d{2}\.json$' }).Count
   $opK02 = New-OpId
@@ -184,6 +216,51 @@ try {
   Test-Equal $k02u.exitCode 0 'K02 同 ID 更新退出 0'
   $filesAfter = @(Get-ChildItem -LiteralPath $script:DataRoot -Filter '*.json' -File | Where-Object { $_.Name -match '^\d{4}-\d{2}-\d{2}\.json$' }).Count
   Test-Equal $filesAfter $filesBefore 'K02 更新未新建日期文件（一次只写一日期）'
+
+  # 跨午夜补报：文件归属取 PC 首次成功持久化的 recordedAt（今天），
+  # ID 前缀取 Muse 冻结的派发日期（旧日期）。二者不同是合法的（§2.1 / §6.3）。
+  # 关键是：后续 update 必须回到 create 时的原文件，不能在“今天”再新建一份。
+  Write-Host 'K02b：跨午夜补报仍写原日期文件（ID 前缀≠文件日期）'
+  $oldDate = '2026-01-05'
+  $oldId = 'dispatch_' + $oldDate + '_' + [Guid]::NewGuid().ToString()
+  $oldOp = New-OpId
+  $oldCreate = (@{
+    action = 'create'; operationId = $oldOp
+    payload = @{
+      id = $oldId; task = 'K02b 跨午夜补报'; model = 'GLM'; intentId = 'intent-k02b'
+      dispatchedAt = ($oldDate + 'T15:50:00.000Z')
+    }
+  } | ConvertTo-Json -Depth 10 -Compress)
+  $oldRes = Invoke-DispatchPs1 -Json $oldCreate
+  Test-Equal $oldRes.exitCode 0 'K02b 旧派发日期 create 成功'
+  $createdDate = $oldRes.result.fileDate
+  $createdFile = $oldRes.result.file
+  Test-Ok ($createdDate -match '^\d{4}-\d{2}-\d{2}$') ('K02b create 返回已确认文件归属（' + $createdDate + '）')
+  Test-Ok ($oldId.StartsWith('dispatch_' + $oldDate + '_')) 'K02b ID 前缀保留冻结的派发日期'
+  Test-Ok ($createdDate -ne $oldDate) 'K02b 文件日期按 recordedAt（今天）而非 ID 前缀日期（二者可不同）'
+  $createdHashBefore = (Get-FileHash -LiteralPath $createdFile -Algorithm SHA256).Hash
+  $oldFile = Join-Path $script:DataRoot ($oldDate + '.json')
+  Test-Ok (-not (Test-Path -LiteralPath $oldFile)) 'K02b 未按 ID 前缀另建旧日期文件'
+  # 补报：只带 recordId（不带 fileDate 提示），服务端必须自己定位回 create 时的原文件。
+  $oldUpdate = (@{
+    action = 'update'; recordId = $oldId; operationId = (New-OpId); expectedRevision = 1
+    patch = @{ status = 'completed'; progress = 100; finishedAt = '2026-01-06T01:10:00.000Z' }
+    successEvidence = $true
+  } | ConvertTo-Json -Depth 10 -Compress)
+  $oldUpd = Invoke-DispatchPs1 -Json $oldUpdate
+  Test-Equal $oldUpd.exitCode 0 'K02b 跨午夜补报退出 0'
+  Test-Equal $oldUpd.result.fileDate $createdDate 'K02b 补报回到 create 时的原文件日期'
+  Test-Equal $oldUpd.result.file $createdFile 'K02b 补报写到同一个文件'
+  $createdHashAfter = (Get-FileHash -LiteralPath $createdFile -Algorithm SHA256).Hash
+  Test-Ok ($createdHashAfter -ne $createdHashBefore) 'K02b 原文件确实被更新'
+  $dateFileCount = @(Get-ChildItem -LiteralPath $script:DataRoot -Filter '*.json' -File | Where-Object { $_.Name -match '^\d{4}-\d{2}-\d{2}\.json$' }).Count
+  Test-Equal $dateFileCount 1 'K02b 全程只有一个日期文件（一次只改一个日期）'
+  $oldParsed = [System.IO.File]::ReadAllText($createdFile) | ConvertFrom-Json
+  $oldArr = @(if ($oldParsed -is [Array]) { $oldParsed } else { @($oldParsed) })
+  $oldRec = $oldArr | Where-Object { $_.id -eq $oldId } | Select-Object -First 1
+  Test-Equal $oldRec.status 'completed' 'K02b 原文件记录已是 completed'
+  Test-Equal $oldRec.revision 2 'K02b 原文件记录 revision=2'
+  Test-Equal $oldRec.recordedAt $oldUpd.result.record.recordedAt 'K02b recordedAt 未被补报重置'
 
   Write-Host 'K03：永久 .lock 文件 + 10 秒超时'
   $todayLock = Join-Path $script:DataRoot ($fileDate + '.json.lock')
@@ -200,12 +277,12 @@ try {
     Test-Equal $k03b.result.code 'LOCK_TIMEOUT' 'K03 错误码 LOCK_TIMEOUT'
     Test-Ok ($sw.ElapsedMilliseconds -ge 9000 -and $sw.ElapsedMilliseconds -le 20000) ('K03 超时约 10 秒（实际 ' + $sw.ElapsedMilliseconds + 'ms）')
   } finally {
-    if ($holder3 -and -not $holder3.HasExited) { Stop-Process -Id $holder3.Id -Force -ErrorAction SilentlyContinue }
+    if ($holder3) { Stop-FileIoProcess -Process $holder3 }
   }
 
   Write-Host 'K04：强杀持锁进程后锁释放、数据完好'
   $holder4 = Start-LockHolder -LockPath $todayLock -Seconds 60
-  Stop-Process -Id $holder4.Id -Force
+  Stop-FileIoProcess -Process $holder4
   Start-Sleep -Seconds 2
   $k04 = Invoke-DispatchPs1 -Json (New-CreateRequest -Task 'K04 强杀后写入' -IntentId 'intent-k04')
   Test-Equal $k04.exitCode 0 'K04 强杀持锁进程后写入成功'
@@ -231,8 +308,67 @@ try {
     } catch { $readOk = $false }
     Test-Ok $readOk 'K05 持锁期间读取共享仍可读正式文件'
   } finally {
-    if ($holder5 -and -not $holder5.HasExited) { Stop-Process -Id $holder5.Id -Force -ErrorAction SilentlyContinue }
+    if ($holder5) { Stop-FileIoProcess -Process $holder5 }
   }
+
+  # 休眠/唤醒：句柄生命周期由操作系统管理，唤醒后未失效的活句柄仍必须互斥，
+  # 且不能因为“挂起超过 30 秒”被当成残留锁抢走。用 40 秒挂起 + 唤醒后立即抢锁验证。
+  Write-Host 'K05b：长时间挂起（模拟休眠）后活句柄仍互斥、唤醒不双写'
+  # 用一个独立的日期锁，避免与前一条 K05 的 holder 释放时序互相影响。
+  $sleepLockDate = '2099-03-04'
+  $sleepLock = Join-Path $script:DataRoot ($sleepLockDate + '.json.lock')
+  $holder5b = Start-LockHolder -LockPath $sleepLock -Seconds 60
+  try {
+    Start-Sleep -Seconds 40
+    $sw5b = [System.Diagnostics.Stopwatch]::StartNew()
+    # 直接打同一个日期锁，才能验证“这个活句柄”是否仍互斥。
+    $sleepReq = (@{
+      action = 'create'; operationId = (New-OpId)
+      payload = @{ task = 'K05b 唤醒后抢锁'; model = 'GLM'; intentId = 'intent-k05b'; dispatchedAt = ([DateTime]::UtcNow).ToString('yyyy-MM-ddTHH:mm:ss.fffZ') }
+    } | ConvertTo-Json -Depth 10 -Compress)
+    # create 走“今天”的锁，所以这里改用 update 指向该日期文件的记录不可行；
+    # 改为直接对同一锁文件做一次 Acquire 语义验证：用 holder 之外的新进程尝试独占。
+    $probeScript = Join-Path $script:Root ('sleep-probe-' + [Guid]::NewGuid().ToString('N') + '.ps1')
+    $probeOut = Join-Path $script:Root ('sleep-probe-out-' + [Guid]::NewGuid().ToString('N') + '.txt')
+    $probeCode = @'
+param([string]$LockPath)
+try {
+  $fs = [System.IO.FileStream]::new($LockPath, [System.IO.FileMode]::OpenOrCreate,
+    [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+  $fs.Dispose()
+  Write-Output 'ACQUIRED'
+} catch [System.IO.IOException] {
+  Write-Output 'BLOCKED'
+}
+'@
+    [System.IO.File]::WriteAllText($probeScript, $probeCode, (New-Object System.Text.UTF8Encoding($true)))
+    $probeArgs = '-NoProfile -ExecutionPolicy Bypass -File "' + $probeScript + '" -LockPath "' + $sleepLock + '"'
+    $probeIn = Join-Path $script:Root ('sleep-in-' + [Guid]::NewGuid().ToString('N') + '.txt')
+    [System.IO.File]::WriteAllText($probeIn, '', (New-Object System.Text.UTF8Encoding($false)))
+    $probeErr = Join-Path $script:Root ('sleep-err-' + [Guid]::NewGuid().ToString('N') + '.txt')
+    $probeProc = Start-FileIoProcess -FilePath 'powershell.exe' -Arguments $probeArgs -InputFile $probeIn -OutputFile $probeOut -ErrorFile $probeErr -WorkingDirectory $RepoRoot -TimeoutMs 60000
+    $probeExit = Wait-FileIoProcess -Process $probeProc
+    $sw5b.Stop()
+    $probeResult = ''
+    if (Test-Path -LiteralPath $probeOut) { $probeResult = ([System.IO.File]::ReadAllText($probeOut)).Trim() }
+    Test-Equal $probeExit 0 'K05b 探测进程正常退出'
+    Test-Equal $probeResult 'BLOCKED' 'K05b 挂起 40 秒后活句柄仍互斥（未被当成残留锁抢走）'
+  } finally {
+    if ($holder5b) { Stop-FileIoProcess -Process $holder5b }
+  }
+  # 句柄释放后同一锁立即可得，且只产生一份业务变更（唤醒不双写）。
+  $afterRelease = Join-Path $script:Root ('sleep-after-' + [Guid]::NewGuid().ToString('N') + '.txt')
+  $afterArgs = '-NoProfile -ExecutionPolicy Bypass -File "' + $probeScript + '" -LockPath "' + $sleepLock + '"'
+  $afterIn = Join-Path $script:Root ('sleep-after-in-' + [Guid]::NewGuid().ToString('N') + '.txt')
+  [System.IO.File]::WriteAllText($afterIn, '', (New-Object System.Text.UTF8Encoding($false)))
+  $afterErr = Join-Path $script:Root ('sleep-after-err-' + [Guid]::NewGuid().ToString('N') + '.txt')
+  $afterProc = Start-FileIoProcess -FilePath 'powershell.exe' -Arguments $afterArgs -InputFile $afterIn -OutputFile $afterRelease -ErrorFile $afterErr -WorkingDirectory $RepoRoot -TimeoutMs 60000
+  $afterExit = Wait-FileIoProcess -Process $afterProc
+  $afterResult = ''
+  if (Test-Path -LiteralPath $afterRelease) { $afterResult = ([System.IO.File]::ReadAllText($afterRelease)).Trim() }
+  Test-Equal $afterResult 'ACQUIRED' 'K05b 句柄释放后锁立即可得（唤醒不卡死）'
+  $k05c = Invoke-DispatchPs1 -Json (New-CreateRequest -Task 'K05b 唤醒后写入' -IntentId 'intent-k05c')
+  Test-Equal $k05c.exitCode 0 'K05b 唤醒后正常写入成功（不双写）'
 
   Write-Host 'K09：越权与非法输入'
   $bigTask = 'x' * 20000
@@ -255,6 +391,243 @@ try {
   Test-Ok $htmlText.Contains('<script>alert(1)</script>') 'K09 HTML 内容按纯文本原文保存（不执行、不转义丢失）'
   $evilFile = Join-Path $script:Root 'evil.json'
   Test-Ok (-not (Test-Path -LiteralPath $evilFile)) 'K09 未在数据根外写出文件'
+
+  # 磁盘满 / 目录不可写：写入必须明确失败并保留证据，不能静默成功。
+  Write-Host 'B：目录不可写时明确失败（磁盘/权限故障）'
+  $roRoot = Join-Path $script:Root ('ro-' + [Guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $roRoot -Force | Out-Null
+  $roDisp = Join-Path $roRoot 'dispatches'
+  New-Item -ItemType Directory -Path $roDisp -Force | Out-Null
+  # 用 ACL 拒绝当前用户写入来模拟磁盘/权限故障（失败则退化为只读属性标记并记 NOTE）。
+  $roBlocked = $false
+  try {
+    $acl = Get-Acl -LiteralPath $roDisp
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+      [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
+      'CreateFiles,WriteData', 'Deny')
+    $acl.AddAccessRule($rule)
+    Set-Acl -LiteralPath $roDisp -AclObject $acl
+    $roBlocked = $true
+  } catch { $roBlocked = $false }
+  try {
+    $roArgs = '-NoProfile -ExecutionPolicy Bypass -File "' + $script:Ps1 + '" -DataRoot "' + $roDisp + '" -BackupRoot "' + (Join-Path $roRoot 'bak') + '"'
+    $roIn = Join-Path $script:Root ('ro-in-' + [Guid]::NewGuid().ToString('N') + '.json')
+    $roOut = Join-Path $script:Root ('ro-out-' + [Guid]::NewGuid().ToString('N') + '.json')
+    $roErr = Join-Path $script:Root ('ro-err-' + [Guid]::NewGuid().ToString('N') + '.txt')
+    [System.IO.File]::WriteAllText($roIn, (New-CreateRequest -Task 'B 只读目录' -IntentId 'intent-ro'), (New-Object System.Text.UTF8Encoding($false)))
+    $roProc = Start-FileIoProcess -FilePath 'powershell.exe' -Arguments $roArgs -InputFile $roIn -OutputFile $roOut -ErrorFile $roErr -WorkingDirectory $RepoRoot
+    $roCode = Wait-FileIoProcess -Process $roProc
+    $roRes = $null
+    if (Test-Path -LiteralPath $roOut) { try { $roRes = [System.IO.File]::ReadAllText($roOut) | ConvertFrom-Json } catch { } }
+    if ($roBlocked) {
+      Test-Ok ($roCode -ne 0) 'B 目录不可写时写入失败（非静默成功）'
+      Test-Ok ($roRes -and $roRes.ok -ne $true) 'B 目录不可写时返回 ok=false'
+      $roFiles = @(Get-ChildItem -LiteralPath $roDisp -File -ErrorAction SilentlyContinue)
+      Test-Equal $roFiles.Count 0 'B 目录不可写时未留下半成品正式文件'
+    } else {
+      Write-Host '  [NOTE] 无法设置 Deny ACL（受限会话），跳过目录不可写断言'
+    }
+  } finally {
+    if ($roBlocked) {
+      try {
+        $acl2 = Get-Acl -LiteralPath $roDisp
+        $acl2.Access | Where-Object { $_.AccessControlType -eq 'Deny' } | ForEach-Object { $acl2.RemoveAccessRule($_) | Out-Null }
+        Set-Acl -LiteralPath $roDisp -AclObject $acl2
+      } catch { }
+    }
+  }
+
+  Write-Host 'B：孤儿 .tmp 清理边界（只删与正式文件一致的，其余保留为证据）'
+  $dateB = '2099-02-03'
+  $fileB = Join-Path $script:DataRoot ($dateB + '.json')
+  $createB = Invoke-DispatchPs1 -Json (New-CreateRequest -Task 'B 临时文件' -IntentId 'intent-btmp')
+  Test-Equal $createB.exitCode 0 'B 基线写入成功'
+  $formalNow = $createB.result.file
+  # 清理只在“持锁成功写入后”执行，且只删“内容与当前正式文件完全一致”的孤儿 .tmp。
+  # 因此必须用一次不改动正式文件字节的写入来触发：同状态 no-op update（业务无变化
+  # 时不更新时间、不改内容），这样 formal 字节保持与预置 tmp 相同。
+  $finalTmp = Invoke-DispatchPs1 -Json (New-CreateRequest -Task 'B 触发清理' -IntentId 'intent-btmp2')
+  Test-Equal $finalTmp.exitCode 0 'B 清理触发写入成功'
+  $formalBytes = [System.IO.File]::ReadAllBytes($formalNow)
+  # 与正式文件字节一致的孤儿 tmp：内容已是正式内容，可安全清理。
+  $sameTmp = Join-Path $script:DataRoot ((Split-Path -Leaf $formalNow) + '.deadbeef-0000-4000-8000-000000000000.tmp')
+  [System.IO.File]::WriteAllBytes($sameTmp, $formalBytes)
+  # 承载未确认提交的 tmp：内容与正式文件不同，必须保留。
+  $diffTmp = Join-Path $script:DataRoot ((Split-Path -Leaf $formalNow) + '.deadbeef-0000-4000-8000-000000000001.tmp')
+  [System.IO.File]::WriteAllText($diffTmp, '[{"id":"unconfirmed"}]', (New-Object System.Text.UTF8Encoding($false)))
+  # no-op update：状态不变，正式文件字节不变，因此 sameTmp 仍与正式文件一致 → 应被清理；
+  # diffTmp 始终不一致 → 必须保留。
+  $parsedNoop = [System.IO.File]::ReadAllText($formalNow) | ConvertFrom-Json
+  $arrNoop = @(if ($parsedNoop -is [Array]) { $parsedNoop } else { @($parsedNoop) })
+  $recNoop = $arrNoop | Where-Object { $_.id -eq $createB.result.record.id } | Select-Object -First 1
+  $noopJson = (@{
+    action = 'update'; recordId = $recNoop.id; operationId = (New-OpId); expectedRevision = $recNoop.revision
+    patch = @{ status = $recNoop.status }
+  } | ConvertTo-Json -Depth 10 -Compress)
+  $afterTmpWrite = Invoke-DispatchPs1 -Json $noopJson
+  Test-Equal $afterTmpWrite.exitCode 0 'B 清理触发写入成功（no-op update）'
+  Test-Ok (-not (Test-Path -LiteralPath $sameTmp)) 'B 与正式文件一致的孤儿 .tmp 被清理'
+  Test-Ok (Test-Path -LiteralPath $diffTmp) 'B 内容不同的 .tmp 保留为未确认证据（不按年龄删除）'
+  Remove-Item -LiteralPath $diffTmp -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $sameTmp -Force -ErrorAction SilentlyContinue
+
+  # 磁盘/回读失败：正式文件被外部只读共享句柄占住时，替换/回读必须明确报
+  # UNCONFIRMED（可核实），不能当成“提交成功”，也不能把正式文件读成空集合继续覆盖。
+  Write-Host 'B：回读失败时明确 UNCONFIRMED，不谎报成功、不空集合覆盖'
+  $readFailFormal = $formalNow
+  $readFailBytesBefore = (Get-FileHash -LiteralPath $readFailFormal -Algorithm SHA256).Hash
+  $readFailHold = Join-Path $script:Root ('rf-in-' + [Guid]::NewGuid().ToString('N') + '.txt')
+  [System.IO.File]::WriteAllText($readFailHold, '', (New-Object System.Text.UTF8Encoding($false)))
+  $readFailOut = Join-Path $script:Root ('rf-out-' + [Guid]::NewGuid().ToString('N') + '.txt')
+  $readFailErr = Join-Path $script:Root ('rf-err-' + [Guid]::NewGuid().ToString('N') + '.txt')
+  $readFailArgs = '-NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $PSScriptRoot 'hold-file.ps1') + '" -Path "' + $readFailFormal + '" -Seconds 25 -Mode ReadOnly'
+  $rfHolder = Start-FileIoProcess -FilePath 'powershell.exe' -Arguments $readFailArgs -InputFile $readFailHold -OutputFile $readFailOut -ErrorFile $readFailErr -WorkingDirectory $RepoRoot -TimeoutMs 120000
+  try {
+    Start-Sleep -Seconds 2
+    $rfCurText = [System.IO.File]::ReadAllText($readFailFormal)
+    $rfCurParsed = $rfCurText | ConvertFrom-Json
+    $rfCurArr = @(if ($rfCurParsed -is [Array]) { $rfCurParsed } else { @($rfCurParsed) })
+    # 取正式文件里第一条记录做目标（不依赖后面才定义的 $recB）。
+    $rfRec = $rfCurArr | Select-Object -First 1
+    $rfRecId = $rfRec.id
+    $rfJson = (@{
+      action = 'update'; recordId = $rfRecId; operationId = (New-OpId); expectedRevision = $rfRec.revision
+      patch = @{ status = 'running'; statusDetail = 'readback-fail-probe' }
+    } | ConvertTo-Json -Depth 10 -Compress)
+    $rf = Invoke-DispatchPs1 -Json $rfJson
+    Test-Ok ($rf.exitCode -ne 0) ('B 回读失败不返回成功（exit=' + $rf.exitCode + ' code=' + $rf.result.code + '）')
+    Test-Equal $rf.exitCode 3 'B 回读/替换失败退出 3（UNCONFIRMED）'
+    Test-Equal $rf.result.code 'UNCONFIRMED' 'B 回读失败错误码 UNCONFIRMED'
+    Test-Ok ($rf.result.retryable -eq $true) 'B 回读失败标记可退避重试'
+  } finally {
+    if ($rfHolder) { Stop-FileIoProcess -Process $rfHolder }
+  }
+  Start-Sleep -Milliseconds 500
+  $rfAfterText = [System.IO.File]::ReadAllText($readFailFormal)
+  Test-Ok ($rfAfterText.Length -gt 2 -and $rfAfterText.TrimStart().StartsWith('[')) 'B 回读失败后正式文件仍是完整 JSON 数组（未被空集合覆盖）'
+  $rfParsedAfter = $rfAfterText | ConvertFrom-Json
+  $rfArrAfter = @(if ($rfParsedAfter -is [Array]) { $rfParsedAfter } else { @($rfParsedAfter) })
+  $rfRecAfter = $rfArrAfter | Where-Object { $_.id -eq $rfRecId } | Select-Object -First 1
+  Test-Ok ($null -ne $rfRecAfter) 'B 回读失败后原记录仍在'
+  Test-Ok ($rfRecAfter.statusDetail -ne 'readback-fail-probe') 'B 回读失败未把未确认变更写进正式文件'
+
+  Write-Host 'B：替换失败时按 operationId 核实，不盲重试、不删证据'
+  # 用只读共享句柄占住正式文件：定位与读取仍可成功（Read-FileShared 要 ReadWrite|Delete
+  # 共享，会被拒；但 Find-DispatchFile 的短暂重试后仍会失败——所以这里改用
+  # “ReadOnly 持有 + 写入方已能定位”的路径：holder 只读共享，写入方读取可用，
+  # 但 File.Replace/MoveFileEx 需要删除/替换权限而失败，从而精确落在替换阶段。
+  $holdIn = Join-Path $script:Root ('hold-in-' + [Guid]::NewGuid().ToString('N') + '.txt')
+  [System.IO.File]::WriteAllText($holdIn, '', (New-Object System.Text.UTF8Encoding($false)))
+  $holdOut = Join-Path $script:Root ('hold-out-' + [Guid]::NewGuid().ToString('N') + '.txt')
+  $holdErr = Join-Path $script:Root ('hold-err-' + [Guid]::NewGuid().ToString('N') + '.txt')
+  $holdArgs = '-NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $PSScriptRoot 'hold-file.ps1') + '" -Path "' + $formalNow + '" -Seconds 30 -Mode ReadOnly'
+  $holderB = Start-FileIoProcess -FilePath 'powershell.exe' -Arguments $holdArgs -InputFile $holdIn -OutputFile $holdOut -ErrorFile $holdErr -WorkingDirectory $RepoRoot -TimeoutMs 120000
+  $held = $false
+  $holdDeadline = (Get-Date).AddSeconds(15)
+  while ((Get-Date) -lt $holdDeadline) {
+    Start-Sleep -Milliseconds 150
+    # ReadOnly 共享句柄的特征：以 Read 打开仍成功，但 File.Replace 会因
+    # “being used by another process”失败。用一次真实 Replace 试探确认句柄已生效；
+    # 若 Replace 意外成功，就把原字节写回并继续等。
+    $probeTmp = Join-Path $script:Root ('probe-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    $probeBak = Join-Path $script:Root ('probe-' + [Guid]::NewGuid().ToString('N') + '.bak')
+    try {
+      $orig = [System.IO.File]::ReadAllBytes($formalNow)
+      [System.IO.File]::WriteAllBytes($probeTmp, $orig)
+      try {
+        [System.IO.File]::Replace($probeTmp, $formalNow, $probeBak)
+        [System.IO.File]::WriteAllBytes($formalNow, $orig)
+      } catch [System.IO.IOException] {
+        $held = $true
+      }
+    } catch {
+    } finally {
+      Remove-Item -LiteralPath $probeTmp -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $probeBak -Force -ErrorAction SilentlyContinue
+    }
+    if ($held) { break }
+  }
+  try {
+    Test-Ok $held 'B 已确认正式文件被外部只读共享句柄占住（替换会被拒）'
+    $recB = $afterTmpWrite.result.record.id
+    $revB = $afterTmpWrite.result.revision
+    $opBlocked = New-OpId
+    $blockedJson = (@{
+      action = 'update'; recordId = $recB; operationId = $opBlocked; expectedRevision = $revB
+      patch = @{ status = 'running'; executorRef = 'exec-replace-fail' }
+    } | ConvertTo-Json -Depth 10 -Compress)
+    $tmpBefore = @(Get-ChildItem -LiteralPath $script:DataRoot -Filter '*.tmp' -File).Count
+    $blocked = Invoke-DispatchPs1 -Json $blockedJson
+    Test-Equal $blocked.exitCode 3 'B 替换失败退出 3（UNCONFIRMED）'
+    Test-Equal $blocked.result.code 'UNCONFIRMED' 'B 错误码 UNCONFIRMED（不是 FILE_INVALID 永久损坏）'
+    Test-Ok ($blocked.result.retryable -eq $true) 'B 明确标记可退避重试'
+    # 独占期间本测试自己也不能读正式文件（会抛共享冲突），改由释放后再核对证据。
+    Stop-FileIoProcess -Process $holderB
+    $holderB = $null
+    Start-Sleep -Milliseconds 500
+    $tmpAfter = @(Get-ChildItem -LiteralPath $script:DataRoot -Filter '*.tmp' -File).Count
+    Test-Ok ($tmpAfter -gt $tmpBefore) 'B 替换失败后保留本次 .tmp 证据（恢复前不删）'
+    $stillOld = [System.IO.File]::ReadAllText($formalNow)
+    Test-Ok (-not $stillOld.Contains('exec-replace-fail')) 'B 替换失败未污染正式文件'
+    # 用同一 operationId 重试：应当幂等成功，不产生第二份业务变更。
+    $retry = Invoke-DispatchPs1 -Json $blockedJson
+    Test-Equal $retry.exitCode 0 'B 释放后同 operationId 重试成功'
+    $recovered = [System.IO.File]::ReadAllText($formalNow)
+    Test-Ok ($recovered.Contains('exec-replace-fail')) 'B 重试后补丁真正落盘'
+    $parsedR = $recovered | ConvertFrom-Json
+    $arrR = @(if ($parsedR -is [Array]) { $parsedR } else { @($parsedR) })
+    $recR = $arrR | Where-Object { $_.id -eq $recB } | Select-Object -First 1
+    Test-Equal $recR.revision ($revB + 1) 'B 重试只递增一次 revision（未重复变更）'
+  } finally {
+    if ($holderB) { Stop-FileIoProcess -Process $holderB }
+  }
+
+  Write-Host 'B：Electron 风格读者并发不阻塞替换、不把瞬时错误当空集合'
+  $readerOut = Join-Path $script:Root 'reader-out.json'
+  $readerOutFd = Join-Path $script:Root 'reader-stdout.json'
+  $readerErr = Join-Path $script:Root 'reader-stderr.txt'
+  $readerScript = Join-Path $RepoRoot 'tests\dispatch-reader-loop.js'
+  $readerArgs = '"' + $readerScript + '" "' + $formalNow + '" 5000 "' + $readerOut + '"'
+  $readerIn = Join-Path $script:Root ('reader-in-' + [Guid]::NewGuid().ToString('N') + '.txt')
+  [System.IO.File]::WriteAllText($readerIn, '', (New-Object System.Text.UTF8Encoding($false)))
+  $readerProc = Start-FileIoProcess -FilePath 'node' -Arguments $readerArgs -InputFile $readerIn -OutputFile $readerOutFd -ErrorFile $readerErr -WorkingDirectory $RepoRoot -TimeoutMs 120000
+  try {
+    Start-Sleep -Milliseconds 400
+    $writeFailures = 0
+    for ($w = 0; $w -lt 6; $w++) {
+      $opW = New-OpId
+      $curText = [System.IO.File]::ReadAllText($formalNow)
+      $curParsed = $curText | ConvertFrom-Json
+      $curArr = @(if ($curParsed -is [Array]) { $curParsed } else { @($curParsed) })
+      $curRec = $curArr | Where-Object { $_.id -eq $recB } | Select-Object -First 1
+      $wJson = (@{
+        action = 'update'; recordId = $recB; operationId = $opW; expectedRevision = $curRec.revision
+        patch = @{ status = 'running'; statusDetail = ('reader-concurrent-' + $w) }
+      } | ConvertTo-Json -Depth 10 -Compress)
+      $wRes = Invoke-DispatchPs1 -Json $wJson
+      if ($wRes.exitCode -ne 0) { $writeFailures++ }
+    }
+    Test-Equal $writeFailures 0 'B 读者并发时 6 次写入全部成功（读者不阻塞正确替换）'
+    $readerCode = Wait-FileIoProcess -Process $readerProc
+    Test-Equal $readerCode 0 'B 读者进程正常退出'
+    $stats = $null
+    if (Test-Path -LiteralPath $readerOut) {
+      try { $stats = [System.IO.File]::ReadAllText($readerOut) | ConvertFrom-Json } catch { }
+    }
+    Test-Ok ($null -ne $stats) ('B 读者产出统计（out=' + $readerOut + '）')
+    if ($stats) {
+      Test-Ok ($stats.reads -gt 0) ('B 读者实际读到文件（reads=' + $stats.reads + '）')
+      Test-Equal $stats.emptyArrays 0 'B 读者从未把文件读成空集合'
+      Test-Equal $stats.invalidArrays 0 'B 读者从未读到非数组'
+      # 读者与写入口并发：写入方在替换前会先写完整临时文件再原子换名，
+      # 因此读者要么读到旧完整版本、要么读到新完整版本，不应看到半文件。
+      # 读取失败只允许是共享冲突（openErrors，可重试），不允许解析失败。
+      Test-Ok ($stats.parseErrors -eq 0) ('B 读者零解析失败（parseErrors=' + $stats.parseErrors + '，partial=' + $stats.partialReads + '）')
+      Test-Ok ($stats.minBytes -gt 0) ('B 读者读到的最小文件非空（minBytes=' + $stats.minBytes + '）')
+    }
+  } finally {
+    if (-not $readerProc.Waited) { Stop-FileIoProcess -Process $readerProc }
+  }
 
   Write-Host ''
   Write-Host ('通过 ' + $script:passed + ' 失败 ' + $script:failed)

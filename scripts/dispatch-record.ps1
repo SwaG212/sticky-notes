@@ -82,19 +82,28 @@ function Read-StdinBytes {
 }
 
 # 以“读取 + 删除共享”打开文件读全文；不拿写锁，不创建目录。
+# 共享冲突/瞬时消失属于可恢复的瞬时错误（§6.3 第 3 条）：短暂重试 3 次再放弃，
+# 不能把“别人正持有独占句柄”直接当成文件损坏。权限等不可恢复异常立即抛出。
 function Read-FileShared {
   param([string]$Path)
-  $fs = $null
-  $sr = $null
-  try {
-    $fs = [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open,
-      [System.IO.FileAccess]::Read,
-      [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
-    $sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8)
-    return $sr.ReadToEnd()
-  } finally {
-    if ($sr) { $sr.Dispose() }
-    if ($fs) { $fs.Dispose() }
+  $attempt = 0
+  while ($true) {
+    $fs = $null
+    $sr = $null
+    try {
+      $fs = [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
+      $sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8)
+      return $sr.ReadToEnd()
+    } catch [System.IO.IOException] {
+      $attempt++
+      if ($attempt -ge 3) { throw }
+      Start-Sleep -Milliseconds 100
+    } finally {
+      if ($sr) { $sr.Dispose() }
+      if ($fs) { $fs.Dispose() }
+    }
   }
 }
 
@@ -103,7 +112,11 @@ function Find-DispatchFile {
   # 先看提示日期文件，再全目录扫描（按日期降序）。返回 @{path; date} 或 $null。
   # 扫描用原文包含匹配定位，node 侧再做严格校验；读不到的文件记下来，
   # 找不到记录且有读不到的文件时不能断言不存在。
+  # 区分两类读失败：IOException（共享冲突/瞬时消失，可退避重试）记入 busy，
+  # 其余（权限、路径非法）记入 unreadable。两者都不能被当成“记录不存在”，
+  # 但也不能把可恢复的瞬时冲突谎报成文件损坏。
   $unreadable = @()
+  $busy = @()
   $candidates = @()
   $files = @()
   if (Test-Path -LiteralPath $DataRoot -PathType Container) {
@@ -117,7 +130,7 @@ function Find-DispatchFile {
       try {
         $text = Read-FileShared -Path $hint
         if ($text.Contains('"' + $RecordId + '"')) { $candidates += @{ path = $hint; date = $HintDate } }
-      } catch { $unreadable += $hint }
+      } catch [System.IO.IOException] { $busy += $hint } catch { $unreadable += $hint }
     }
   }
   if ($candidates.Count -eq 0) {
@@ -130,10 +143,10 @@ function Find-DispatchFile {
           $candidates += @{ path = $f.FullName; date = $date }
           break
         }
-      } catch { $unreadable += $f.FullName }
+      } catch [System.IO.IOException] { $busy += $f.FullName } catch { $unreadable += $f.FullName }
     }
   }
-  return @{ candidates = $candidates; unreadable = $unreadable }
+  return @{ candidates = $candidates; unreadable = $unreadable; busy = $busy }
 }
 
 # FileStream 独占句柄锁：只对可恢复共享冲突（IOException）每 100ms 重试，
@@ -184,32 +197,80 @@ function Invoke-StoreTransact {
   # StandardOutputEncoding 的赋值），且控制台默认编码是 GBK(936)，而 node 的
   # stdin/stdout 是 UTF-8；GBK 解码 UTF-8 中文时尾字节会吃掉 JSON 末尾的引号，
   # 导致 ConvertFrom-Json 失败（NODE_BAD_OUTPUT）。改走 BaseStream 直接读写 UTF-8 字节。
+  #
+  # 受限环境回退：在 Job 对象/无交互桌面下（例如自动化验收会话），
+  # Process.Start 带匿名管道重定向会抛 Win32Exception 5（Access is denied），
+  # 但 Start-Process 的文件重定向仍可用。此时改用临时文件传输入参/输出，
+  # 保证同一条写入口在受限会话里也能真实跑通；正常环境仍走管道路径。
+  $stdout = $null
+  $stderr = ''
+  $exitCode = $null
+  $launched = $false
   try {
     $proc = [System.Diagnostics.Process]::Start($psi)
+    $launched = $true
   } catch {
+    $proc = $null
+  }
+  if ($launched) {
+    try {
+      $inBytes = [System.Text.Encoding]::UTF8.GetBytes($inputJson)
+      $proc.StandardInput.BaseStream.Write($inBytes, 0, $inBytes.Length)
+      $proc.StandardInput.BaseStream.Flush()
+      $proc.StandardInput.Close()
+      $msOut = New-Object System.IO.MemoryStream
+      try {
+        $proc.StandardOutput.BaseStream.CopyTo($msOut)
+        $stdout = [System.Text.Encoding]::UTF8.GetString($msOut.ToArray())
+      } finally {
+        $msOut.Dispose()
+      }
+      $stderr = $proc.StandardError.ReadToEnd()
+      $proc.WaitForExit()
+      $exitCode = $proc.ExitCode
+    } finally {
+      if (-not $proc.HasExited) {
+        try { $proc.Kill() } catch { }
+      }
+      $proc.Dispose()
+    }
+  } else {
+    $transportDir = Join-Path ([System.IO.Path]::GetTempPath()) ('dispatch-store-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $transportDir -Force | Out-Null
+    $inFile = Join-Path $transportDir 'in.json'
+    $outFile = Join-Path $transportDir 'out.json'
+    $errFile = Join-Path $transportDir 'err.txt'
+    try {
+      [System.IO.File]::WriteAllText($inFile, $inputJson, (New-Object System.Text.UTF8Encoding($false)))
+      $fallback = $null
+      try {
+        $fallback = Start-Process -FilePath $NodeExe -ArgumentList ('"' + $storeJs + '"') `
+          -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile `
+          -NoNewWindow -PassThru -ErrorAction Stop
+      } catch {
+        throw (New-Object System.Exception('NODE_UNAVAILABLE'))
+      }
+      if ($null -eq $fallback) {
+        throw (New-Object System.Exception('NODE_UNAVAILABLE'))
+      }
+      $fallback.WaitForExit()
+      # PS 5.1 的 Start-Process -PassThru 在 WaitForExit() 后 ExitCode 常为空，
+      # 这里不依赖退出码：stdout 能解析出 JSON 就按结果处理，否则视为不可用。
+      if (Test-Path -LiteralPath $outFile -PathType Leaf) {
+        $stdout = [System.IO.File]::ReadAllText($outFile, [System.Text.Encoding]::UTF8)
+      }
+      if (Test-Path -LiteralPath $errFile -PathType Leaf) {
+        $stderr = [System.IO.File]::ReadAllText($errFile, [System.Text.Encoding]::UTF8)
+      }
+      $exitCode = $fallback.ExitCode
+    } finally {
+      Remove-Item -LiteralPath $transportDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+  if (($exitCode -ne $null) -and ($exitCode -ne 0) -and ($stdout -eq '' -or $stdout -eq $null)) {
     throw (New-Object System.Exception('NODE_UNAVAILABLE'))
   }
-  try {
-    $inBytes = [System.Text.Encoding]::UTF8.GetBytes($inputJson)
-    $proc.StandardInput.BaseStream.Write($inBytes, 0, $inBytes.Length)
-    $proc.StandardInput.BaseStream.Flush()
-    $proc.StandardInput.Close()
-    $msOut = New-Object System.IO.MemoryStream
-    try {
-      $proc.StandardOutput.BaseStream.CopyTo($msOut)
-      $stdout = [System.Text.Encoding]::UTF8.GetString($msOut.ToArray())
-    } finally {
-      $msOut.Dispose()
-    }
-    $stderr = $proc.StandardError.ReadToEnd()
-    $proc.WaitForExit()
-  } finally {
-    if (-not $proc.HasExited) {
-      try { $proc.Kill() } catch { }
-    }
-    $proc.Dispose()
-  }
-  if ($proc.ExitCode -ne 0 -and ($stdout -eq '' -or $stdout -eq $null)) {
+  if ($stdout -eq '' -or $stdout -eq $null) {
     throw (New-Object System.Exception('NODE_UNAVAILABLE'))
   }
   try {
@@ -223,6 +284,71 @@ function Invoke-StoreTransact {
     throw $err
   }
   return $result
+}
+
+# 原子替换：优先 File.Replace（带备份），不可用时回退到 ReplaceFile 等价路径。
+# 为什么需要回退：File.Replace 在部分卷/受限会话上会抛 UnauthorizedAccessException
+# （实测 Win11 + 本机 NTFS 与 %TEMP% 都复现），此时正式文件与临时文件都还在原地，
+# 属于“替换未发生”的确定状态，不是“结果未确认”。如果直接按 UNCONFIRMED 返回，
+# 每次 update 都写不进去，写入口等于不可用。
+# 回退顺序（每一步都保持“先备份旧版本、再换名、失败可核实”）：
+#   1) 先把当前正式文件复制成 replace-bak（等价于 File.Replace 的 backup 参数）；
+#   2) 用 MoveFileEx(REPLACE_EXISTING) 做同卷原子换名（NTFS 上等价 ReplaceFile 的核心动作）；
+#   3) 若换名仍失败，才判定 UNCONFIRMED 并保留证据。
+function Invoke-AtomicReplace {
+  param([string]$TempPath, [string]$FormalPath, [string]$BackupPath, [string]$Date, [string]$DataRoot)
+  $usedFallback = $false
+  $fallbackReason = ''
+  try {
+    [System.IO.File]::Replace($TempPath, $FormalPath, $BackupPath)
+    return @{ ok = $true; usedFallback = $false; fallbackReason = '' }
+  } catch {
+    $primary = $_.Exception
+    if ($primary.InnerException) { $primary = $primary.InnerException }
+    $fallbackReason = $primary.GetType().Name + ': ' + $primary.Message
+  }
+
+  # ---- 回退：复制旧版本做备份，再用 MoveFileEx 原子换名 ----
+  if (-not ('DshAtomicReplaceNative' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class DshAtomicReplaceNative {
+  [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+  public static extern bool MoveFileExW(string existingFileName, string newFileName, uint flags);
+}
+'@
+  }
+  try {
+    # 1) 备份旧版本（先备份，失败就不换名，避免丢掉最后一个可恢复版本）
+    if (Test-Path -LiteralPath $BackupPath -PathType Leaf) {
+      $oldBak = Join-Path $DataRoot ($Date + '.json.bak')
+      Copy-Item -LiteralPath $BackupPath -Destination $oldBak -Force
+    }
+    Copy-Item -LiteralPath $FormalPath -Destination $BackupPath -Force
+    # 2) 同卷原子换名：MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH。
+    #    换名会被“仍持有删除共享的读者”短暂拒绝（ERROR_SHARING_VIOLATION=32 /
+    #    ERROR_ACCESS_DENIED=5）。这类冲突是瞬时的，读者读完即关句柄；按 §6.3 对
+    #    可恢复共享冲突的约定做短暂重试（总预算 1 秒，不持锁等待退避、不无限重试）。
+    #    重试期间临时文件与备份都保持原位，失败仍可核实。
+    $flags = 0x1 -bor 0x8
+    $deadline = [DateTime]::UtcNow.AddMilliseconds(1000)
+    while ($true) {
+      $ok = [DshAtomicReplaceNative]::MoveFileExW($TempPath, $FormalPath, [uint32]$flags)
+      if ($ok) { break }
+      $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+      if (($err -ne 32 -and $err -ne 5) -or [DateTime]::UtcNow -ge $deadline) {
+        return @{ ok = $false; usedFallback = $true; fallbackReason = $fallbackReason; error = ('MoveFileEx err=' + $err) }
+      }
+      Start-Sleep -Milliseconds 20
+    }
+    $usedFallback = $true
+    return @{ ok = $true; usedFallback = $true; fallbackReason = $fallbackReason }
+  } catch {
+    $secondary = $_.Exception
+    if ($secondary.InnerException) { $secondary = $secondary.InnerException }
+    return @{ ok = $false; usedFallback = $true; fallbackReason = $fallbackReason; error = ($secondary.GetType().Name + ': ' + $secondary.Message) }
+  }
 }
 
 # 孤儿 .tmp 清理：仅持所属日期写锁时进行；只删内容与当前正式文件字节一致的
@@ -287,6 +413,9 @@ function Invoke-Main {
     }
     $found = Find-DispatchFile -RecordId $request.recordId -HintDate $request.fileDate
     if ($found.candidates.Count -eq 0) {
+      if ($found.busy.Count -gt 0) {
+        return @{ result = (New-ErrorResult 'UNCONFIRMED' '正式文件正被独占，暂时无法核实记录（可退避重试）' @{ retryable = $true }); exitCode = 3 }
+      }
       if ($found.unreadable.Count -gt 0) {
         return @{ result = (New-ErrorResult 'FILE_INVALID' '部分文件无法读取，不能确认记录不存在'); exitCode = 1 }
       }
@@ -336,6 +465,9 @@ function Invoke-Main {
     } else {
       $found = Find-DispatchFile -RecordId $request.recordId -HintDate $request.fileDate
       if ($found.candidates.Count -eq 0) {
+        if ($found.busy.Count -gt 0) {
+          return @{ result = (New-ErrorResult 'UNCONFIRMED' '正式文件正被独占，暂时无法定位记录（可退避重试）' @{ retryable = $true }); exitCode = 3 }
+        }
         if ($found.unreadable.Count -gt 0) {
           return @{ result = (New-ErrorResult 'FILE_INVALID' '部分文件无法读取，不能确认记录不存在'); exitCode = 1 }
         }
@@ -387,6 +519,10 @@ function Invoke-Main {
       $newJson = $newJson -replace '(?<!\\)\\u003c', '<' -replace '(?<!\\)\\u003e', '>' -replace '(?<!\\)\\u0026', '&' -replace '(?<!\\)\\u0027', "'"
 
       # 同目录临时文件 + Flush(true) + 校验临时 JSON。
+      # 文件名带 operationId 便于核实归属，再加一次性随机后缀：同一 operationId 的
+      # 重试必须能重新创建临时文件，否则上一次失败留下的证据会挡住本次重试
+      #（CreateNew 遇到同名文件直接抛错，重试永远失败）。
+      $tmpPath = Join-Path $DataRoot ($date + '.json.' + $request.operationId + '.' + [Guid]::NewGuid().ToString('N') + '.tmp')
       $tmpFs = [System.IO.FileStream]::new($tmpPath, [System.IO.FileMode]::CreateNew,
         [System.IO.FileAccess]::Write, [System.IO.FileShare]::None, 4096,
         [System.IO.FileOptions]::WriteThrough)
@@ -408,36 +544,44 @@ function Invoke-Main {
       $replaceBak = Join-Path $DataRoot ($date + '.json.replace-bak')
       $bak = Join-Path $DataRoot ($date + '.json.bak')
       $formalExisted = Test-Path -LiteralPath $formalPath -PathType Leaf
-      try {
-        if ($formalExisted) {
-          if (Test-Path -LiteralPath $replaceBak -PathType Leaf) {
-            Copy-Item -LiteralPath $replaceBak -Destination $bak -Force
-          }
-          [System.IO.File]::Replace($tmpPath, $formalPath, $replaceBak)
-        } else {
-          [System.IO.File]::Move($tmpPath, $formalPath)
+      $replaceUsedFallback = $false
+      if ($formalExisted) {
+        if (Test-Path -LiteralPath $replaceBak -PathType Leaf) {
+          Copy-Item -LiteralPath $replaceBak -Destination $bak -Force
         }
-      } catch {
-        # ReplaceFile 部分失败：不能假设什么都没发生，按 operationId 核实。
-        $verified = $false
-        $verifyNote = '替换异常且无法核实'
-        try {
-          if (Test-Path -LiteralPath $formalPath -PathType Leaf) {
-            $checkText = Read-FileShared -Path $formalPath
-            $checkParsed = $checkText | ConvertFrom-Json
-            $checkArr = @(if ($checkParsed -is [Array]) { $checkParsed } else { @($checkParsed) })
-            $checkRec = $checkArr | Where-Object { $_.id -eq $result.record.id } | Select-Object -First 1
-            if ($null -ne $checkRec -and $checkRec.revision -eq $result.record.revision -and
-              $checkRec.lastOperationId -eq $result.record.lastOperationId) {
-              $verified = $true
-              $verifyNote = '替换虽抛错但回读证实已提交'
+        $replaceOutcome = Invoke-AtomicReplace -TempPath $tmpPath -FormalPath $formalPath `
+          -BackupPath $replaceBak -Date $date -DataRoot $DataRoot
+        if (-not $replaceOutcome.ok) {
+          # 两条替换路径都失败：不能假设什么都没发生，按 operationId 核实。
+          $verified = $false
+          $verifyNote = ('替换失败（' + $replaceOutcome.fallbackReason + ' / ' + $replaceOutcome.error + '）且无法核实')
+          try {
+            if (Test-Path -LiteralPath $formalPath -PathType Leaf) {
+              $checkText = Read-FileShared -Path $formalPath
+              $checkParsed = $checkText | ConvertFrom-Json
+              $checkArr = @(if ($checkParsed -is [Array]) { $checkParsed } else { @($checkParsed) })
+              $checkRec = $checkArr | Where-Object { $_.id -eq $result.record.id } | Select-Object -First 1
+              if ($null -ne $checkRec -and $checkRec.revision -eq $result.record.revision -and
+                $checkRec.lastOperationId -eq $result.record.lastOperationId) {
+                $verified = $true
+                $verifyNote = '替换虽抛错但回读证实已提交'
+              }
             }
+          } catch { }
+          if ($verified) {
+            return @{ result = @{ ok = $true; record = $result.record; revision = $result.record.revision; operationId = $request.operationId; fileDate = $date; file = $formalPath; changed = $result.changed; replay = $result.replay; note = $verifyNote }; exitCode = 0 }
           }
-        } catch { }
-        if ($verified) {
-          return @{ result = @{ ok = $true; record = $result.record; revision = $result.record.revision; operationId = $request.operationId; fileDate = $date; file = $formalPath; changed = $result.changed; replay = $result.replay; note = $verifyNote }; exitCode = 0 }
+          # 可重试：正式文件未被改动（回读未证实新内容），用同一 operationId 重发不会
+          # 产生第二份业务变更。证据（本次 .tmp）保留，供人工核实。
+          return @{ result = (New-ErrorResult 'UNCONFIRMED' ('提交结果未确认：' + $verifyNote) @{ file = $formalPath; operationId = $request.operationId; retryable = $true }); exitCode = 3 }
         }
-        return @{ result = (New-ErrorResult 'UNCONFIRMED' ('提交结果未确认：' + $verifyNote) @{ file = $formalPath; operationId = $request.operationId }); exitCode = 3 }
+        $replaceUsedFallback = $replaceOutcome.usedFallback
+      } else {
+        try {
+          [System.IO.File]::Move($tmpPath, $formalPath)
+        } catch {
+          return @{ result = (New-ErrorResult 'UNCONFIRMED' ('提交结果未确认：首次创建换名失败 ' + $_.Exception.Message) @{ file = $formalPath; operationId = $request.operationId }); exitCode = 3 }
+        }
       }
 
       # 锁内回读核对：文件内容与 node 返回的记录一致（id、revision、lastOperationId）。
@@ -457,7 +601,12 @@ function Invoke-Main {
 
       Remove-OrphanTemps -FormalPath $formalPath -CurrentTemp $tmpPath
       $backupOk = Sync-IndependentBackup -FormalPath $formalPath -Date $date
-      return @{ result = @{ ok = $true; record = $result.record; revision = $result.record.revision; operationId = $request.operationId; fileDate = $date; file = $formalPath; changed = $result.changed; replay = $result.replay; backupSynced = $backupOk }; exitCode = 0 }
+      $successResult = @{ ok = $true; record = $result.record; revision = $result.record.revision; operationId = $request.operationId; fileDate = $date; file = $formalPath; changed = $result.changed; replay = $result.replay; backupSynced = $backupOk }
+      if ($replaceUsedFallback) {
+        # 让调用方知道这次不是 File.Replace 原生路径，便于核实与排障（不影响成败）。
+        $successResult.replaceFallback = $true
+      }
+      return @{ result = $successResult; exitCode = 0 }
     } finally {
       if ($lock) { $lock.Dispose() }
       # 临时文件残留一律保留（可能是未确认提交的证据），只由持锁的清理规则处理。
